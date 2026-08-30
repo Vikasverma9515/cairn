@@ -76,6 +76,13 @@ export function Copilot({
   // typed or spoken question can't interrupt mid-walkthrough.
   const [tourStep, setTourStep] = useState<{ index: number; total: number } | null>(null);
   const tourGenerationRef = useRef(0); // bumped to cancel an in-progress tour (e.g. widget closed) without extra flags
+  // Mirrors whether a tour is running, for use inside the mic's
+  // onaudioprocess callback (a stale closure over React state there would
+  // miss a tour that started after the callback was created) — a tour
+  // reuses "rt-speaking" to hold the mic off too, but must NOT be
+  // barge-in-able the way a real conversational reply is (see the RMS
+  // check below): it's a deliberate walkthrough, not a turn to interrupt.
+  const touringRef = useRef(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -165,36 +172,41 @@ export function Copilot({
   async function runTour(steps: TourStep[]) {
     const myGeneration = ++tourGenerationRef.current;
     const wasRealtimeListening = realtimeActive;
+    touringRef.current = true;
     if (wasRealtimeListening) setRtStatus("rt-speaking");
     setAnswer(null);
 
-    for (let i = 0; i < steps.length; i++) {
-      if (tourGenerationRef.current !== myGeneration) return; // superseded — e.g. widget closed or a new question came in
-      const step = steps[i];
-      setTourStep({ index: i, total: steps.length });
-      setCaption(`Step ${i + 1} of ${steps.length}`);
-      setAnswer(step.text);
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        if (tourGenerationRef.current !== myGeneration) return; // superseded — e.g. widget closed or a new question came in
+        const step = steps[i];
+        setTourStep({ index: i, total: steps.length });
+        setCaption(`Step ${i + 1} of ${steps.length}`);
+        setAnswer(step.text);
 
-      if (step.target) {
-        const el = findElement(step.target);
-        if (el) highlightElement(el);
-        else reportMiss({ attempted: step.target, route: pathname });
+        if (step.target) {
+          const el = findElement(step.target);
+          if (el) highlightElement(el);
+          else reportMiss({ attempted: step.target, route: pathname });
+        }
+
+        if (speakEndpoint) {
+          await speakAndWait(step.text);
+        } else {
+          // No TTS configured — pace by an estimate of reading time instead
+          // of racing through every step instantly.
+          await new Promise((resolve) => setTimeout(resolve, Math.max(1200, step.text.length * 45)));
+        }
+        if (tourGenerationRef.current !== myGeneration) return;
       }
 
-      if (speakEndpoint) {
-        await speakAndWait(step.text);
-      } else {
-        // No TTS configured — pace by an estimate of reading time instead
-        // of racing through every step instantly.
-        await new Promise((resolve) => setTimeout(resolve, Math.max(1200, step.text.length * 45)));
-      }
       if (tourGenerationRef.current !== myGeneration) return;
+      setTourStep(null);
+      setCaption("");
+      if (wasRealtimeListening && realtimeActive) setRtStatus("rt-listening");
+    } finally {
+      if (tourGenerationRef.current === myGeneration) touringRef.current = false;
     }
-
-    if (tourGenerationRef.current !== myGeneration) return;
-    setTourStep(null);
-    setCaption("");
-    if (wasRealtimeListening && realtimeActive) setRtStatus("rt-listening");
   }
 
   // ---------------------------------------------------------------------
@@ -377,6 +389,18 @@ export function Copilot({
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (rtMicMutedRef.current) return;
+
+        // Barge-in: while the agent is speaking a real conversational
+        // reply (not touring — a tour deliberately can't be talked over),
+        // keep listening to the mic locally even though it isn't being
+        // sent yet, and cut the agent off the instant the user starts
+        // talking over it instead of making them wait for it to finish.
+        if (rtStateRef.current === "rt-speaking" && !touringRef.current) {
+          const rms = computeRms(e.inputBuffer.getChannelData(0));
+          if (rms > BARGE_IN_RMS_THRESHOLD) triggerBargeIn();
+          return;
+        }
+
         if (rtStateRef.current !== "rt-listening") return; // don't send our own mic while the agent is thinking/speaking
         const pcm = floatTo16BitPCM(downsampleTo16k(e.inputBuffer.getChannelData(0), audioCtx.sampleRate));
         ws.send(pcm);
@@ -419,6 +443,19 @@ export function Copilot({
         }
         rtScheduledSourcesRef.current = [];
         rtNextPlayTimeRef.current = rtPlaybackCtxRef.current?.currentTime ?? 0;
+      }
+
+      // Stops the agent immediately (locally) and tells the server to
+      // discard whatever it's still synthesizing/sending for this turn —
+      // the server tags every turn with a generation number and drops any
+      // now-stale audio_chunk/speaking_end that was already in flight, so a
+      // few straggling chunks can't sneak back in and resume playback.
+      function triggerBargeIn() {
+        stopScheduledRtAudio();
+        rtAudioDoneArrivingRef.current = true;
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
+        setRtStatus("rt-listening");
+        setCaption("");
       }
 
       ws.onopen = () => {
@@ -513,6 +550,7 @@ export function Copilot({
     setCaption("");
     setRtStatus("idle");
     tourGenerationRef.current++; // cancel an in-progress tour rather than leaving it stuck waiting to resume rt-listening
+    touringRef.current = false;
     setTourStep(null);
   }
 
@@ -663,6 +701,20 @@ function CairnMark() {
 // ---------------------------------------------------------------------------
 // Audio helpers (real-time PCM16 capture — standard Web Audio API patterns)
 // ---------------------------------------------------------------------------
+
+// Heuristic energy gate for barge-in: real speech into a laptop/phone mic
+// typically sits well above this; normal room noise and the mic's own
+// noise floor typically sit below it. Not calibrated against real hardware
+// in this environment (no live mic here) — reasonable starting point, may
+// need tuning against a real device if it proves too trigger-happy or too
+// insensitive in practice.
+const BARGE_IN_RMS_THRESHOLD = 0.02;
+
+function computeRms(channelData: Float32Array): number {
+  let sumSquares = 0;
+  for (let i = 0; i < channelData.length; i++) sumSquares += channelData[i] * channelData[i];
+  return Math.sqrt(sumSquares / channelData.length);
+}
 
 function downsampleTo16k(input: Float32Array, inputSampleRate: number): Float32Array {
   const targetRate = 16000;

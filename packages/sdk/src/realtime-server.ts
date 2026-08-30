@@ -132,6 +132,11 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   // not a fixed timeout. Bound once at stream creation (Deepgram fires one
   // Flushed per Flush call), rebound per-turn as each new call starts.
   let onCurrentTurnFlushed: (() => void) | null = null;
+  // Bumped on barge-in — any audio_chunk/speaking_end belonging to an
+  // earlier generation is dropped instead of sent, so a chunk that was
+  // already in flight over the network when the user interrupted can't
+  // sneak back in and resume playback after the client already moved on.
+  let generation = 0;
 
   function ensureSpeakStream(): { stream: DeepgramSpeakStream; ready: Promise<void> } {
     if (!speakStream) {
@@ -150,24 +155,37 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
     return { stream: speakStream, ready: speakStreamReady! };
   }
 
+  // Discards whatever the current turn is still synthesizing/sending, and
+  // unsticks a pending speakStreamed() call if one is in flight — Deepgram's
+  // "Clear" isn't guaranteed to itself trigger a "Flushed" confirmation, so
+  // without this the interrupted call's promise would hang forever.
+  function triggerServerBargeIn(): void {
+    generation++;
+    speakStream?.clear();
+    onCurrentTurnFlushed?.();
+  }
+
   async function speakStreamed(text: string): Promise<void> {
+    const myGeneration = generation;
     const { stream, ready } = ensureSpeakStream();
 
     stream.setAudioHandler((chunk) => {
+      if (myGeneration !== generation) return; // stale — dropped by barge-in
       safeSend(client, { type: "audio_chunk", audio: chunk.toString("base64"), sampleRate: TTS_SAMPLE_RATE });
     });
 
     await ready;
-    if (!speakStream) {
-      // Reconnect failed — degrade to turn_complete rather than hanging the client.
-      safeSend(client, { type: "turn_complete" });
+    if (!speakStream || myGeneration !== generation) {
+      // Reconnect failed, or barge-in happened before the stream connected —
+      // either way, only degrade to turn_complete if this is still current.
+      if (myGeneration === generation) safeSend(client, { type: "turn_complete" });
       return;
     }
 
     await new Promise<void>((resolve) => {
       onCurrentTurnFlushed = () => {
         onCurrentTurnFlushed = null;
-        safeSend(client, { type: "speaking_end" });
+        if (myGeneration === generation) safeSend(client, { type: "speaking_end" });
         resolve();
       };
       safeSend(client, { type: "speaking_start" });
@@ -198,6 +216,8 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
         context = { route: String(msg.route ?? "/"), visible: Array.isArray(msg.visible) ? msg.visible : [] };
       } else if (msg.type === "end") {
         client.close();
+      } else if (msg.type === "barge_in") {
+        triggerServerBargeIn();
       }
     } catch {
       // Ignore malformed control messages — never crash the relay on bad client input.
