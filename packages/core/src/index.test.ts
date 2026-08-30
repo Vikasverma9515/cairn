@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import { ManifestSchema, safeParseVerbResponse } from "./index";
+
+describe("ManifestSchema", () => {
+  it("accepts a well-formed manifest", () => {
+    const manifest = {
+      version: "1",
+      commit: "abc123",
+      generatedAt: new Date().toISOString(),
+      pages: [],
+      dead: [],
+      conflicts: [],
+    };
+    expect(() => ManifestSchema.parse(manifest)).not.toThrow();
+  });
+
+  it("rejects a manifest with the wrong version", () => {
+    const manifest = {
+      version: "2",
+      commit: "abc123",
+      generatedAt: new Date().toISOString(),
+      pages: [],
+      dead: [],
+      conflicts: [],
+    };
+    expect(() => ManifestSchema.parse(manifest)).toThrow();
+  });
+});
+
+describe("safeParseVerbResponse", () => {
+  it("accepts each registered verb shape", () => {
+    expect(safeParseVerbResponse({ verb: "explain", text: "hi" })).not.toBeNull();
+    expect(safeParseVerbResponse({ verb: "highlight", target: "create-invoice" })).not.toBeNull();
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices" })).not.toBeNull();
+    expect(safeParseVerbResponse({ verb: "do", action: "archiveInvoice" })).not.toBeNull();
+  });
+
+  it("rejects a verb outside the fixed enum — the prompt-injection defense", () => {
+    expect(safeParseVerbResponse({ verb: "deleteAll", action: "deleteAll" })).toBeNull();
+    expect(safeParseVerbResponse({ verb: "eval", code: "process.exit()" })).toBeNull();
+  });
+
+  it("rejects payloads with unexpected extra fields (strict schemas)", () => {
+    expect(
+      safeParseVerbResponse({ verb: "do", action: "archiveInvoice", sql: "DROP TABLE users" }),
+    ).toBeNull();
+  });
+
+  it("rejects malformed or missing-field payloads", () => {
+    expect(safeParseVerbResponse(null)).toBeNull();
+    expect(safeParseVerbResponse("explain")).toBeNull();
+    expect(safeParseVerbResponse({ verb: "explain" })).toBeNull(); // missing text
+    expect(safeParseVerbResponse({ verb: "highlight" })).toBeNull(); // missing target
+  });
+});

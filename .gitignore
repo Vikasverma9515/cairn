@@ -1,0 +1,9 @@
+node_modules
+dist
+*.log
+.cairn-cache
+ui-manifest.json
+raw-facts.json
+.env
+.next
+.DS_Store
