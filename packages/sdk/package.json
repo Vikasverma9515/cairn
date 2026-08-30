@@ -1,10 +1,17 @@
 {
   "name": "@cairn/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "In-app AI copilot widget + server handlers for Cairn (Next.js today; see the repo ROADMAP.md for other frameworks).",
+  "license": "MIT",
   "type": "module",
   "bin": {
-    "cairn-realtime": "./dist/realtime-cli.js"
+    "cairn-realtime": "dist/realtime-cli.js"
   },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE"
+  ],
   "exports": {
     ".": "./src/index.tsx",
     "./server": "./src/server.ts",
@@ -24,7 +31,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
-    "@cairn/core": "0.0.1",
+    "@cairn/core": "^0.1.0",
     "better-sqlite3": "^13.0.3",
     "groq-sdk": "^1.6.0",
     "lucide-react": "^1.37.0",

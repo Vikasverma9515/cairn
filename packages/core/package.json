@@ -1,10 +1,18 @@
 {
   "name": "@cairn/core",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "Shared manifest/verb schema for Cairn — the runtime contract the indexer writes and the SDK validates against.",
+  "license": "MIT",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

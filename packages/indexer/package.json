@@ -1,18 +1,24 @@
 {
   "name": "@cairn/indexer",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "Cairn's static analyzer — scans a Next.js codebase and writes ui-manifest.json (the `cairn` CLI).",
+  "license": "MIT",
   "type": "module",
   "bin": {
-    "cairn": "./dist/cli.js"
+    "cairn": "dist/cli.js"
   },
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
-    "@cairn/core": "0.0.1",
+    "@cairn/core": "^0.1.0",
     "groq-sdk": "^1.6.0",
     "ts-morph": "^23.0.0"
   },

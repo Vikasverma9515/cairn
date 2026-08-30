@@ -1,11 +1,19 @@
 # Cairn
 
-Your app explains itself to your users. Generated from your code, in your CI.
+Your app explains itself to your users — and talks them through it, in
+real time, by voice. Generated from your code, in your CI.
 
-Status: working end-to-end, including live LLM calls (Anthropic or Groq).
-Next.js App Router is the primary target; Pages Router is also scanned for
-reachability/routes (see [LATER.md](./LATER.md) for what isn't fully wired
-yet). See [BUILD_PLAN.md](./BUILD_PLAN.md) for the original design.
+Status: working end-to-end, including live LLM calls (Anthropic or Groq)
+and live voice (Deepgram STT/TTS). **Next.js is the only framework Cairn's
+analyzer understands today** — the runtime (voice, verb execution, element
+finding) is already framework-agnostic under the hood, but there's no
+installer for anything else yet. See [ROADMAP.md](./ROADMAP.md) for the
+plan to fix that, and [LATER.md](./LATER.md) for smaller gaps within the
+current Next.js scope. See [BUILD_PLAN.md](./BUILD_PLAN.md) for the
+original design.
+
+Not published to npm yet — install via a `file:` path pointing at this repo
+(see Quick start) until that changes.
 
 ## How it works
 
@@ -87,6 +95,49 @@ Mark anything you want addressed by a stable id, regardless of copy changes:
 `<Link>` and any `*Button`-named component with an `onClick` are also picked
 up automatically (heuristic — see LATER.md), so `data-ai` is for precision,
 not a requirement.
+
+## Voice & conversation
+
+Beyond typed questions, `<Copilot/>` can hold a real spoken conversation —
+run `cairn-realtime` (from `@cairn/sdk`, its own long-lived process
+alongside `next dev`) and pass `realtimeUrl` to the widget:
+
+```jsx
+<Copilot
+  registeredActions={["archiveInvoice"]}
+  onDo={handleDo}
+  speakEndpoint="/api/copilot/speak"        // typed/mic answers spoken aloud (Deepgram TTS)
+  transcribeEndpoint="/api/copilot/transcribe" // push-to-talk mic button (Deepgram STT)
+  realtimeUrl="ws://localhost:3010"         // full live voice conversation
+  persona="Cairn"                            // display name, woven into the system prompt
+/>
+```
+
+```bash
+# .env: DEEPGRAM_API_KEY, CAIRN_REGISTERED_ACTIONS, CAIRN_CAPABILITY, CAIRN_PERSONA
+npx cairn-realtime --port 3010
+```
+
+What that gets you:
+- **Streaming speech, not a wait-then-play clip.** TTS is a persistent
+  Deepgram WebSocket, not a buffered REST call — audio starts within
+  ~1-1.5s instead of 5-10s (`packages/sdk/src/tts-stream.ts`).
+- **Barge-in.** Talk over the agent and it stops immediately — a local mic
+  energy check triggers it client-side, the server drops any audio already
+  in flight for the interrupted turn.
+- **Tours.** A question whose answer spans several elements (or several
+  pages) comes back as an ordered walkthrough — highlight, narrate, move
+  on — instead of one paragraph naming five buttons at once.
+- **Conversation memory.** "Highlight that instead" resolves against the
+  last few turns, not just the current question.
+- **Capability tiers.** `capability: "explain" | "guide" | "act"` (default
+  `"act"`) caps what the agent is *allowed* to do independent of which
+  actions are registered — `"explain"` can only talk and point,
+  `"guide"` adds moving around the app, `"act"` adds real actions.
+
+Every spoken/displayed `text` is held to one rule regardless of path: no
+markdown, never say an internal element id out loud — see
+`buildSystemPrompt` in `packages/sdk/src/server.ts`.
 
 ## CLI
 
