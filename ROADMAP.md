@@ -51,23 +51,40 @@ implementations** right now, not one core with two thin wrappers as
 originally sketched — unifying them is follow-up work once the vanilla
 path has realtime voice too, not before.
 
-## Phase 2 — runtime-crawl analyzer (not started)
+## Phase 2 — runtime-crawl analyzer ✅
 
-`cairn build` works on any framework's *rendered output*, without a
-separate source-code parser per framework: launch the target app with a
-headless browser, crawl reachable pages the way a real user would (follow
-links, find clickable elements via the same rules `findElement` already
-uses), and feed each page's live DOM to the same LLM description step that
-already produces `ui-manifest.json` — same output shape, so nothing
-downstream changes. By the time a page reaches the browser, Vue/Angular/
-Svelte/Next.js output is just DOM; one crawler covers all of them, at the
-cost of needing a running server to crawl and slightly less precision than
-reading real source. Keeps the existing Next.js source-reader as an
-optional higher-precision mode for Next.js specifically.
+`cairn build <url>` (`packages/indexer/src/crawl.ts` + `crawl-describe.ts`)
+launches a headless Chromium (Playwright), crawls same-origin links from a
+given URL (BFS, depth/page-capped), and for each page pulls interactive
+elements straight from the live DOM — same detection rules
+`findElement`/`element-ladder.ts` already use at runtime (`data-ai`,
+`aria-label`, visible text), and deliberately **not slugified** the way the
+Next.js source-reader's fallback ids are, so a crawled element without
+`data-ai` still actually resolves at runtime (the source-reader has a
+latent gap here — worth fixing there too, not done as part of this phase).
+Feeds each page's visible text + element list to the same LLM description
+step (`DescribeClient`) that already produces `ui-manifest.json` — same
+output shape, so `@cairn/core`'s schema and the runtime widget needed zero
+changes, exactly as planned.
 
-Open questions to resolve when this phase starts: auth-gated apps, SPA
-client-side routing detection, crawl depth/rate limits, and the added
-`playwright` dependency's install footprint.
+**Live-verified, the full pipeline, not just typechecked:** built and
+served a genuinely framework-free two-page static HTML site (no build
+tool touched it at all), ran `cairn build http://localhost:8123/index.html
+--provider groq`, got a real manifest with correct element ids and
+reasonable descriptions inferred purely from visible text, then fed that
+manifest into `createCopilotHandler` and asked "how do I get support?" —
+got back a correct `highlight` verb pointing at the right button. Auto-
+detected via the `http(s)://` prefix — no flag needed for the common case.
+
+Known limitations, honest and unresolved: no handling yet for auth-gated
+apps (crawls whatever's reachable unauthenticated), no SPA client-side-only
+routing detection (relies on real `<a href>` links, won't discover routes
+reachable only via `router.push()`-style navigation), no crawl-time
+caching keyed on a hash of the deployed build the way the source-reader's
+git-commit-scoped cache is — a repeat crawl re-visits every page. No
+automated test suite for this yet either (no headless-browser fixture in
+CI) — covered only by the live run above, not a repeatable `npm test`
+case.
 
 ## Phase 3 — `npx cairn init` (not started)
 

@@ -5,6 +5,8 @@ import { ManifestSchema } from "@cairn/core";
 import { scanL1 } from "./l1-scan";
 import { computeL2 } from "./l2-reachability";
 import { describeAll } from "./l3-describe";
+import { crawlSite } from "./crawl";
+import { describeCrawled } from "./crawl-describe";
 import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { diffManifests, formatDiffAsText } from "./diff";
@@ -48,9 +50,40 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
+    const client = provider === "groq" ? new GroqDescribeClient() : new AnthropicDescribeClient();
+
+    // Crawl mode: the positional is a URL to a running app, not a source
+    // directory — auto-detected (a directory is never a URL), or forced
+    // via --mode=crawl. This is the framework-agnostic path (see
+    // ROADMAP.md Phase 2): reads the *rendered* DOM instead of parsing
+    // Next.js-specific source conventions, so it works on any framework's
+    // output, at the cost of less precision than reading real source.
+    const isCrawl = flags.mode === "crawl" || /^https?:\/\//.test(dir);
+    if (isCrawl) {
+      const outDir = flags.out ?? ".";
+      console.error(`cairn build --mode=crawl: launching a headless browser against ${dir} ...`);
+      const facts = await crawlSite({ startUrl: dir });
+      if (facts.pages.length === 0) {
+        console.error(`cairn build --mode=crawl: found no reachable pages at ${dir} — is it actually running?`);
+        process.exit(1);
+      }
+      const l3 = await describeCrawled(outDir, facts, client);
+      const manifest = assembleManifest(outDir, facts, { dead: [], conflicts: [] }, l3);
+
+      const validated = ManifestSchema.parse(manifest);
+      const outPath = path.join(path.resolve(outDir), "ui-manifest.json");
+      fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
+
+      console.error(
+        `cairn build --mode=crawl (${provider}): ${validated.pages.length} page(s) crawled — ` +
+          `L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss.`,
+      );
+      console.error(`wrote ${outPath}`);
+      return;
+    }
+
     const facts = scanL1(dir);
     const l2 = computeL2(dir, facts);
-    const client = provider === "groq" ? new GroqDescribeClient() : new AnthropicDescribeClient();
     const l3 = await describeAll(dir, facts, client);
     const manifest = assembleManifest(dir, facts, l2, l3);
 
@@ -93,7 +126,8 @@ async function main(): Promise<void> {
 
   console.error("usage:");
   console.error("  cairn scan <dir>");
-  console.error("  cairn build <dir> [--provider anthropic|groq]");
+  console.error("  cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)");
+  console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>]   (any framework — crawls a running app)");
   console.error("  cairn diff <old-manifest.json> <new-manifest.json>");
   console.error("  cairn docs <dir>   (reads <dir>/ui-manifest.json, writes <dir>/CAIRN_DOCS.md)");
   process.exit(command ? 1 : 0);

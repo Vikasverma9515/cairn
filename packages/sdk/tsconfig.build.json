@@ -4,7 +4,7 @@
     "module": "CommonJS",
     "moduleResolution": "Node",
     "noEmit": false,
-    "declaration": false,
+    "declaration": true,
     "outDir": "dist"
   },
   "exclude": ["node_modules", "src/**/*.test.ts", "src/**/*.test.tsx", "src/web-component.ts"]

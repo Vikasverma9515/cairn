@@ -14,12 +14,13 @@
   ],
   "exports": {
     ".": "./src/index.tsx",
-    "./server": "./src/server.ts",
-    "./dashboard": "./src/dashboard.ts",
-    "./dashboard-sqlite": "./src/dashboard-sqlite.ts",
-    "./transcribe-server": "./src/transcribe-server.ts",
-    "./speak-server": "./src/speak-server.ts",
-    "./realtime-server": "./src/realtime-server.ts"
+    "./server": "./dist/server.js",
+    "./dashboard": "./dist/dashboard.js",
+    "./dashboard-sqlite": "./dist/dashboard-sqlite.js",
+    "./transcribe-server": "./dist/transcribe-server.js",
+    "./speak-server": "./dist/speak-server.js",
+    "./realtime-server": "./dist/realtime-server.js",
+    "./widget": "./dist/cairn-widget.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json && npm run build:widget",

@@ -23,6 +23,13 @@ export interface RawPage {
   /** Every source file reachable from this route's entry point, including itself. */
   reachableFiles: string[];
   elements: RawElement[];
+  /**
+   * The page's rendered visible text — only set by crawl.ts's runtime-DOM
+   * analyzer (crawl mode has no source file to read; l1-scan.ts's
+   * static-analysis mode leaves this undefined and l3-describe.ts reads
+   * `file` off disk instead).
+   */
+  renderedText?: string;
 }
 
 export interface RawFacts {

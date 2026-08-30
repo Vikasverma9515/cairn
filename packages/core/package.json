@@ -6,8 +6,15 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "node": "./dist/index.js",
+      "default": "./src/index.ts"
+    }
+  },
   "files": [
     "dist",
+    "src",
     "LICENSE"
   ],
   "scripts": {

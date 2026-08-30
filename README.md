@@ -133,6 +133,32 @@ zero React and zero build step:
 Not yet in the Web Component version: live realtime voice conversation
 (`realtimeUrl`) — see [ROADMAP.md](./ROADMAP.md) Phase 1.
 
+## Analyzing a non-Next.js app (`cairn build` in crawl mode)
+
+`cairn build <dir>` reads Next.js source directly. For anything else, point
+it at a **running** app instead of a source directory — it crawls the
+rendered pages with a headless browser (needs Chromium once:
+`npx playwright install chromium`):
+
+```bash
+cairn build http://localhost:3000 --provider groq --out .
+```
+
+Auto-detected from the `http(s)://` — no `--mode` flag needed. Crawls
+same-origin links up to a few hops deep, reads the interactive elements
+actually rendered on each page (any framework's output is just DOM by the
+time it reaches the browser), and produces the exact same
+`ui-manifest.json` shape the source-reading path does. Trade-off: no
+handler/API-call evidence (nothing to read source for), so "does"
+descriptions are inferred from visible text and page context alone — less
+precise than the Next.js path, but works on anything with a UI.
+
+Live-verified against a genuinely framework-free static HTML site (two
+plain `.html` files, no build tool involved at all) — crawled it, got a
+real manifest, asked "how do I get support?" through the normal
+`createCopilotHandler` flow, got back a correct `highlight` verb pointing
+at the right button.
+
 ## Voice & conversation
 
 Beyond typed questions, `<Copilot/>` can hold a real spoken conversation —
