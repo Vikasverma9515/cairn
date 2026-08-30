@@ -14,7 +14,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import type { TourStep } from "@cairn/core";
+import type { HistoryTurn as HistoryEntry, TourStep } from "@cairn/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
@@ -83,6 +83,17 @@ export function Copilot({
   // barge-in-able the way a real conversational reply is (see the RMS
   // check below): it's a deliberate walkthrough, not a turn to interrupt.
   const touringRef = useRef(false);
+  // Resolver for "this tour step's audio has fully finished playing" when
+  // narrating over an already-open realtime session (see maybeResumeListening
+  // and speakOverRealtime) — set right before sending a step's text, cleared
+  // once it resolves.
+  const rtTourAudioDoneRef = useRef<(() => void) | null>(null);
+  // Conversation memory for the typed/mic path. Not React state — nothing
+  // about it should trigger a re-render, it just needs to persist across
+  // ask() calls and be resent each time (see ask() below; the realtime path
+  // keeps its own history server-side instead, since that connection is
+  // already stateful).
+  const historyRef = useRef<HistoryEntry[]>([]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -175,6 +186,12 @@ export function Copilot({
     touringRef.current = true;
     if (wasRealtimeListening) setRtStatus("rt-speaking");
     setAnswer(null);
+    // Tracked locally rather than reading the component's `pathname` —
+    // that's only current as of this render, and a step below can navigate
+    // mid-tour (router.push doesn't update it synchronously, and this
+    // async function's closure over the render-time value would otherwise
+    // go stale for every step after the first navigation).
+    let currentRoute = pathname;
 
     try {
       for (let i = 0; i < steps.length; i++) {
@@ -184,13 +201,30 @@ export function Copilot({
         setCaption(`Step ${i + 1} of ${steps.length}`);
         setAnswer(step.text);
 
+        if (step.route && step.route !== currentRoute) {
+          router.push(step.route);
+          currentRoute = step.route;
+          // router.push() in the App Router doesn't return a promise to
+          // await — a short fixed pause is the pragmatic way to give the
+          // new route's DOM a moment to mount before the target lookup
+          // below runs against it. Steps already pace at 1-3s+ for
+          // narration, so this doesn't read as a hang.
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          if (tourGenerationRef.current !== myGeneration) return;
+        }
+
         if (step.target) {
           const el = findElement(step.target);
           if (el) highlightElement(el);
-          else reportMiss({ attempted: step.target, route: pathname });
+          else reportMiss({ attempted: step.target, route: currentRoute });
         }
 
-        if (speakEndpoint) {
+        if (wasRealtimeListening && rtSocketRef.current?.readyState === WebSocket.OPEN) {
+          // Already have a live streaming connection open — reuse it
+          // (same Speak WS, same gapless PCM scheduling a normal reply
+          // uses) instead of falling back to a separate buffered REST call.
+          await speakOverRealtime(step.text);
+        } else if (speakEndpoint) {
           await speakAndWait(step.text);
         } else {
           // No TTS configured — pace by an estimate of reading time instead
@@ -220,10 +254,19 @@ export function Copilot({
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ route: pathname, question: q, visible: collectVisible() }),
+        body: JSON.stringify({ route: pathname, question: q, visible: collectVisible(), history: historyRef.current }),
       });
       const data = await res.json().catch(() => null);
       handleVerb(data);
+      // Unlike the realtime relay (one persistent connection, memory lives
+      // server-side), each of these POSTs is stateless — the widget itself
+      // is what remembers, and resends it above so the model has context
+      // for "the first one" / "do that instead" on the next question.
+      historyRef.current = [
+        ...historyRef.current,
+        { role: "user", text: q } satisfies HistoryEntry,
+        { role: "assistant", text: summarizeVerbForHistory(data) } satisfies HistoryEntry,
+      ].slice(-MAX_HISTORY_TURNS);
     } catch {
       setAnswer("Something went wrong reaching the help service — try again in a moment.");
     } finally {
@@ -288,6 +331,26 @@ export function Copilot({
     } catch {
       // Best-effort — never let a synthesis failure hang the tour forever.
     }
+  }
+
+  /** Like speakAndWait(), but narrates over an already-open realtime
+   * WebSocket instead of a separate REST call — same streaming Speak
+   * connection and gapless PCM scheduling a normal conversational reply
+   * uses, so a tour that happens mid-call is exactly as fast to start
+   * speaking as the conversation itself. Resolved by maybeResumeListening()
+   * (defined in startRealtime, where the audio_chunk scheduling lives) once
+   * this step's audio has both fully arrived and fully finished playing. */
+  function speakOverRealtime(text: string): Promise<void> {
+    return new Promise((resolve) => {
+      const ws = rtSocketRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+      rtAudioDoneArrivingRef.current = false;
+      rtTourAudioDoneRef.current = resolve;
+      ws.send(JSON.stringify({ type: "speak", text }));
+    });
   }
 
   async function startRecording() {
@@ -426,9 +489,19 @@ export function Copilot({
       // scheduled has actually finished playing. Doing this from playback
       // completion rather than from the server's speaking_end alone is what
       // stops the mic picking up the tail end of the agent's own voice.
+      //
+      // Shared with runTour()'s speakOverRealtime(): while touring, this
+      // same "audio fully drained" condition resolves the current step's
+      // wait instead of touching rtStatus/caption — a tour owns those for
+      // its whole duration, not per step.
       function maybeResumeListening() {
         if (!rtAudioDoneArrivingRef.current) return;
         if (rtScheduledSourcesRef.current.length > 0) return;
+        if (touringRef.current) {
+          rtTourAudioDoneRef.current?.();
+          rtTourAudioDoneRef.current = null;
+          return;
+        }
         setRtStatus("rt-listening");
         setCaption("");
       }
@@ -552,6 +625,12 @@ export function Copilot({
     tourGenerationRef.current++; // cancel an in-progress tour rather than leaving it stuck waiting to resume rt-listening
     touringRef.current = false;
     setTourStep(null);
+    // Unstick a tour step mid-narration over realtime — the socket above is
+    // already closed, so nothing will ever deliver the audio_chunk/speaking_end
+    // that would normally resolve this; without forcing it, runTour()'s
+    // await would hang forever instead of noticing the generation bump above.
+    rtTourAudioDoneRef.current?.();
+    rtTourAudioDoneRef.current = null;
   }
 
   function toggleRtMic() {
@@ -686,6 +765,33 @@ export function Copilot({
       )}
     </>
   );
+}
+
+const MAX_HISTORY_TURNS = 8; // 4 exchanges — matches the same cap the realtime relay uses server-side
+
+/** Best-effort text form of a raw (unvalidated) verb response for the
+ * conversation-history log — not shown to the user, just fed back to the
+ * model on later turns. Deliberately loose/defensive rather than a full
+ * schema parse: a malformed field here just makes for a slightly less
+ * useful memory entry, never a UI action, so it doesn't need the strict
+ * validation executeVerbResponse already does for the real thing. */
+function summarizeVerbForHistory(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "(no response)";
+  const v = raw as Record<string, unknown>;
+  if (typeof v.text === "string" && v.text) return v.text;
+  switch (v.verb) {
+    case "highlight":
+    case "open":
+      return `(highlighted ${String(v.target)})`;
+    case "navigate":
+      return `(navigated to ${String(v.route)})`;
+    case "do":
+      return `(ran ${String(v.action)}${v.target ? ` on ${String(v.target)}` : ""})`;
+    case "tour":
+      return Array.isArray(v.steps) ? v.steps.map((s: { text?: string }) => s.text ?? "").join(" ") : "(tour)";
+    default:
+      return "(no response)";
+  }
 }
 
 function CairnMark() {

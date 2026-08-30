@@ -104,7 +104,16 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
        * one wall of text with nothing to look at.
        */
       steps: z
-        .array(z.object({ text: z.string().min(1), target: z.string().optional() }).strict())
+        .array(
+          z
+            .object({
+              text: z.string().min(1),
+              target: z.string().optional(),
+              /** Navigate here before this step's target lookup — for a walkthrough that spans more than one page. */
+              route: z.string().optional(),
+            })
+            .strict(),
+        )
         .min(2)
         .max(6),
     })
@@ -113,12 +122,20 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
 export type VerbResponse = z.infer<typeof VerbResponseSchema>;
 export type TourStep = Extract<VerbResponse, { verb: "tour" }>["steps"][number];
 
+export const HistoryTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+});
+export type HistoryTurn = z.infer<typeof HistoryTurnSchema>;
+
 // The request context the runtime SDK sends to the customer's /api/copilot
 // route, and that route forwards (trimmed) to the LLM.
 export const CopilotRequestSchema = z.object({
   route: z.string(),
   question: z.string().min(1),
   visible: z.array(z.string()),
+  /** Prior turns of this same conversation, oldest first — untrusted data, same as `question`, never instructions. */
+  history: z.array(HistoryTurnSchema).optional(),
 });
 export type CopilotRequest = z.infer<typeof CopilotRequestSchema>;
 

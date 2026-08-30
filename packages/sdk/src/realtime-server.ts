@@ -27,7 +27,7 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { Manifest, VerbResponse } from "@cairn/core";
+import type { HistoryTurn, Manifest, VerbResponse } from "@cairn/core";
 import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 
@@ -105,8 +105,15 @@ interface ConnectionDeps {
   capability: CapabilityTier;
 }
 
+const MAX_HISTORY_TURNS = 8; // 4 exchanges — enough for "the first one"/"do that instead" without growing the prompt unbounded over a long call
+
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
   let context = { route: "/", visible: [] as string[] };
+  // Unlike the stateless HTTP path (which needs the client to resend
+  // history every request), a realtime connection is already stateful —
+  // one WebSocket per call — so this is accumulated here directly rather
+  // than round-tripped through the client.
+  const history: HistoryTurn[] = [];
 
   const dgUrl =
     `${DEEPGRAM_LIVE_URL}?model=${encodeURIComponent(deps.sttModel)}` +
@@ -195,7 +202,7 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   }
 
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed);
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history);
   });
 
   dg.on("error", (err) => {
@@ -218,6 +225,14 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
         client.close();
       } else if (msg.type === "barge_in") {
         triggerServerBargeIn();
+      } else if (msg.type === "speak" && typeof msg.text === "string" && msg.text.trim()) {
+        // A "tour" step being narrated while a realtime session is already
+        // open — reuses the exact same streaming Speak connection and
+        // audio_chunk protocol as a conversational reply, instead of the
+        // client falling back to a separate buffered REST call. No STT/verb
+        // resolution involved; the client already resolved the tour steps
+        // itself and just needs this text spoken.
+        void speakStreamed(msg.text);
       }
     } catch {
       // Ignore malformed control messages — never crash the relay on bad client input.
@@ -240,6 +255,7 @@ async function handleDeepgramMessage(
   deps: ConnectionDeps,
   getContext: () => { route: string; visible: string[] },
   speakStreamed: (text: string) => Promise<void>,
+  history: HistoryTurn[],
 ): Promise<void> {
   let msg: any;
   try {
@@ -264,12 +280,16 @@ async function handleDeepgramMessage(
     route,
     question: transcript,
     visible,
+    history,
   });
   // Sent immediately — before speech synthesis even starts — so
   // highlight/navigate/do execute in the browser right away instead of
   // waiting on audio. The agent visibly acts while it's still about to
   // speak, not after.
   safeSend(client, { type: "verb", verb });
+
+  history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
+  history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
 
   // A verb with no spoken text (highlight/navigate/do often have none)
   // still needs to unstick the client's "thinking" state and let the mic
@@ -284,4 +304,24 @@ async function handleDeepgramMessage(
 function safeSend(client: WebSocket, message: ServerMessage): void {
   if (client.readyState !== WebSocket.OPEN) return;
   client.send(JSON.stringify(message));
+}
+
+/** A short text form of any verb for the history log — not shown to the
+ * user, just fed back to the model on later turns so it knows what it
+ * already did/said. */
+function summarizeVerbForHistory(verb: VerbResponse): string {
+  if ("text" in verb && verb.text) return verb.text;
+  switch (verb.verb) {
+    case "highlight":
+    case "open":
+      return `(highlighted ${verb.target})`;
+    case "navigate":
+      return `(navigated to ${verb.route})`;
+    case "do":
+      return `(ran ${verb.action}${verb.target ? ` on ${verb.target}` : ""})`;
+    case "tour":
+      return verb.steps.map((s) => s.text).join(" ");
+    default:
+      return "(no response)";
+  }
 }

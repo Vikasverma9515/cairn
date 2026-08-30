@@ -143,6 +143,30 @@ describe("createCopilotHandlerWithLLM", () => {
     expect((doResult.body as { verb: string }).verb).toBe("explain");
   });
 
+  it("capability 'explain' allows a tour with no routes, but refuses one where a step navigates", async () => {
+    const noRouteHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "tour",
+        steps: [{ text: "This is the table." }, { text: "This creates a new one.", target: "create-invoice" }],
+      }),
+      { capability: "explain" },
+    );
+    const noRouteResult = await noRouteHandler({ route: "/invoices", question: "what can I do here?", visible: [] });
+    expect((noRouteResult.body as { verb: string }).verb).toBe("tour");
+
+    const withRouteHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "tour",
+        steps: [{ text: "First this." }, { text: "Then go here.", route: "/invoices" }],
+      }),
+      { capability: "explain" },
+    );
+    const withRouteResult = await withRouteHandler({ route: "/", question: "walk me through it", visible: [] });
+    expect((withRouteResult.body as { verb: string }).verb).toBe("explain");
+  });
+
   it("capability defaults to 'act' — a registered do-verb passes through with no capability set", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,
@@ -164,6 +188,31 @@ describe("createCopilotHandlerWithLLM", () => {
     const handler = createCopilotHandlerWithLLM(manifest, capturingLLM, { persona: "Aria" });
     await handler({ route: "/invoices", question: "who are you?", visible: [] });
     expect(capturedSystemPrompt).toContain("You are Aria");
+  });
+
+  it("conversation history, when the request includes it, reaches the model in the user message", async () => {
+    let capturedUserMessage = "";
+    const capturingLLM: VerbLLM = {
+      respond: async (_systemPrompt, userMessage) => {
+        capturedUserMessage = userMessage;
+        return { verb: "explain", text: "the second one" };
+      },
+    };
+    const handler = createCopilotHandlerWithLLM(manifest, capturingLLM);
+    await handler({
+      route: "/invoices",
+      question: "archive that instead",
+      visible: [],
+      history: [
+        { role: "user", text: "what's on this page?" },
+        { role: "assistant", text: "A list of your invoices." },
+      ],
+    });
+    const parsed = JSON.parse(capturedUserMessage);
+    expect(parsed.history).toEqual([
+      { role: "user", text: "what's on this page?" },
+      { role: "assistant", text: "A list of your invoices." },
+    ]);
   });
 });
 
