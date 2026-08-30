@@ -89,6 +89,8 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
     .object({
       verb: z.literal("do"),
       action: z.string().min(1),
+      /** What the action applies to, e.g. a manifest element id. Not every action needs one. */
+      target: z.string().optional(),
       text: z.string().optional(),
     })
     .strict(),

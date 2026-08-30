@@ -8,6 +8,9 @@ export default function HomePage() {
       <p>
         <Link href="/invoices">Go to Invoices →</Link>
       </p>
+      <p>
+        <Link href="/dashboard">View failure dashboard →</Link>
+      </p>
     </main>
   );
 }

@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@cairn/core": "0.0.1",
+    "groq-sdk": "^1.6.0",
     "ts-morph": "^23.0.0"
   },
   "devDependencies": {

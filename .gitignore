@@ -4,6 +4,8 @@ dist
 .cairn-cache
 ui-manifest.json
 raw-facts.json
+CAIRN_DOCS.md
 .env
 .next
 .DS_Store
+*.tsbuildinfo

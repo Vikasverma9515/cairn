@@ -21,6 +21,13 @@ describe("computeL2", () => {
     expect(l2.dead).not.toContain("app/page.tsx");
   });
 
+  it("does not flag Pages Router framework files (_app, api routes) as dead", () => {
+    const facts = scanL1(FIXTURE);
+    const l2 = computeL2(FIXTURE, facts);
+    expect(l2.dead).not.toContain("pages/_app.tsx");
+    expect(l2.dead).not.toContain("pages/api/ping.ts");
+  });
+
   it("finds no naming conflicts in the fixture (nothing to disambiguate)", () => {
     const facts = scanL1(FIXTURE);
     const l2 = computeL2(FIXTURE, facts);

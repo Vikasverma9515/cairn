@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { createInvoice } from "../../../lib/invoices";
 
 export async function POST() {
-  return NextResponse.json({ id: `inv-${Date.now()}`, status: "created" }, { status: 201 });
+  const invoice = createInvoice();
+  return NextResponse.json(invoice, { status: 201 });
 }

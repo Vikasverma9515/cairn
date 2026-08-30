@@ -11,7 +11,7 @@ import { findElement, highlightElement, logMiss, type MissContext } from "./elem
 export interface VerbExecutorOptions {
   onExplain: (text: string) => void;
   onNavigate?: (route: string) => void;
-  onDo?: (action: string) => void;
+  onDo?: (action: string, target?: string) => void;
   onMiss?: (context: MissContext) => void;
   /** Action ids the customer has actually wired up. "do" is rejected for anything else. */
   registeredActions?: string[];
@@ -59,7 +59,7 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         options.onExplain("That action isn't available here.");
         return;
       }
-      options.onDo?.(verb.action);
+      options.onDo?.(verb.action, verb.target);
       if (verb.text) options.onExplain(verb.text);
       return;
     }

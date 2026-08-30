@@ -22,7 +22,10 @@ function loadManifest(): Manifest {
   };
 }
 
+// Defaults to Groq since that's what this demo ships configured with
+// (GROQ_API_KEYS in .env) — set CAIRN_RUNTIME_PROVIDER=anthropic to switch.
 const handler = createCopilotHandler(loadManifest(), {
+  provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
   registeredActions: ["archiveInvoice"],
 });
 

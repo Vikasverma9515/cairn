@@ -1,9 +1,9 @@
-const DEMO_INVOICES = [
-  { id: "inv-1", client: "Acme Co.", amount: "$1,200.00", status: "Paid" },
-  { id: "inv-2", client: "Globex Inc.", amount: "$450.00", status: "Overdue" },
-];
+import { listInvoices } from "../lib/invoices";
+import { ArchiveInvoiceButton } from "./ArchiveInvoiceButton";
 
 export function InvoiceList() {
+  const invoices = listInvoices();
+
   return (
     <table data-ai="invoice-table">
       <thead>
@@ -11,14 +11,16 @@ export function InvoiceList() {
           <th>Client</th>
           <th>Amount</th>
           <th>Status</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
-        {DEMO_INVOICES.map((inv) => (
+        {invoices.map((inv) => (
           <tr key={inv.id}>
             <td>{inv.client}</td>
             <td>{inv.amount}</td>
             <td>{inv.status}</td>
+            <td>{inv.status !== "Archived" && <ArchiveInvoiceButton id={inv.id} />}</td>
           </tr>
         ))}
       </tbody>

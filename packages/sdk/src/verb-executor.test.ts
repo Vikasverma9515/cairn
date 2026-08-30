@@ -29,7 +29,16 @@ describe("executeVerbResponse", () => {
       ...opts,
       registeredActions: ["archiveInvoice"],
     });
-    expect(opts.onDo).toHaveBeenCalledWith("archiveInvoice");
+    expect(opts.onDo).toHaveBeenCalledWith("archiveInvoice", undefined);
+  });
+
+  it("do: passes the target through so the customer's handler knows what it applies to", () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "do", action: "archiveInvoice", target: "inv-2" }, "/invoices", {
+      ...opts,
+      registeredActions: ["archiveInvoice"],
+    });
+    expect(opts.onDo).toHaveBeenCalledWith("archiveInvoice", "inv-2");
   });
 
   it("do: refuses an action outside the allowlist, even if it parses as valid", () => {

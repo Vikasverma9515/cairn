@@ -74,4 +74,34 @@ describe("describeAll", () => {
     expect(result.cacheHits).toBe(factsAfterEdit.pages.length - 1);
     expect(result.cacheMisses).toBe(1);
   });
+
+  it("describes framework-level elements (e.g. a layout nav link) once, cached separately from pages", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "app/layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+        return (
+          <html>
+            <body>
+              <a href="/about" data-ai="nav-about">About</a>
+              {children}
+            </body>
+          </html>
+        );
+      }`,
+    );
+
+    const facts = scanL1(tmpDir);
+    expect(facts.frameworkElements.length).toBeGreaterThan(0);
+
+    const client = new FakeClient();
+    const coldResult = await describeAll(tmpDir, facts, client);
+    const coldCalls = client.calls;
+    expect(coldResult.globalElements.find((e) => e.id === "nav-about")).toBeDefined();
+
+    const warmClient = new FakeClient();
+    const warmResult = await describeAll(tmpDir, facts, warmClient);
+    expect(warmClient.calls).toBe(0); // global elements cache hit too
+    expect(warmResult.globalElements).toEqual(coldResult.globalElements);
+    expect(coldCalls).toBe(facts.pages.length + 1); // +1 for the one global-elements call
+  });
 });

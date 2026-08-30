@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Copilot } from "@cairn/sdk";
+import { CopilotWithActions } from "../components/CopilotWithActions";
 import "./globals.css";
 
 export const metadata = {
@@ -12,7 +12,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body>
         {children}
-        <Copilot registeredActions={["archiveInvoice"]} />
+        <CopilotWithActions />
       </body>
     </html>
   );

@@ -4,7 +4,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.tsx",
-    "./server": "./src/server.ts"
+    "./server": "./src/server.ts",
+    "./dashboard": "./src/dashboard.ts",
+    "./transcribe-server": "./src/transcribe-server.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
@@ -15,7 +17,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
-    "@cairn/core": "0.0.1"
+    "@cairn/core": "0.0.1",
+    "groq-sdk": "^1.6.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

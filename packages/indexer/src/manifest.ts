@@ -1,25 +1,21 @@
 import { execFileSync } from "node:child_process";
 import type { Element, Manifest, Page } from "@cairn/core";
-import type { RawElement, RawFacts, RawPage } from "./types";
+import type { RawElement, RawFacts } from "./types";
 import type { L2Result } from "./l2-reachability";
+import type { ElementDescription } from "./llm";
 import type { L3Result } from "./l3-describe";
 
 export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result, l3: L3Result): Manifest {
+  const globalElements: Element[] = facts.frameworkElements.map((el) =>
+    toManifestElement(el, l3.globalElements.find((e) => e.id === el.id), "present in the root layout"),
+  );
+
   const pages: Page[] = facts.pages.map((rawPage) => {
     const desc = l3.descriptions.get(rawPage.route);
 
-    const elements: Element[] = rawPage.elements.map((el) => {
-      const elDesc = desc?.elements.find((e) => e.id === el.id);
-      return {
-        id: el.id,
-        label: el.text ?? el.ariaLabel ?? el.dataAi ?? el.id,
-        selector: el.dataAi ? `[data-ai='${el.dataAi}']` : elementFallbackSelector(el),
-        fallbacks: buildFallbacks(el),
-        does: elDesc?.does ?? "Unknown — no description generated for this element.",
-        confidence: elDesc?.confidence ?? 0,
-        evidence: buildEvidence(rawPage, el),
-      };
-    });
+    const ownElements: Element[] = rawPage.elements.map((el) =>
+      toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`),
+    );
 
     return {
       id: slugifyRoute(rawPage.route),
@@ -29,7 +25,7 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
       purpose: desc?.purpose ?? "Unknown — no description generated for this page.",
       whenToUse: desc?.whenToUse ?? "Unknown — no description generated for this page.",
       confidence: desc?.confidence ?? 0,
-      elements,
+      elements: [...ownElements, ...globalElements],
     };
   });
 
@@ -40,6 +36,22 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
     pages,
     dead: l2.dead,
     conflicts: l2.conflicts,
+  };
+}
+
+function toManifestElement(el: RawElement, elDesc: ElementDescription | undefined, baseEvidence: string): Element {
+  const evidence = [baseEvidence];
+  if (el.handlerCall) evidence.push(`onClick calls ${el.handlerCall}`);
+  if (el.dataAi) evidence.push(`has data-ai="${el.dataAi}"`);
+
+  return {
+    id: el.id,
+    label: el.text ?? el.ariaLabel ?? el.dataAi ?? el.id,
+    selector: el.dataAi ? `[data-ai='${el.dataAi}']` : elementFallbackSelector(el),
+    fallbacks: buildFallbacks(el),
+    does: elDesc?.does ?? "Unknown — no description generated for this element.",
+    confidence: elDesc?.confidence ?? 0,
+    evidence,
   };
 }
 
@@ -54,13 +66,6 @@ function buildFallbacks(el: RawElement): string[] {
   if (el.ariaLabel) fallbacks.push(`[aria-label='${el.ariaLabel}']`);
   if (el.text) fallbacks.push(`${el.tag} >> text=${el.text}`);
   return fallbacks;
-}
-
-function buildEvidence(rawPage: RawPage, el: RawElement): string[] {
-  const evidence = [`reachable from route ${rawPage.route}`];
-  if (el.handlerCall) evidence.push(`onClick calls ${el.handlerCall}`);
-  if (el.dataAi) evidence.push(`has data-ai="${el.dataAi}"`);
-  return evidence;
 }
 
 function slugifyRoute(route: string): string {

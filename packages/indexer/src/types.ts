@@ -37,4 +37,6 @@ export interface RawFacts {
    * look dead to L2.
    */
   frameworkReachableFiles: string[];
+  /** Interactive elements found in those same framework files — present on every page, not attributable to just one. */
+  frameworkElements: RawElement[];
 }

@@ -4,13 +4,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { RawFacts, RawPage } from "./types";
-import type { DescribeClient, PageDescription } from "./llm";
+import type { RawElement, RawFacts, RawPage } from "./types";
+import type { DescribeClient, ElementDescription, PageDescription } from "./llm";
 
 const CACHE_DIR = ".cairn-cache";
+const GLOBAL_ROUTE_LABEL = "(present on every page — layout/framework elements)";
 
 export interface L3Result {
   descriptions: Map<string, PageDescription>; // keyed by page.route
+  /** Descriptions for frameworkElements (nav bars etc.) — present on every page, so kept out of `descriptions`. */
+  globalElements: ElementDescription[];
   cacheHits: number;
   cacheMisses: number;
 }
@@ -39,14 +42,7 @@ export async function describeAll(rootDir: string, facts: RawFacts, client: Desc
       route: page.route,
       file: page.file,
       source,
-      elements: page.elements.map((el) => ({
-        id: el.id,
-        tag: el.tag,
-        text: el.text,
-        dataAi: el.dataAi,
-        ariaLabel: el.ariaLabel,
-        handlerCall: el.handlerCall,
-      })),
+      elements: page.elements.map(toDescribeElementInput),
     });
 
     fs.writeFileSync(cachePath, JSON.stringify(description, null, 2));
@@ -54,7 +50,45 @@ export async function describeAll(rootDir: string, facts: RawFacts, client: Desc
     cacheMisses += 1;
   }
 
-  return { descriptions, cacheHits, cacheMisses };
+  let globalElements: ElementDescription[] = [];
+  if (facts.frameworkElements.length > 0) {
+    const hash = hashFrameworkElements(absRoot, facts.frameworkElements);
+    const cachePath = path.join(cacheDir, `${hash}.json`);
+
+    if (fs.existsSync(cachePath)) {
+      globalElements = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+      cacheHits += 1;
+    } else {
+      const files = uniqueSortedFiles(facts.frameworkElements);
+      const source = files.map((f) => fs.readFileSync(path.join(absRoot, f), "utf8")).join("\n\n");
+      const description = await client.describePage({
+        route: GLOBAL_ROUTE_LABEL,
+        file: files.join(", "),
+        source,
+        elements: facts.frameworkElements.map(toDescribeElementInput),
+      });
+      globalElements = description.elements;
+      fs.writeFileSync(cachePath, JSON.stringify(globalElements, null, 2));
+      cacheMisses += 1;
+    }
+  }
+
+  return { descriptions, globalElements, cacheHits, cacheMisses };
+}
+
+function toDescribeElementInput(el: RawElement) {
+  return {
+    id: el.id,
+    tag: el.tag,
+    text: el.text,
+    dataAi: el.dataAi,
+    ariaLabel: el.ariaLabel,
+    handlerCall: el.handlerCall,
+  };
+}
+
+function uniqueSortedFiles(elements: RawElement[]): string[] {
+  return Array.from(new Set(elements.map((e) => e.file))).sort();
 }
 
 /**
@@ -68,6 +102,17 @@ function hashPage(absRoot: string, page: RawPage): string {
   hash.update(page.route);
   hash.update(JSON.stringify(page.elements));
   for (const file of page.reachableFiles) {
+    hash.update(file);
+    hash.update(fs.readFileSync(path.join(absRoot, file), "utf8"));
+  }
+  return hash.digest("hex");
+}
+
+function hashFrameworkElements(absRoot: string, elements: RawElement[]): string {
+  const hash = createHash("sha256");
+  hash.update("global");
+  hash.update(JSON.stringify(elements));
+  for (const file of uniqueSortedFiles(elements)) {
     hash.update(file);
     hash.update(fs.readFileSync(path.join(absRoot, file), "utf8"));
   }

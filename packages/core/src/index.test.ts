@@ -35,6 +35,11 @@ describe("safeParseVerbResponse", () => {
     expect(safeParseVerbResponse({ verb: "do", action: "archiveInvoice" })).not.toBeNull();
   });
 
+  it("accepts a do verb with an optional target naming what it applies to", () => {
+    const parsed = safeParseVerbResponse({ verb: "do", action: "archiveInvoice", target: "inv-2" });
+    expect(parsed).toEqual({ verb: "do", action: "archiveInvoice", target: "inv-2" });
+  });
+
   it("rejects a verb outside the fixed enum — the prompt-injection defense", () => {
     expect(safeParseVerbResponse({ verb: "deleteAll", action: "deleteAll" })).toBeNull();
     expect(safeParseVerbResponse({ verb: "eval", code: "process.exit()" })).toBeNull();

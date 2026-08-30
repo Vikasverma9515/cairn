@@ -6,15 +6,40 @@
 import path from "node:path";
 import { Project, Node, SyntaxKind, ts } from "ts-morph";
 import type { SourceFile } from "ts-morph";
-import { routeFromPagePath } from "./routes";
+import { routeFromPagePath, routeFromPagesRouterPath } from "./routes";
 import type { InteractiveTag, RawElement, RawFacts, RawPage } from "./types";
 
 const INTERACTIVE_TAGS = new Set<InteractiveTag>(["button", "a", "form", "input"]);
-const DEFAULT_ROOTS = ["app", "components", "lib"];
-// Next.js App Router files the framework invokes directly rather than a
-// page.tsx importing them — they must count as reachability roots too, or
-// L2 would flag every layout and API route handler as dead code.
-const FRAMEWORK_SPECIAL_FILE_RE = /^(layout|loading|error|not-found|template|default|route)\.(tsx|ts|jsx|js)$/;
+const DEFAULT_ROOTS = ["app", "components", "lib", "pages"];
+// Files the framework invokes directly rather than a page importing them —
+// they must count as reachability roots too, or L2 would flag every layout,
+// API route handler, and _app/_document as dead code.
+const APP_ROUTER_SPECIAL_FILE_RE = /^(layout|loading|error|not-found|template|default|route)\.(tsx|ts|jsx|js)$/;
+const PAGES_ROUTER_SPECIAL_FILE_RE = /^(_app|_document|_error|404|500)\.(tsx|ts|jsx|js)$/;
+// Custom components matching this convention (e.g. <PrimaryButton onClick=...>)
+// are treated as buttons — a heuristic, not real component resolution.
+const BUTTON_LIKE_COMPONENT_RE = /Button$/;
+
+function isFrameworkSpecialFile(absRoot: string, filePath: string): boolean {
+  const rel = toPosix(path.relative(absRoot, filePath));
+  if (rel.startsWith("pages/api/")) return true;
+  const base = path.basename(filePath);
+  if (rel.startsWith("pages/") && PAGES_ROUTER_SPECIAL_FILE_RE.test(base)) return true;
+  return APP_ROUTER_SPECIAL_FILE_RE.test(base);
+}
+
+/** Which route (if any) a source file defines, and via which router convention. Null for anything that isn't a page. */
+function deriveRoute(absRoot: string, filePath: string): string | null {
+  const rel = toPosix(path.relative(absRoot, filePath));
+  if (rel.startsWith("app/")) {
+    return /(^|\/)page\.(tsx|ts)$/.test(rel) ? routeFromPagePath(absRoot, filePath) : null;
+  }
+  if (rel.startsWith("pages/")) {
+    if (isFrameworkSpecialFile(absRoot, filePath)) return null;
+    return routeFromPagesRouterPath(absRoot, filePath);
+  }
+  return null;
+}
 
 function isRelevant(filePath: string): boolean {
   return (
@@ -52,7 +77,7 @@ export function scanL1(rootDir: string): RawFacts {
 
   const pageFiles = project
     .getSourceFiles()
-    .filter((sf) => /(^|\/)page\.(tsx|ts)$/.test(toPosix(sf.getFilePath())) && isRelevant(sf.getFilePath()));
+    .filter((sf) => isRelevant(sf.getFilePath()) && deriveRoute(absRoot, sf.getFilePath()) !== null);
 
   const pages: RawPage[] = pageFiles.map((pageFile) => {
     const reachable = new Set<string>();
@@ -60,7 +85,7 @@ export function scanL1(rootDir: string): RawFacts {
     walkImports(pageFile, absRoot, reachable, elements, new Set());
 
     return {
-      route: routeFromPagePath(absRoot, pageFile.getFilePath()),
+      route: deriveRoute(absRoot, pageFile.getFilePath())!,
       file: toPosix(path.relative(absRoot, pageFile.getFilePath())),
       reachableFiles: Array.from(reachable).sort(),
       elements: elements.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file))),
@@ -71,15 +96,17 @@ export function scanL1(rootDir: string): RawFacts {
 
   const specialFiles = project
     .getSourceFiles()
-    .filter((sf) => FRAMEWORK_SPECIAL_FILE_RE.test(path.basename(sf.getFilePath())) && isRelevant(sf.getFilePath()));
+    .filter((sf) => isRelevant(sf.getFilePath()) && isFrameworkSpecialFile(absRoot, sf.getFilePath()));
 
   const frameworkReachable = new Set<string>();
+  const frameworkElements: RawElement[] = [];
   const frameworkVisited = new Set<string>();
   for (const sf of specialFiles) {
-    // Framework files can have their own interactive elements (e.g. nav
-    // links in layout.tsx), but the manifest is page-scoped — there's no
-    // home for those yet, so they're intentionally discarded here. See LATER.md.
-    walkImports(sf, absRoot, frameworkReachable, [], frameworkVisited);
+    // Framework files (layout.tsx, _app.tsx, ...) can have their own
+    // interactive elements — e.g. a nav bar — that render on every page but
+    // aren't reachable from any single page.tsx. Collected separately so L3
+    // can describe them once and the manifest can attach them to every page.
+    walkImports(sf, absRoot, frameworkReachable, frameworkElements, frameworkVisited);
   }
 
   return {
@@ -87,6 +114,7 @@ export function scanL1(rootDir: string): RawFacts {
     pages,
     allScannedFiles,
     frameworkReachableFiles: Array.from(frameworkReachable).sort(),
+    frameworkElements: frameworkElements.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file))),
   };
 }
 
@@ -121,24 +149,41 @@ function findInteractiveElements(sf: SourceFile, relFile: string): RawElement[] 
   ];
 
   for (const node of nodes) {
-    const tag = node.getTagNameNode().getText().toLowerCase();
-    if (!INTERACTIVE_TAGS.has(tag as InteractiveTag)) continue;
-
+    const rawTag = node.getTagNameNode().getText();
+    const lowerTag = rawTag.toLowerCase();
     const attrs = node.getAttributes();
+    const onClickInit = getAttrInitializerNode(attrs, "onClick");
+    const onSubmitInit = getAttrInitializerNode(attrs, "onSubmit");
+
+    // Literal HTML elements first; then a couple of documented heuristics
+    // for common component conventions (next/link, *Button wrappers) — not
+    // full component resolution, see LATER.md.
+    let bucket: InteractiveTag | null = null;
+    if (INTERACTIVE_TAGS.has(lowerTag as InteractiveTag)) {
+      bucket = lowerTag as InteractiveTag;
+    } else if (rawTag === "Link") {
+      bucket = "a";
+    } else if (BUTTON_LIKE_COMPONENT_RE.test(rawTag) && onClickInit) {
+      bucket = "button";
+    }
+    if (!bucket) continue;
+
     const dataAi = getAttrStringValue(attrs, "data-ai");
     const ariaLabel = getAttrStringValue(attrs, "aria-label");
     const text = node.getKind() === SyntaxKind.JsxOpeningElement ? getElementText(node) : null;
 
-    const handlerInit =
-      getAttrInitializerNode(attrs, "onClick") ?? getAttrInitializerNode(attrs, "onSubmit");
-    const handlerCall = resolveHandlerCall(sf, handlerInit);
+    let handlerCall = resolveHandlerCall(sf, onClickInit ?? onSubmitInit);
+    if (!handlerCall && rawTag === "Link") {
+      const href = getAttrStringValue(attrs, "href");
+      if (href) handlerCall = `navigate ${href}`;
+    }
 
     const line = node.getStartLineNumber();
-    const id = dataAi ?? slugify(text ?? ariaLabel ?? `${tag}-${line}`);
+    const id = dataAi ?? slugify(text ?? ariaLabel ?? `${bucket}-${line}`);
 
     results.push({
       id,
-      tag: tag as InteractiveTag,
+      tag: bucket,
       dataAi,
       ariaLabel,
       text,

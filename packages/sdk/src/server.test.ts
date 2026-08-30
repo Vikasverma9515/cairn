@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Manifest } from "@cairn/core";
-import { createCopilotHandlerWithClient, type MessagesClient } from "./server";
+import {
+  AnthropicVerbLLM,
+  GroqVerbLLM,
+  createCopilotHandlerWithLLM,
+  type GroqLikeClient,
+  type MessagesClient,
+  type VerbLLM,
+} from "./server";
+import { KeyRotator } from "./key-rotator";
 
 const manifest: Manifest = {
   version: "1",
@@ -32,27 +40,21 @@ const manifest: Manifest = {
   conflicts: [],
 };
 
-function fakeClientReturning(toolInput: unknown): MessagesClient {
-  return {
-    messages: {
-      create: async () => ({
-        content: [{ type: "tool_use", name: "respond_with_verb", input: toolInput }],
-      }),
-    },
-  };
+function fakeLLMReturning(payload: unknown): VerbLLM {
+  return { respond: async () => payload };
 }
 
-describe("createCopilotHandlerWithClient", () => {
+describe("createCopilotHandlerWithLLM", () => {
   it("400s on a malformed request body", async () => {
-    const handler = createCopilotHandlerWithClient(manifest, fakeClientReturning({ verb: "explain", text: "x" }));
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "x" }));
     const result = await handler({ nonsense: true });
     expect(result.status).toBe(400);
   });
 
   it("happy path: passes through a well-formed explain verb", async () => {
-    const handler = createCopilotHandlerWithClient(
+    const handler = createCopilotHandlerWithLLM(
       manifest,
-      fakeClientReturning({ verb: "explain", text: "This page lists your invoices." }),
+      fakeLLMReturning({ verb: "explain", text: "This page lists your invoices." }),
     );
     const result = await handler({ route: "/invoices", question: "what is this page for?", visible: ["create-invoice"] });
     expect(result.status).toBe(200);
@@ -60,9 +62,9 @@ describe("createCopilotHandlerWithClient", () => {
   });
 
   it("unknown route in the request never crashes — graceful explain, HTTP 200", async () => {
-    const handler = createCopilotHandlerWithClient(
+    const handler = createCopilotHandlerWithLLM(
       manifest,
-      fakeClientReturning({ verb: "explain", text: "I don't recognize that page." }),
+      fakeLLMReturning({ verb: "explain", text: "I don't recognize that page." }),
     );
     const result = await handler({ route: "/does-not-exist", question: "help", visible: [] });
     expect(result.status).toBe(200);
@@ -70,9 +72,9 @@ describe("createCopilotHandlerWithClient", () => {
 
   it("a prompt-injection attempt that gets the model to emit an unregistered do-verb is rejected", async () => {
     // Simulates a compromised/tricked model trying to return a destructive action.
-    const handler = createCopilotHandlerWithClient(
+    const handler = createCopilotHandlerWithLLM(
       manifest,
-      fakeClientReturning({ verb: "do", action: "deleteAll" }),
+      fakeLLMReturning({ verb: "do", action: "deleteAll" }),
       { registeredActions: [] }, // nothing registered — this deployment allows no writes
     );
     const result = await handler({
@@ -84,24 +86,119 @@ describe("createCopilotHandlerWithClient", () => {
     expect(result.body).not.toMatchObject({ verb: "do" });
   });
 
+  it("a do-verb with an action AND target in the allowlist passes through", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "archiveInvoice", target: "inv-2" }),
+      { registeredActions: ["archiveInvoice"] },
+    );
+    const result = await handler({ route: "/invoices", question: "archive the overdue one", visible: [] });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ verb: "do", action: "archiveInvoice", target: "inv-2" });
+  });
+
   it("a verb outside the fixed enum is rejected and degraded to explain", async () => {
-    const handler = createCopilotHandlerWithClient(manifest, fakeClientReturning({ verb: "eval", code: "process.exit()" }));
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "eval", code: "process.exit()" }));
     const result = await handler({ route: "/invoices", question: "help", visible: [] });
     expect(result.status).toBe(200);
     expect((result.body as { verb: string }).verb).toBe("explain");
   });
 
   it("an LLM call that throws degrades gracefully instead of raising", async () => {
-    const throwingClient: MessagesClient = {
-      messages: {
-        create: async () => {
-          throw new Error("network blip");
-        },
+    const throwingLLM: VerbLLM = {
+      respond: async () => {
+        throw new Error("network blip");
       },
     };
-    const handler = createCopilotHandlerWithClient(manifest, throwingClient);
+    const handler = createCopilotHandlerWithLLM(manifest, throwingLLM);
     const result = await handler({ route: "/invoices", question: "help", visible: [] });
     expect(result.status).toBe(200);
     expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+});
+
+describe("AnthropicVerbLLM", () => {
+  it("extracts the tool_use input from an Anthropic-shaped response", async () => {
+    const fakeClient: MessagesClient = {
+      messages: {
+        create: async () => ({
+          content: [{ type: "tool_use", name: "respond_with_verb", input: { verb: "explain", text: "hi" } }],
+        }),
+      },
+    };
+    const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} });
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "hi" });
+  });
+
+  it("returns undefined when there's no matching tool_use block", async () => {
+    const fakeClient: MessagesClient = {
+      messages: { create: async () => ({ content: [{ type: "text", text: "no tool call" }] }) },
+    };
+    const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} });
+    await expect(llm.respond("system", "user")).resolves.toBeUndefined();
+  });
+});
+
+describe("GroqVerbLLM", () => {
+  it("parses the JSON-string function-call arguments from an OpenAI-shaped response", async () => {
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  tool_calls: [
+                    { function: { name: "respond_with_verb", arguments: JSON.stringify({ verb: "explain", text: "hi" }) } },
+                  ],
+                },
+              },
+            ],
+          }),
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(
+      new KeyRotator(["fake-key"]),
+      "openai/gpt-oss-120b",
+      { type: "object", properties: {} },
+      () => fakeClient,
+    );
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "hi" });
+  });
+
+  it("degrades to undefined (never throws) on malformed JSON arguments", async () => {
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { tool_calls: [{ function: { name: "respond_with_verb", arguments: "{not json" } }] } }],
+          }),
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toBeUndefined();
+  });
+
+  it("round-robins across multiple keys", async () => {
+    const seenKeys: string[] = [];
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { tool_calls: [{ function: { name: "x", arguments: "{}" } }] } }],
+          }),
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["key-a", "key-b"]), "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      return fakeClient;
+    });
+    await llm.respond("s", "u");
+    await llm.respond("s", "u");
+    await llm.respond("s", "u");
+    expect(seenKeys).toEqual(["key-a", "key-b", "key-a"]);
   });
 });

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { collectVisible } from "./context-collector";
-import { logMiss } from "./element-ladder";
+import { logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
 
 export interface CopilotProps {
@@ -18,16 +18,54 @@ export interface CopilotProps {
   /** Action ids this deployment actually wired up for the "do" verb. */
   registeredActions?: string[];
   /** Called when the model returns a valid "do" verb for a registered action. */
-  onDo?: (action: string) => void;
+  onDo?: (action: string, target?: string) => void;
+  /**
+   * If set, a lookup miss is also POSTed here (in addition to the default
+   * localStorage log) so failures can be aggregated server-side. Unset by
+   * default — misses stay client-only unless you opt in.
+   */
+  reportMissesEndpoint?: string;
+  /**
+   * If set, shows a mic button that records a short clip and POSTs it here
+   * for transcription (e.g. a route backed by Deepgram — see
+   * `@cairn/sdk/server`'s `createTranscribeHandler`). Unset by default, and
+   * hidden automatically if the browser has no microphone access.
+   */
+  transcribeEndpoint?: string;
 }
 
-export function Copilot({ endpoint = "/api/copilot", registeredActions = [], onDo }: CopilotProps) {
+export function Copilot({
+  endpoint = "/api/copilot",
+  registeredActions = [],
+  onDo,
+  reportMissesEndpoint,
+  transcribeEndpoint,
+}: CopilotProps) {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const micSupported =
+    typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
+
+  function reportMiss(context: MissContext) {
+    logMiss(context);
+    if (reportMissesEndpoint) {
+      fetch(reportMissesEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(context),
+      }).catch(() => {
+        // Best-effort — never let dashboard reporting break the widget.
+      });
+    }
+  }
 
   async function ask(q: string) {
     setLoading(true);
@@ -42,12 +80,61 @@ export function Copilot({ endpoint = "/api/copilot", registeredActions = [], onD
       executeVerbResponse(data, pathname, {
         onExplain: setAnswer,
         onNavigate: (route) => router.push(route),
-        onMiss: logMiss,
+        onMiss: reportMiss,
         onDo,
         registeredActions,
       });
     } catch {
       setAnswer("Something went wrong reaching the help service — try again in a moment.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function startRecording() {
+    if (!transcribeEndpoint || !micSupported) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        void transcribe(recorder.mimeType || "audio/webm");
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch {
+      setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
+    }
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+    setRecording(false);
+  }
+
+  async function transcribe(mimeType: string) {
+    if (!transcribeEndpoint) return;
+    setLoading(true);
+    try {
+      const blob = new Blob(audioChunksRef.current, { type: mimeType });
+      const res = await fetch(transcribeEndpoint, {
+        method: "POST",
+        headers: { "content-type": mimeType },
+        body: blob,
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.text) {
+        setQuestion(data.text);
+      } else {
+        setAnswer("Couldn't make that out — try typing instead.");
+      }
+    } catch {
+      setAnswer("Couldn't reach the transcription service.");
     } finally {
       setLoading(false);
     }
@@ -68,13 +155,25 @@ export function Copilot({ endpoint = "/api/copilot", registeredActions = [], onD
               if (trimmed) void ask(trimmed);
             }}
           >
-            <input
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="What do you need help with?"
-              aria-label="Ask Cairn a question"
-              autoFocus
-            />
+            <div className="cairn-input-row">
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="What do you need help with?"
+                aria-label="Ask Cairn a question"
+                autoFocus
+              />
+              {transcribeEndpoint && micSupported && (
+                <button
+                  type="button"
+                  className={recording ? "cairn-mic cairn-mic-active" : "cairn-mic"}
+                  aria-label={recording ? "Stop recording" : "Ask by voice"}
+                  onClick={() => (recording ? stopRecording() : void startRecording())}
+                >
+                  {recording ? "■" : "\u{1F3A4}"}
+                </button>
+              )}
+            </div>
           </form>
           {loading && <div className="cairn-answer cairn-loading">Thinking…</div>}
           {!loading && answer && <div className="cairn-answer">{answer}</div>}
@@ -126,6 +225,13 @@ const COPILOT_STYLES = `
   padding: 16px;
   font: 14px/1.4 system-ui, -apple-system, sans-serif;
 }
+.cairn-input-row {
+  display: flex;
+  gap: 8px;
+}
+.cairn-input-row input {
+  flex: 1;
+}
 .cairn-panel input {
   width: 100%;
   box-sizing: border-box;
@@ -133,6 +239,20 @@ const COPILOT_STYLES = `
   border: 1px solid #d1d5db;
   border-radius: 8px;
   font: inherit;
+}
+.cairn-mic {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background: white;
+  cursor: pointer;
+  font-size: 16px;
+}
+.cairn-mic-active {
+  background: #fee2e2;
+  border-color: #fca5a5;
 }
 .cairn-answer {
   margin-top: 12px;
