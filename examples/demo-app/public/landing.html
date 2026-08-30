@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cairn</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #F3F4F2;
+    --surface: #FFFFFF;
+    --surface-raised: #FBFBFA;
+    --text: #14171A;
+    --text-dim: #565F5A;
+    --text-faint: #8A9089;
+    --border: #D7DBD6;
+    --border-soft: #E6E8E3;
+    --accent: #2B5CE6;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #E7ECFC;
+    --term-bg: #14171A;
+    --term-text: #E8EAE6;
+    --term-dim: #7C877E;
+    --term-border: #2B302E;
+
+    --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --font-body: "Archivo", -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171A;
+      --surface: #1B1F22;
+      --surface-raised: #202427;
+      --text: #EDEFEC;
+      --text-dim: #9AA39C;
+      --text-faint: #656E68;
+      --border: #2B302E;
+      --border-soft: #23282B;
+      --accent: #6E93FF;
+      --accent-ink: #0B1020;
+      --accent-soft: #1C2440;
+      --term-bg: #0D0F11;
+      --term-text: #E8EAE6;
+      --term-dim: #6C766F;
+      --term-border: #23282B;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #14171A;
+    --surface: #1B1F22;
+    --surface-raised: #202427;
+    --text: #EDEFEC;
+    --text-dim: #9AA39C;
+    --text-faint: #656E68;
+    --border: #2B302E;
+    --border-soft: #23282B;
+    --accent: #6E93FF;
+    --accent-ink: #0B1020;
+    --accent-soft: #1C2440;
+    --term-bg: #0D0F11;
+    --term-text: #E8EAE6;
+    --term-dim: #6C766F;
+    --term-border: #23282B;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-font-smoothing: antialiased; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    line-height: 1.55;
+    overflow-x: hidden;
+  }
+
+  ::selection { background: var(--accent-soft); color: var(--text); }
+
+  a { color: inherit; }
+
+  .wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  h1, h2, h3 { text-wrap: balance; margin: 0; }
+
+  code, .mono { font-family: var(--font-mono); }
+
+  /* ---------- nav ---------- */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .nav-inner {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 16px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.01em;
+  }
+  .brand-mark { display: flex; }
+  .nav-status {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .nav-status .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* ---------- hero ---------- */
+  .hero {
+    padding: 96px 0 72px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 22px;
+  }
+  .hero h1 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: clamp(30px, 5.2vw, 48px);
+    line-height: 1.14;
+    letter-spacing: -0.01em;
+  }
+  .hero h1 em {
+    font-style: italic;
+    color: var(--accent);
+  }
+  .hero-sub {
+    margin-top: 22px;
+    max-width: 54ch;
+    font-size: 17px;
+    color: var(--text-dim);
+  }
+  .hero-actions {
+    margin-top: 34px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    font-weight: 500;
+    padding: 11px 18px;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn-primary:hover { transform: translateY(-1px); }
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-dim);
+  }
+  .btn-ghost:hover { border-color: var(--text-faint); color: var(--text); }
+
+  /* ---------- terminal demo ---------- */
+  .demo {
+    margin-top: 56px;
+    background: var(--term-bg);
+    border: 1px solid var(--term-border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 0 var(--border-soft);
+  }
+  .demo-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--term-border);
+  }
+  .demo-dots { display: flex; gap: 6px; }
+  .demo-dots span {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--term-border);
+  }
+  .demo-label {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--term-dim);
+    letter-spacing: 0.03em;
+  }
+  .demo-body {
+    padding: 20px 20px 24px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--term-text);
+    min-height: 220px;
+  }
+  .demo-line { opacity: 0; white-space: pre-wrap; }
+  .demo-line.in { animation: line-in 0.4s ease forwards; }
+  @keyframes line-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+  .demo-prompt { color: var(--term-dim); }
+  .demo-ok { color: #6FCF97; }
+  .demo-dim { color: var(--term-dim); }
+  .demo-accent { color: #6E93FF; }
+  .demo-chat {
+    margin-top: 14px;
+    border: 1px solid var(--term-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    max-width: 380px;
+    opacity: 0;
+  }
+  .demo-chat.in { animation: line-in 0.4s ease forwards; }
+  .demo-q { color: var(--term-dim); font-size: 12px; margin-bottom: 8px; }
+  .demo-a { color: var(--term-text); }
+  .cursor {
+    display: inline-block;
+    width: 7px; height: 14px;
+    background: var(--term-text);
+    vertical-align: -2px;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---------- trail sections ---------- */
+  .trail {
+    position: relative;
+    padding: 20px 0 40px;
+  }
+  .trail::before {
+    content: "";
+    position: absolute;
+    left: 15px;
+    top: 8px;
+    bottom: 8px;
+    width: 1px;
+    background: var(--border);
+  }
+  .step {
+    position: relative;
+    padding: 0 0 64px 56px;
+  }
+  .step:last-child { padding-bottom: 8px; }
+  .cairn-mark {
+    position: absolute;
+    left: 0;
+    top: 2px;
+    width: 31px;
+    height: 31px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cairn-mark svg { display: block; }
+  .step-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 8px;
+  }
+  .step h3 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 21px;
+    letter-spacing: -0.005em;
+  }
+  .step p {
+    margin: 10px 0 0;
+    color: var(--text-dim);
+    max-width: 56ch;
+    font-size: 15.5px;
+  }
+  .step .tag {
+    display: inline-block;
+    margin-top: 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 8px;
+  }
+
+  /* ---------- section headers ---------- */
+  .section {
+    padding: 64px 0;
+    border-top: 1px solid var(--border-soft);
+  }
+  .section-head { margin-bottom: 40px; }
+  .section-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 14px;
+  }
+  .section h2 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: clamp(24px, 3.4vw, 32px);
+    letter-spacing: -0.01em;
+  }
+
+  /* ---------- invariants ---------- */
+  .invariants {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border-soft);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  @media (max-width: 620px) { .invariants { grid-template-columns: 1fr; } }
+  .invariant {
+    background: var(--surface);
+    padding: 22px 22px 24px;
+  }
+  .invariant-num {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+  }
+  .invariant h4 {
+    margin: 8px 0 0;
+    font-size: 15px;
+    font-weight: 600;
+    font-family: var(--font-body);
+  }
+  .invariant p {
+    margin: 8px 0 0;
+    font-size: 14px;
+    color: var(--text-dim);
+    line-height: 1.55;
+  }
+
+  /* ---------- install ---------- */
+  .code-block {
+    background: var(--term-bg);
+    border: 1px solid var(--term-border);
+    border-radius: 6px;
+    padding: 16px 18px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--term-text);
+    overflow-x: auto;
+  }
+  .code-block .rem { color: var(--term-dim); }
+  .code-block + .code-block { margin-top: 12px; }
+
+  /* ---------- footer ---------- */
+  footer {
+    border-top: 1px solid var(--border-soft);
+    padding: 36px 0 56px;
+  }
+  .footer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--text-faint);
+  }
+  .footer-links { display: flex; gap: 18px; }
+  .footer-links a { text-decoration: none; color: var(--text-dim); }
+  .footer-links a:hover { color: var(--text); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .demo-line, .demo-chat, .cursor { animation: none !important; opacity: 1 !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <div class="nav-inner">
+    <div class="brand">
+      <span class="brand-mark">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+          <rect x="6" y="11" width="6" height="3" rx="0.5" fill="currentColor"/>
+          <rect x="4" y="7.5" width="10" height="3" rx="0.5" fill="currentColor" opacity="0.7"/>
+          <rect x="7.5" y="4" width="3" height="3" rx="0.5" fill="currentColor" opacity="0.45"/>
+        </svg>
+      </span>
+      cairn
+    </div>
+    <div class="nav-status"><span class="dot"></span>pre-alpha, source available</div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section class="hero">
+    <p class="eyebrow">for React / Next.js teams shipping their own product</p>
+    <h1>Your app explains itself to your users<br><em>— generated from your code, in your CI.</em></h1>
+    <p class="hero-sub">
+      Cairn reads your codebase, writes a manifest of what every page and button
+      actually does, and ships a help widget that answers questions and points
+      at the right element — without ever letting an LLM invent a selector or
+      run an action you didn't register.
+    </p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#install">npx cairn build .</a>
+      <a class="btn btn-ghost" href="#pipeline">See how it works ↓</a>
+      <a class="btn btn-ghost" href="/invoices">Try the live demo →</a>
+    </div>
+
+    <div class="demo" id="demo">
+      <div class="demo-bar">
+        <div class="demo-dots"><span></span><span></span><span></span></div>
+        <div class="demo-label">/invoices — cairn, live</div>
+      </div>
+      <div class="demo-body" id="demoBody"></div>
+    </div>
+  </section>
+
+  <section class="section" id="pipeline">
+    <div class="section-head">
+      <p class="section-eyebrow">Build time — runs in your CI, code never leaves</p>
+      <h2>Three passes, each one checkable on its own</h2>
+    </div>
+
+    <div class="trail">
+      <div class="step">
+        <span class="cairn-mark">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <rect x="9" y="14" width="4" height="2.4" fill="var(--text-faint)"/>
+            <rect x="6.5" y="10.4" width="9" height="2.4" fill="var(--text-faint)"/>
+            <rect x="9.4" y="6.8" width="3.2" height="2.4" fill="var(--text-faint)"/>
+          </svg>
+        </span>
+        <p class="step-eyebrow">L1 — AST scan</p>
+        <h3>Facts only. No interpretation, no LLM.</h3>
+        <p>Walks <code>app/</code> and <code>pages/</code>, finds every button, link, form
+          and input, traces each handler to the API call it makes. Same source in,
+          byte-identical output out — the determinism check runs on every push.</p>
+        <span class="tag">ts-morph · deterministic</span>
+      </div>
+
+      <div class="step">
+        <span class="cairn-mark">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <rect x="9" y="14" width="4" height="2.4" fill="var(--text-faint)"/>
+            <rect x="6.5" y="10.4" width="9" height="2.4" fill="var(--text-faint)"/>
+            <rect x="9.4" y="6.8" width="3.2" height="2.4" fill="var(--text-faint)"/>
+          </svg>
+        </span>
+        <p class="step-eyebrow">L2 — reachability</p>
+        <h3>Finds what's dead. Adjudicates what's duplicated.</h3>
+        <p>Walks the import graph from every route. Unreached files are flagged
+          <code>dead</code>. When two components share a name, scores them on
+          reachability, inbound imports, and recency — and records why.</p>
+        <span class="tag">graph walk · deterministic</span>
+      </div>
+
+      <div class="step">
+        <span class="cairn-mark">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <rect x="9" y="14" width="4" height="2.4" fill="var(--accent)"/>
+            <rect x="6.5" y="10.4" width="9" height="2.4" fill="var(--accent)"/>
+            <rect x="9.4" y="6.8" width="3.2" height="2.4" fill="var(--accent)"/>
+          </svg>
+        </span>
+        <p class="step-eyebrow">L3 — describe</p>
+        <h3>The only pass that calls an LLM.</h3>
+        <p>Writes a concrete <code>purpose</code>, <code>whenToUse</code>, and
+          <code>does</code> for every page and element — cached by content hash,
+          so a warm build with no relevant changes never calls the model again.
+          Bring your own key: Anthropic or Groq.</p>
+        <span class="tag">cached · your API key</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">
+      <p class="section-eyebrow">Run time — your browser, your server, your auth</p>
+      <h2>The model never touches code. Only a verb.</h2>
+    </div>
+    <p style="margin: -18px 0 30px; color: var(--text-dim); font-size: 15.5px; max-width: 58ch;">
+      Every response is forced into one of five verbs — <code>explain</code>,
+      <code>highlight</code>, <code>open</code>, <code>navigate</code>,
+      <code>do</code> — and re-validated server-side against that exact schema.
+      Anything else, including a prompt-injection attempt, is rejected before
+      it reaches the page.
+    </p>
+    <div class="invariants">
+      <div class="invariant">
+        <div class="invariant-num">01</div>
+        <h4>Fixed verb enum</h4>
+        <p>The LLM never emits a selector or code — only one of five verbs, schema-checked twice.</p>
+      </div>
+      <div class="invariant">
+        <div class="invariant-num">02</div>
+        <h4>Element ladder</h4>
+        <p><code>data-ai</code> → <code>aria-label</code> → visible text → fail. A miss degrades to explain, never a wrong click.</p>
+      </div>
+      <div class="invariant">
+        <div class="invariant-num">03</div>
+        <h4>Deterministic build</h4>
+        <p>L1 and L2 are pure functions. The same commit always produces the same manifest.</p>
+      </div>
+      <div class="invariant">
+        <div class="invariant-num">04</div>
+        <h4>Your auth, not ours</h4>
+        <p>The <code>do</code> verb runs through your own session and your registered action list — never a service key.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="install">
+    <div class="section-head">
+      <p class="section-eyebrow">Quick start</p>
+      <h2>Three lines to a working manifest</h2>
+    </div>
+    <div class="code-block"><span class="rem"># build the manifest</span>
+npx cairn build .</div>
+    <div class="code-block"><span class="rem">// app/layout.tsx</span>
+import { Copilot } from "@cairn/sdk";
+&lt;Copilot registeredActions={["archiveInvoice"]} /&gt;</div>
+  </section>
+
+  <footer>
+    <div class="footer-row">
+      <span>Cairn — explain + highlight, Next.js App Router.<br>Not for enterprises guiding employees through internal tools — that's a different market.</span>
+      <span class="footer-links">
+        <a href="#pipeline">How it works</a>
+        <a href="#install">Install</a>
+        <a href="/invoices">Live demo</a>
+      </span>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var el = document.getElementById('demoBody');
+
+    var lines = [
+      { t: '<span class="demo-prompt">$</span> npx cairn build ./examples/demo-app', d: 0 },
+      { t: '<span class="demo-dim">scanning app/ … 2 routes, 3 interactive elements</span>', d: 500 },
+      { t: '<span class="demo-ok">✓</span> L1 scan — deterministic, 41ms', d: 950 },
+      { t: '<span class="demo-ok">✓</span> L2 reachability — 1 dead file, 0 conflicts', d: 1350 },
+      { t: '<span class="demo-ok">✓</span> L3 describe — 2 pages, cache 0 hit / 2 miss', d: 1800 },
+      { t: '<span class="demo-dim">wrote ui-manifest.json</span>', d: 2150 },
+    ];
+
+    function typeLine(container, html, cb) {
+      var span = document.createElement('div');
+      span.className = 'demo-line';
+      span.innerHTML = html;
+      container.appendChild(span);
+      requestAnimationFrame(function () { span.classList.add('in'); });
+      if (cb) setTimeout(cb, 90);
+    }
+
+    function runDemo() {
+      el.innerHTML = '';
+      if (reduced) {
+        lines.forEach(function (l) { typeLine(el, l.t); });
+        showChat();
+        return;
+      }
+      lines.forEach(function (l) {
+        setTimeout(function () { typeLine(el, l.t); }, l.d);
+      });
+      setTimeout(showChat, 2650);
+    }
+
+    function showChat() {
+      var chat = document.createElement('div');
+      chat.className = 'demo-chat';
+      chat.innerHTML =
+        '<div class="demo-q">? "where do I create a new invoice"</div>' +
+        '<div class="demo-a"><span class="demo-accent">highlight</span> → <code style="font-family: var(--font-mono);">create-invoice</code></div>';
+      el.appendChild(chat);
+      requestAnimationFrame(function () { chat.classList.add('in'); });
+    }
+
+    var started = false;
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !started) {
+          started = true;
+          runDemo();
+        }
+      });
+    }, { threshold: 0.4 });
+    io.observe(document.getElementById('demo'));
+  })();
+</script>
+</body>
+</html>
