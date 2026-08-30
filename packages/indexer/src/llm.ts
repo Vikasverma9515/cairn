@@ -71,7 +71,12 @@ const DESCRIBE_TOOL = {
             confidence: { type: "number" as const, minimum: 0, maximum: 1 },
           },
           required: ["id", "does", "confidence"],
-          additionalProperties: false,
+          // Not `false`: this is the L3 describe pass, not the runtime verb
+          // contract — nothing security-sensitive depends on rejecting extra
+          // fields here, and Groq's strict mode enforces additionalProperties
+          // hard enough that a model adding a harmless field (e.g. echoing
+          // "tag") crashes the whole build. Anthropic strict mode is lenient
+          // about this; Groq isn't — found live via a real `cairn build --provider groq`.
         },
       },
     },

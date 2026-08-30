@@ -84,6 +84,14 @@ cairn diff <old-manifest.json> <new-manifest.json>   # what changed between two 
 cairn docs <dir>                          # reads <dir>/ui-manifest.json, writes CAIRN_DOCS.md
 ```
 
+## Data & persistence
+
+| Data | Where it lives |
+|---|---|
+| `ui-manifest.json` | A file on disk, checked into your build (not a database) — it's a build artifact, versioned by commit, meant to be diffable (`cairn diff`) and shippable as a static asset. The demo app's `/api/copilot` route re-reads it on every request, so a `cairn build` while the dev server is running takes effect on the next question — no restart needed. |
+| Failure-dashboard misses | `@cairn/sdk/dashboard`'s in-memory `createMissesStore()` is the default (fine for a single instance, gone on restart) — but for anything that needs to survive restarts/redeploys, use `createSqliteMissesStore` from `@cairn/sdk/dashboard-sqlite`, which implements the exact same `MissesStore` interface against a real SQLite file. The demo app uses the SQLite version. |
+| The demo app's own data (invoices) | SQLite, `examples/demo-app/data/cairn-demo.db` (gitignored, created on first run) — a real example of how you'd persist your own app's data alongside Cairn, not a toy in-memory array. |
+
 ## Repo layout
 
 ```

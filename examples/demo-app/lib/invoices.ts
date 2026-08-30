@@ -1,5 +1,7 @@
-// In-memory demo store — module-level singleton, resets on server restart.
-// Good enough to prove the archive flow end-to-end; a real app would hit a database.
+// Persisted in SQLite (lib/db.ts) — survives restarts and hot reloads.
+// Same exported function signatures as before, so nothing that calls these
+// (InvoiceList, ArchiveInvoiceButton, the API routes) needs to change.
+import { db } from "./db";
 
 export interface Invoice {
   id: string;
@@ -8,24 +10,33 @@ export interface Invoice {
   status: "Paid" | "Overdue" | "Archived";
 }
 
-const invoices: Invoice[] = [
-  { id: "inv-1", client: "Acme Co.", amount: "$1,200.00", status: "Paid" },
-  { id: "inv-2", client: "Globex Inc.", amount: "$450.00", status: "Overdue" },
-];
+seedIfEmpty();
 
 export function listInvoices(): Invoice[] {
-  return invoices;
+  return db.prepare("SELECT id, client, amount, status FROM invoices ORDER BY rowid ASC").all() as Invoice[];
 }
 
 export function createInvoice(): Invoice {
   const invoice: Invoice = { id: `inv-${Date.now()}`, client: "New Client", amount: "$0.00", status: "Overdue" };
-  invoices.push(invoice);
+  db.prepare("INSERT INTO invoices (id, client, amount, status) VALUES (?, ?, ?, ?)").run(
+    invoice.id,
+    invoice.client,
+    invoice.amount,
+    invoice.status,
+  );
   return invoice;
 }
 
 export function archiveInvoice(id: string): Invoice | null {
-  const invoice = invoices.find((i) => i.id === id);
-  if (!invoice) return null;
-  invoice.status = "Archived";
-  return invoice;
+  const result = db.prepare("UPDATE invoices SET status = 'Archived' WHERE id = ?").run(id);
+  if (result.changes === 0) return null;
+  return db.prepare("SELECT id, client, amount, status FROM invoices WHERE id = ?").get(id) as Invoice;
+}
+
+function seedIfEmpty(): void {
+  const { count } = db.prepare("SELECT COUNT(*) as count FROM invoices").get() as { count: number };
+  if (count > 0) return;
+  const insert = db.prepare("INSERT INTO invoices (id, client, amount, status) VALUES (?, ?, ?, ?)");
+  insert.run("inv-1", "Acme Co.", "$1,200.00", "Paid");
+  insert.run("inv-2", "Globex Inc.", "$450.00", "Overdue");
 }

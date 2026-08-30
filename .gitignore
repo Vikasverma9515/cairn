@@ -9,3 +9,4 @@ CAIRN_DOCS.md
 .next
 .DS_Store
 *.tsbuildinfo
+examples/demo-app/data/
