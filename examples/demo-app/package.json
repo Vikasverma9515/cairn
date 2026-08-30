@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "realtime": "cairn-realtime --port 3010",
+    "realtime": "bash -c 'set -a; [ -f .env ] && . .env; set +a; cairn-realtime --port 3010'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
