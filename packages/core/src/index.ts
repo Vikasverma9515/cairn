@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-export const VERBS = ["explain", "highlight", "open", "navigate", "do"] as const;
+export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour"] as const;
 export type Verb = (typeof VERBS)[number];
 
 // ---------------------------------------------------------------------------
@@ -94,8 +94,24 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       text: z.string().optional(),
     })
     .strict(),
+  z
+    .object({
+      verb: z.literal("tour"),
+      /**
+       * A guided walkthrough: each step is spoken/shown in order, highlighting
+       * its `target` (if any) while that step's text is delivered — for a
+       * question whose answer genuinely covers several elements, instead of
+       * one wall of text with nothing to look at.
+       */
+      steps: z
+        .array(z.object({ text: z.string().min(1), target: z.string().optional() }).strict())
+        .min(2)
+        .max(6),
+    })
+    .strict(),
 ]);
 export type VerbResponse = z.infer<typeof VerbResponseSchema>;
+export type TourStep = Extract<VerbResponse, { verb: "tour" }>["steps"][number];
 
 // The request context the runtime SDK sends to the customer's /api/copilot
 // route, and that route forwards (trimmed) to the LLM.

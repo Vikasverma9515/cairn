@@ -5,7 +5,7 @@
 // explain — never guess, never wrong-click"). The server (`server.ts`)
 // enforces the same schema independently — never trust the client alone.
 
-import { VerbResponseSchema, type VerbResponse } from "@cairn/core";
+import { VerbResponseSchema, type TourStep, type VerbResponse } from "@cairn/core";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 
 export interface VerbExecutorOptions {
@@ -13,6 +13,12 @@ export interface VerbExecutorOptions {
   onNavigate?: (route: string) => void;
   onDo?: (action: string, target?: string) => void;
   onMiss?: (context: MissContext) => void;
+  /**
+   * A multi-step guided walkthrough (2-6 steps). Highlighting/timing/speech
+   * is NOT done here — this just hands the raw steps to the caller, which
+   * owns the UI (progress display) and, for voice, the TTS sequencing.
+   */
+  onTour?: (steps: TourStep[]) => void;
   /** Action ids the customer has actually wired up. "do" is rejected for anything else. */
   registeredActions?: string[];
 }
@@ -63,5 +69,16 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       if (verb.text) options.onExplain(verb.text);
       return;
     }
+
+    case "tour":
+      if (options.onTour) {
+        options.onTour(verb.steps);
+      } else {
+        // Caller doesn't support tours (e.g. an older host app) — degrade
+        // to reading the steps out as one explanation rather than dropping
+        // the reply silently.
+        options.onExplain(verb.steps.map((s) => s.text).join(" "));
+      }
+      return;
   }
 }

@@ -7,6 +7,7 @@ function makeOptions() {
     onNavigate: vi.fn(),
     onDo: vi.fn(),
     onMiss: vi.fn(),
+    onTour: vi.fn(),
   };
 }
 
@@ -67,6 +68,27 @@ describe("executeVerbResponse", () => {
     expect(opts.onDo).not.toHaveBeenCalled();
     expect(opts.onNavigate).not.toHaveBeenCalled();
     expect(opts.onExplain).toHaveBeenCalledTimes(1);
+  });
+
+  it("tour: forwards the raw steps to onTour, doesn't execute them itself", () => {
+    const opts = makeOptions();
+    const steps = [
+      { text: "This is the invoice table.", target: "invoice-table" },
+      { text: "Use this to create a new one.", target: "create-invoice" },
+    ];
+    executeVerbResponse({ verb: "tour", steps }, "/invoices", opts);
+    expect(opts.onTour).toHaveBeenCalledWith(steps);
+    expect(opts.onExplain).not.toHaveBeenCalled();
+  });
+
+  it("tour: degrades to a single explain when the caller doesn't support tours", () => {
+    const opts = makeOptions();
+    const steps = [
+      { text: "This is the invoice table." },
+      { text: "Use this to create a new one." },
+    ];
+    executeVerbResponse({ verb: "tour", steps }, "/invoices", { ...opts, onTour: undefined });
+    expect(opts.onExplain).toHaveBeenCalledWith("This is the invoice table. Use this to create a new one.");
   });
 
   it("degrades malformed / non-object payloads to explain without throwing", () => {

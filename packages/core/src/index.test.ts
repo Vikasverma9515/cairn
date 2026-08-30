@@ -40,6 +40,23 @@ describe("safeParseVerbResponse", () => {
     expect(parsed).toEqual({ verb: "do", action: "archiveInvoice", target: "inv-2" });
   });
 
+  it("accepts a tour with 2-6 steps, each with optional target", () => {
+    const parsed = safeParseVerbResponse({
+      verb: "tour",
+      steps: [
+        { text: "This is the invoice table." },
+        { text: "Use this button to create a new one.", target: "create-invoice" },
+      ],
+    });
+    expect(parsed).not.toBeNull();
+  });
+
+  it("rejects a tour with fewer than 2 steps or more than 6", () => {
+    expect(safeParseVerbResponse({ verb: "tour", steps: [{ text: "only one" }] })).toBeNull();
+    const sevenSteps = Array.from({ length: 7 }, (_, i) => ({ text: `step ${i}` }));
+    expect(safeParseVerbResponse({ verb: "tour", steps: sevenSteps })).toBeNull();
+  });
+
   it("rejects a verb outside the fixed enum — the prompt-injection defense", () => {
     expect(safeParseVerbResponse({ verb: "deleteAll", action: "deleteAll" })).toBeNull();
     expect(safeParseVerbResponse({ verb: "eval", code: "process.exit()" })).toBeNull();

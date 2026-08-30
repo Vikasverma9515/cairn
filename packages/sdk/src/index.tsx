@@ -14,8 +14,9 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
+import type { TourStep } from "@cairn/core";
 import { collectVisible } from "./context-collector";
-import { logMiss, type MissContext } from "./element-ladder";
+import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
 
 export interface CopilotProps {
@@ -70,6 +71,11 @@ export function Copilot({
   const [caption, setCaption] = useState("");
   const [rtMicMuted, setRtMicMuted] = useState(false);
   const [rtSpeakerMuted, setRtSpeakerMuted] = useState(false);
+  // Set while a "tour" verb's steps are being narrated/highlighted one at a
+  // time — drives the step-progress caption and blocks the input/mic so a
+  // typed or spoken question can't interrupt mid-walkthrough.
+  const [tourStep, setTourStep] = useState<{ index: number; total: number } | null>(null);
+  const tourGenerationRef = useRef(0); // bumped to cancel an in-progress tour (e.g. widget closed) without extra flags
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -109,7 +115,8 @@ export function Copilot({
   const asking = status === "asking";
   const recording = status === "recording";
   const realtimeActive = status.startsWith("rt-");
-  const busy = asking || status === "rt-thinking";
+  const touring = tourStep !== null;
+  const busy = asking || status === "rt-thinking" || touring;
 
   function setRtStatus(next: Status) {
     rtStateRef.current = next;
@@ -136,8 +143,58 @@ export function Copilot({
       onNavigate: (route) => router.push(route),
       onMiss: reportMiss,
       onDo,
+      onTour: (steps) => void runTour(steps),
       registeredActions,
     });
+  }
+
+  /**
+   * Walks a "tour" verb's steps one at a time: highlight this step's
+   * target (if any), speak/show its text, wait for that to finish, then
+   * move on — this is what makes a multi-part answer feel like someone
+   * actually showing you around instead of one paragraph naming several
+   * buttons at once with nothing highlighted.
+   *
+   * Always narrates via speakEndpoint (plain request/response TTS), even
+   * during a live realtime session — a tour is a distinct guided
+   * walkthrough, not a conversational turn, so it doesn't need the
+   * streaming relay's turn-taking machinery. If the widget is mid
+   * realtime call, the mic is held off (mirrors "rt-speaking") for the
+   * tour's duration so it can't pick up the tour's own narration.
+   */
+  async function runTour(steps: TourStep[]) {
+    const myGeneration = ++tourGenerationRef.current;
+    const wasRealtimeListening = realtimeActive;
+    if (wasRealtimeListening) setRtStatus("rt-speaking");
+    setAnswer(null);
+
+    for (let i = 0; i < steps.length; i++) {
+      if (tourGenerationRef.current !== myGeneration) return; // superseded — e.g. widget closed or a new question came in
+      const step = steps[i];
+      setTourStep({ index: i, total: steps.length });
+      setCaption(`Step ${i + 1} of ${steps.length}`);
+      setAnswer(step.text);
+
+      if (step.target) {
+        const el = findElement(step.target);
+        if (el) highlightElement(el);
+        else reportMiss({ attempted: step.target, route: pathname });
+      }
+
+      if (speakEndpoint) {
+        await speakAndWait(step.text);
+      } else {
+        // No TTS configured — pace by an estimate of reading time instead
+        // of racing through every step instantly.
+        await new Promise((resolve) => setTimeout(resolve, Math.max(1200, step.text.length * 45)));
+      }
+      if (tourGenerationRef.current !== myGeneration) return;
+    }
+
+    if (tourGenerationRef.current !== myGeneration) return;
+    setTourStep(null);
+    setCaption("");
+    if (wasRealtimeListening && realtimeActive) setRtStatus("rt-listening");
   }
 
   // ---------------------------------------------------------------------
@@ -169,7 +226,7 @@ export function Copilot({
    * together) can never be heard overlapping. Used by both the typed/mic
    * path and the realtime path.
    */
-  function playResponseAudio(blob: Blob) {
+  function playResponseAudio(blob: Blob): Promise<void> {
     if (activeAudioRef.current) {
       activeAudioRef.current.pause();
       activeAudioRef.current.currentTime = 0;
@@ -177,12 +234,15 @@ export function Copilot({
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     activeAudioRef.current = audio;
-    const clear = () => {
-      URL.revokeObjectURL(url);
-      if (activeAudioRef.current === audio) activeAudioRef.current = null;
-    };
-    audio.onended = clear;
-    audio.play().catch(clear);
+    return new Promise((resolve) => {
+      const clear = () => {
+        URL.revokeObjectURL(url);
+        if (activeAudioRef.current === audio) activeAudioRef.current = null;
+        resolve();
+      };
+      audio.onended = clear;
+      audio.play().catch(clear);
+    });
   }
 
   async function speak(text: string) {
@@ -194,9 +254,27 @@ export function Copilot({
         body: JSON.stringify({ text }),
       });
       if (!res.ok) return;
-      playResponseAudio(await res.blob());
+      void playResponseAudio(await res.blob());
     } catch {
       // Best-effort — never let speech playback break the widget.
+    }
+  }
+
+  /** Like speak(), but resolves once playback actually finishes — used by
+   * runTour() so each step's highlight stays up for exactly as long as its
+   * narration takes, instead of racing ahead to the next step. */
+  async function speakAndWait(text: string): Promise<void> {
+    if (!speakEndpoint || !text.trim()) return;
+    try {
+      const res = await fetch(speakEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) return;
+      await playResponseAudio(await res.blob());
+    } catch {
+      // Best-effort — never let a synthesis failure hang the tour forever.
     }
   }
 
@@ -434,6 +512,8 @@ export function Copilot({
     setRtSpeakerMuted(false);
     setCaption("");
     setRtStatus("idle");
+    tourGenerationRef.current++; // cancel an in-progress tour rather than leaving it stuck waiting to resume rt-listening
+    setTourStep(null);
   }
 
   function toggleRtMic() {
@@ -526,7 +606,7 @@ export function Copilot({
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="What do you need help with?"
                   aria-label={`Ask ${persona} a question`}
-                  disabled={recording}
+                  disabled={recording || touring}
                   autoFocus
                 />
                 {realtimeUrl && micSupported && (
@@ -546,6 +626,7 @@ export function Copilot({
                     className={recording ? "cairn-icon-btn cairn-icon-btn-recording" : "cairn-icon-btn"}
                     aria-label={recording ? "Stop recording" : "Ask by voice"}
                     onClick={() => (recording ? stopRecording() : void startRecording())}
+                    disabled={touring}
                   >
                     {recording ? <Square size={16} /> : <Mic size={16} />}
                   </button>
