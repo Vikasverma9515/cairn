@@ -34,6 +34,11 @@ export async function POST(request: Request) {
     // (GROQ_API_KEYS in .env) — set CAIRN_RUNTIME_PROVIDER=anthropic to switch.
     provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
     registeredActions: ["archiveInvoice"],
+    // "act" lets it run the registered action above. "guide" or "explain"
+    // would restrict it to moving the user around / just talking, even
+    // though archiveInvoice stays registered — the two checks are independent.
+    capability: "act",
+    persona: "Cairn",
   });
 
   const body = await request.json().catch(() => null);

@@ -25,6 +25,7 @@ export function CopilotWithActions() {
       transcribeEndpoint="/api/copilot/transcribe"
       speakEndpoint="/api/copilot/speak"
       realtimeUrl="ws://localhost:3010"
+      persona="Cairn"
     />
   );
 }

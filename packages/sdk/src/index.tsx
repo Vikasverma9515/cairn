@@ -45,6 +45,8 @@ export interface CopilotProps {
    * answer spoken back — all without you touching the keyboard.
    */
   realtimeUrl?: string;
+  /** Display name for the agent, shown in the widget's header and button labels. Defaults to "Cairn". */
+  persona?: string;
 }
 
 type Status = "idle" | "asking" | "recording" | "rt-connecting" | "rt-listening" | "rt-thinking" | "rt-speaking";
@@ -57,6 +59,7 @@ export function Copilot({
   transcribeEndpoint,
   speakEndpoint,
   realtimeUrl,
+  persona = "Cairn",
 }: CopilotProps) {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
@@ -366,11 +369,16 @@ export function Copilot({
   return (
     <>
       <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: COPILOT_STYLES }} />
-      <button className="cairn-fab" aria-label={open ? "Close Cairn help" : "Open Cairn help"} onClick={() => setOpen((v) => !v)}>
+      <button
+        className={status === "rt-speaking" ? "cairn-fab cairn-fab-speaking" : "cairn-fab"}
+        aria-label={open ? `Close ${persona} help` : `Open ${persona} help`}
+        onClick={() => setOpen((v) => !v)}
+      >
         {open ? <X size={22} /> : <CairnMark />}
       </button>
       {open && (
-        <div className="cairn-panel" role="dialog" aria-label="Cairn help panel">
+        <div className="cairn-panel" role="dialog" aria-label={`${persona} help panel`}>
+          <div className="cairn-panel-title">{persona}</div>
           {(caption || (realtimeActive && statusLabel[status])) && (
             <div className="cairn-caption">
               {realtimeActive && <span className="cairn-caption-status">{statusLabel[status]}</span>}
@@ -385,7 +393,9 @@ export function Copilot({
               <div className="cairn-rt-controls">
                 <button
                   type="button"
-                  className="cairn-icon-btn"
+                  className={
+                    status === "rt-speaking" ? "cairn-icon-btn cairn-icon-btn-speaking" : "cairn-icon-btn"
+                  }
                   aria-label={rtMicMuted ? "Unmute microphone" : "Mute microphone"}
                   onClick={toggleRtMic}
                 >
@@ -393,7 +403,9 @@ export function Copilot({
                 </button>
                 <button
                   type="button"
-                  className="cairn-icon-btn"
+                  className={
+                    status === "rt-speaking" ? "cairn-icon-btn cairn-icon-btn-speaking" : "cairn-icon-btn"
+                  }
                   aria-label={rtSpeakerMuted ? "Unmute speaker" : "Mute speaker"}
                   onClick={toggleRtSpeaker}
                 >
@@ -417,7 +429,7 @@ export function Copilot({
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="What do you need help with?"
-                  aria-label="Ask Cairn a question"
+                  aria-label={`Ask ${persona} a question`}
                   disabled={recording}
                   autoFocus
                 />
@@ -513,6 +525,10 @@ const COPILOT_STYLES = `
   0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45); }
   70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
 }
+@keyframes cairn-pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45); }
+  70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+}
 @keyframes cairn-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -550,6 +566,18 @@ const COPILOT_STYLES = `
 }
 .cairn-fab:hover {
   transform: translateY(-1px);
+}
+.cairn-fab-speaking {
+  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    0 0 0 4px rgba(34, 197, 94, 0.22);
+  animation: cairn-pulse 1.2s ease-out infinite;
+}
+.cairn-panel-title {
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  color: #0b0d12;
+  margin-bottom: 8px;
 }
 .cairn-panel {
   position: fixed;
@@ -613,6 +641,12 @@ const COPILOT_STYLES = `
   border-color: #fca5a5;
   color: #b91c1c;
   animation: cairn-pulse 1.4s ease-out infinite;
+}
+.cairn-icon-btn-speaking {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #15803d;
+  animation: cairn-pulse-green 1.2s ease-out infinite;
 }
 .cairn-icon-btn-end {
   background: #fee2e2;

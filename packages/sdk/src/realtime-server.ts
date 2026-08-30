@@ -17,7 +17,7 @@
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Manifest, VerbResponse } from "@cairn/core";
-import { buildSystemPrompt, createVerbLLM, resolveVerb, type CreateCopilotHandlerOptions } from "./server";
+import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
 const DEEPGRAM_SPEAK_URL = "https://api.deepgram.com/v1/speak";
@@ -42,14 +42,18 @@ type ServerMessage =
 
 export function createRealtimeServer(options: CreateRealtimeServerOptions): http.Server {
   const registeredActions = options.registeredActions ?? [];
+  const capability = options.capability ?? "act";
   const llm = createVerbLLM(options);
   // "text" is optional on highlight/open/navigate/do in the base prompt —
   // fine for the typed/HTTP path, which always has a visible answer area,
   // but silence reads as broken in a live voice conversation (the client
-  // still recovers correctly either way, via turn_complete below).
+  // still recovers correctly either way, via turn_complete below). The
+  // instruction asks for a confirmation grounded in what was actually
+  // done, not filler — generic phrasing here is what made replies feel
+  // "unrelated" to the question that was just asked.
   const systemPrompt =
-    buildSystemPrompt(options.manifest, registeredActions) +
-    `\n\nYou are in a live voice conversation right now — the user is speaking out loud and may not be looking at the screen. Always include a short spoken "text" in your response, even for highlight/open/navigate/do (e.g. "Here it is" or "Taking you to Invoices now"), so they hear a confirmation instead of silence.`;
+    buildSystemPrompt(options.manifest, registeredActions, options.persona) +
+    `\n\nYou are in a live voice conversation right now — the user is speaking out loud and may not be looking at the screen. For highlight/open/navigate/do, include a short spoken "text" that names the specific thing you're pointing at or the specific place you're sending them (e.g. "Highlighting the New Invoice button" or "Taking you to Invoices"), not a generic filler phrase — so they hear a confirmation that's actually about their question.`;
   const sttModel = options.sttModel ?? process.env.DEEPGRAM_MODEL ?? DEFAULT_STT_MODEL;
   const ttsVoice = options.ttsVoice ?? process.env.DEEPGRAM_VOICE ?? DEFAULT_TTS_VOICE;
   const deepgramApiKey = options.deepgramApiKey;
@@ -61,7 +65,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, systemPrompt, registeredActions }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, systemPrompt, registeredActions, capability }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -80,6 +84,7 @@ interface ConnectionDeps {
   llm: ReturnType<typeof createVerbLLM>;
   systemPrompt: string;
   registeredActions: string[];
+  capability: CapabilityTier;
 }
 
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
@@ -160,7 +165,7 @@ async function handleDeepgramMessage(
   safeSend(client, { type: "final", text: transcript });
 
   const { route, visible } = getContext();
-  const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.registeredActions, {
+  const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.registeredActions, deps.capability, {
     route,
     question: transcript,
     visible,

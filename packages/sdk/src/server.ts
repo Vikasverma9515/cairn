@@ -16,6 +16,22 @@ import { KeyRotator } from "./key-rotator";
 
 const VERB_TOOL_NAME = "respond_with_verb";
 
+/**
+ * What the agent is allowed to do, independent of which specific "do"
+ * actions are registered:
+ * - explain: only explain/highlight — can talk and point, never moves the user or clicks anything.
+ * - guide: adds open/navigate — can move the user around the app, still never triggers a real action.
+ * - act: everything, including "do" (still gated per-action by `registeredActions`).
+ * Defaults to "act" so existing deployments that only set `registeredActions` keep working unchanged.
+ */
+export type CapabilityTier = "explain" | "guide" | "act";
+
+const TIER_ALLOWED_VERBS: Record<CapabilityTier, ReadonlySet<string>> = {
+  explain: new Set(["explain", "highlight"]),
+  guide: new Set(["explain", "highlight", "open", "navigate"]),
+  act: new Set(VERBS),
+};
+
 export interface CreateCopilotHandlerOptions {
   provider?: "anthropic" | "groq";
   /** Single API key. For groq, prefer `apiKeys` to round-robin; falls back to GROQ_API_KEYS env. */
@@ -24,6 +40,10 @@ export interface CreateCopilotHandlerOptions {
   model?: string;
   /** Action ids this deployment actually supports. "do" is refused for anything else. */
   registeredActions?: string[];
+  /** What the agent is allowed to do at all. Defaults to "act". See `CapabilityTier`. */
+  capability?: CapabilityTier;
+  /** Display name / identity for the agent, woven into its system prompt and shown in the widget. Defaults to "Cairn". */
+  persona?: string;
 }
 
 export interface CopilotHandlerResult {
@@ -53,25 +73,27 @@ export interface VerbLLM {
 
 export function createCopilotHandler(manifest: Manifest, options: CreateCopilotHandlerOptions = {}): CopilotHandler {
   const registeredActions = options.registeredActions ?? [];
+  const capability = options.capability ?? "act";
   const llm = createVerbLLM(options);
-  return createCopilotHandlerWithLLM(manifest, llm, { registeredActions });
+  return createCopilotHandlerWithLLM(manifest, llm, { registeredActions, capability, persona: options.persona });
 }
 
 /** Same as `createCopilotHandler`, but with the LLM injected — used by tests to fake it. */
 export function createCopilotHandlerWithLLM(
   manifest: Manifest,
   llm: VerbLLM,
-  options: { registeredActions?: string[] } = {},
+  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string } = {},
 ): CopilotHandler {
   const registeredActions = options.registeredActions ?? [];
-  const systemPrompt = buildSystemPrompt(manifest, registeredActions);
+  const capability = options.capability ?? "act";
+  const systemPrompt = buildSystemPrompt(manifest, registeredActions, options.persona);
 
   return async function handleCopilotRequest(body: unknown): Promise<CopilotHandlerResult> {
     const parsedRequest = CopilotRequestSchema.safeParse(body);
     if (!parsedRequest.success) {
       return { status: 400, body: { error: "invalid request body" } };
     }
-    const verb = await resolveVerb(llm, systemPrompt, registeredActions, parsedRequest.data);
+    const verb = await resolveVerb(llm, systemPrompt, registeredActions, capability, parsedRequest.data);
     return { status: 200, body: verb };
   };
 }
@@ -86,6 +108,7 @@ export async function resolveVerb(
   llm: VerbLLM,
   systemPrompt: string,
   registeredActions: string[],
+  capability: CapabilityTier,
   input: { route: string; question: string; visible: string[] },
 ): Promise<VerbResponse> {
   let candidate: unknown;
@@ -103,6 +126,14 @@ export async function resolveVerb(
   const parsedVerb = VerbResponseSchema.safeParse(candidate);
   if (!parsedVerb.success) {
     return { verb: "explain", text: "I'm not sure how to help with that." };
+  }
+
+  // Capability tier is checked independently of, and before, the
+  // per-action registeredActions allowlist below — a deployment on the
+  // "explain" or "guide" tier refuses navigate/do even if the action id
+  // itself would otherwise be registered.
+  if (!TIER_ALLOWED_VERBS[capability].has(parsedVerb.data.verb)) {
+    return { verb: "explain", text: "I can only explain and point things out here — I can't do that." };
   }
 
   if (parsedVerb.data.verb === "do" && !registeredActions.includes(parsedVerb.data.action)) {
@@ -256,7 +287,7 @@ function buildVerbToolSchema(registeredActions: string[]): Record<string, unknow
   };
 }
 
-export function buildSystemPrompt(manifest: Manifest, registeredActions: string[]): string {
+export function buildSystemPrompt(manifest: Manifest, registeredActions: string[], persona = "Cairn"): string {
   const pageSummaries = manifest.pages
     .map((p) => {
       const elements = p.elements.map((e) => `${e.id} (${e.does})`).join("; ") || "none";
@@ -264,10 +295,10 @@ export function buildSystemPrompt(manifest: Manifest, registeredActions: string[
     })
     .join("\n");
 
-  return `You help users of this web app by answering what a page or button does, and
-by pointing them at the right element. You know about this app ONLY through
-the manifest below — never invent a page, button, route, or action id that
-isn't listed there.
+  return `You are ${persona}, an in-app assistant. You help users of this web app by
+answering what a page or button does, and by pointing them at the right
+element. You know about this app ONLY through the manifest below — never
+invent a page, button, route, or action id that isn't listed there.
 
 Always call ${VERB_TOOL_NAME} exactly once with one of these verbs:
 - explain: put your answer in "text". Use this whenever you're not certain a

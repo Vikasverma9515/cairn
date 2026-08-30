@@ -115,6 +115,56 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(result.status).toBe(200);
     expect((result.body as { verb: string }).verb).toBe("explain");
   });
+
+  it("capability 'explain' refuses navigate even though nothing else blocks it", async () => {
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "navigate", route: "/invoices" }), {
+      capability: "explain",
+    });
+    const result = await handler({ route: "/", question: "take me to invoices", visible: [] });
+    expect(result.status).toBe(200);
+    expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("capability 'guide' allows navigate but still refuses do even if the action is registered", async () => {
+    const navigateHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "navigate", route: "/invoices" }),
+      { capability: "guide" },
+    );
+    const navigateResult = await navigateHandler({ route: "/", question: "take me to invoices", visible: [] });
+    expect(navigateResult.body).toEqual({ verb: "navigate", route: "/invoices" });
+
+    const doHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "archiveInvoice", target: "inv-2" }),
+      { capability: "guide", registeredActions: ["archiveInvoice"] },
+    );
+    const doResult = await doHandler({ route: "/invoices", question: "archive it", visible: [] });
+    expect((doResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("capability defaults to 'act' — a registered do-verb passes through with no capability set", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "archiveInvoice", target: "inv-2" }),
+      { registeredActions: ["archiveInvoice"] },
+    );
+    const result = await handler({ route: "/invoices", question: "archive it", visible: [] });
+    expect(result.body).toEqual({ verb: "do", action: "archiveInvoice", target: "inv-2" });
+  });
+
+  it("persona name is woven into the system prompt sent to the model", async () => {
+    let capturedSystemPrompt = "";
+    const capturingLLM: VerbLLM = {
+      respond: async (systemPrompt) => {
+        capturedSystemPrompt = systemPrompt;
+        return { verb: "explain", text: "hi" };
+      },
+    };
+    const handler = createCopilotHandlerWithLLM(manifest, capturingLLM, { persona: "Aria" });
+    await handler({ route: "/invoices", question: "who are you?", visible: [] });
+    expect(capturedSystemPrompt).toContain("You are Aria");
+  });
 });
 
 describe("AnthropicVerbLLM", () => {

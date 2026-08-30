@@ -6,6 +6,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { ManifestSchema } from "@cairn/core";
 import { createRealtimeServer } from "./realtime-server";
+import type { CapabilityTier } from "./server";
+
+function parseCapability(raw: string | undefined): CapabilityTier {
+  if (raw === "explain" || raw === "guide" || raw === "act") return raw;
+  return "act";
+}
 
 function parsePortFlag(argv: string[]): number | undefined {
   const idx = argv.indexOf("--port");
@@ -44,8 +50,10 @@ function main(): void {
     .filter(Boolean);
 
   const port = parsePortFlag(process.argv.slice(2)) ?? Number(process.env.CAIRN_REALTIME_PORT ?? 3010);
+  const capability = parseCapability(process.env.CAIRN_CAPABILITY);
+  const persona = process.env.CAIRN_PERSONA || undefined;
 
-  const server = createRealtimeServer({ manifest, provider, deepgramApiKey, registeredActions });
+  const server = createRealtimeServer({ manifest, provider, deepgramApiKey, registeredActions, capability, persona });
   server.listen(port, () => {
     console.error(`cairn-realtime: listening on ws://localhost:${port} (provider: ${provider})`);
   });
