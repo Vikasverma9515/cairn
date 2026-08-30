@@ -23,18 +23,33 @@ instead of exact pins. Framework scope stays Next.js-only here — this
 phase is packaging hygiene, not new capability. (Not yet actually published
 to the npm registry — that's a deliberate separate step.)
 
-## Phase 1 — framework-agnostic widget (in progress)
+## Phase 1 — framework-agnostic widget (MVP shipped, voice parity pending)
 
-The widget's non-React logic (state machine, fetch/WebSocket calls, tours,
-barge-in, history) lives in a plain JS core
-(`packages/sdk/src/widget-core.ts`), wrapped as a Web Component
-(`<cairn-widget>`, Shadow DOM for style isolation) that works via a plain
-`<script>` tag on *any* page — Vue, Angular, Svelte, static HTML, no build
-step required. `<Copilot/>` becomes a thin React wrapper around the same
-component, so nothing changes for existing Next.js consumers. The backend
-(`createCopilotHandler`/`createRealtimeServer`) already needed no
-framework — this phase just documents that clearly (Express/Fastify
-example alongside the Next.js one).
+`<cairn-widget>` (`packages/sdk/src/web-component.ts`) is a real, working
+Web Component — Shadow DOM for style isolation, self-registers on load,
+usable via one `<script>` tag on *any* page. **Live-verified**: a genuinely
+static HTML file with zero React, zero build step
+(`examples/demo-app/public/cairn-widget-test.html`, served as a plain
+static asset — no JSX, nothing compiled it) round-tripped a real question
+through `/api/copilot` to a real LLM and got a correct spoken+displayed
+answer back, exactly the way `<Copilot/>` does in the Next.js apps.
+
+Covers: typed questions, explain/highlight/navigate/do/tour execution,
+spoken answers (`speak-endpoint`), push-to-talk mic (`transcribe-endpoint`),
+persona. The backend (`createCopilotHandler`/`createRealtimeServer`)
+already needed no framework — nothing to build there, just needs an
+Express/Fastify doc example alongside the existing Next.js one.
+
+**Deliberately deferred, not yet done:** live realtime voice conversation
+(`realtimeUrl`, streaming TTS, barge-in) only exists in the React widget
+today. Re-implementing and re-verifying mic PCM streaming + gapless audio
+scheduling + barge-in a second time, in one pass, without being able to
+re-run the full live-mic verification, was a real risk not worth taking
+blind — `<Copilot/>` (React) stays the fully-featured implementation until
+that's built and verified on its own. The two are **separate
+implementations** right now, not one core with two thin wrappers as
+originally sketched — unifying them is follow-up work once the vanilla
+path has realtime voice too, not before.
 
 ## Phase 2 — runtime-crawl analyzer (not started)
 

@@ -7,5 +7,5 @@
     "declaration": false,
     "outDir": "dist"
   },
-  "exclude": ["node_modules", "src/**/*.test.ts", "src/**/*.test.tsx"]
+  "exclude": ["node_modules", "src/**/*.test.ts", "src/**/*.test.tsx", "src/web-component.ts"]
 }

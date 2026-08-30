@@ -22,7 +22,8 @@
     "./realtime-server": "./src/realtime-server.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
+    "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json && npm run build:widget",
+    "build:widget": "esbuild src/web-component.ts --bundle --minify --format=iife --outfile=dist/cairn-widget.js",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -41,6 +42,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/react": "^18.3.3",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.21.5",
     "typescript": "^5.5.4",
     "vitest": "^2.1.9"
   }

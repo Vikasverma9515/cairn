@@ -96,6 +96,43 @@ Mark anything you want addressed by a stable id, regardless of copy changes:
 up automatically (heuristic — see LATER.md), so `data-ai` is for precision,
 not a requirement.
 
+## Installing the widget outside React
+
+`<Copilot/>` (above) is the React entry point. Everything else — Vue,
+Angular, Svelte, a plain static HTML page, anything that produces a DOM —
+uses the same widget as a Web Component instead, via
+`packages/sdk/dist/cairn-widget.js` (built by `npm run build -w @cairn/sdk`,
+self-contained, no dependencies to install):
+
+```html
+<script src="/cairn-widget.js"></script>
+<cairn-widget
+  endpoint="/api/copilot"
+  speak-endpoint="/api/copilot/speak"
+  transcribe-endpoint="/api/copilot/transcribe"
+  persona="Cairn"
+  registered-actions="archiveInvoice"
+></cairn-widget>
+
+<script>
+  document.querySelector("cairn-widget").addEventListener("cairn-do", (e) => {
+    const { action, target } = e.detail; // same as <Copilot/>'s onDo prop
+  });
+</script>
+```
+
+The backend side (`createCopilotHandler`/`createRealtimeServer` from
+`@cairn/sdk/server`) is plain Node — nothing above requires Next.js on the
+server either, an Express/Fastify route works the same way the Next.js
+route above does.
+
+Live-verified working end-to-end from a genuinely static HTML file with
+zero React and zero build step:
+`examples/demo-app/public/cairn-widget-test.html`.
+
+Not yet in the Web Component version: live realtime voice conversation
+(`realtimeUrl`) — see [ROADMAP.md](./ROADMAP.md) Phase 1.
+
 ## Voice & conversation
 
 Beyond typed questions, `<Copilot/>` can hold a real spoken conversation —
@@ -162,8 +199,10 @@ cairn docs <dir>                          # reads <dir>/ui-manifest.json, writes
 packages/
   core/      @cairn/core    — manifest + verb schemas (zod), shared by indexer and sdk
   indexer/   @cairn/indexer — the `cairn` CLI: L1 scan, L2 reachability, L3 describe, diff, docs
-  sdk/       @cairn/sdk     — <Copilot/>, verb executor, element ladder, server handler,
-                               failure dashboard (./dashboard), voice transcription (./transcribe-server)
+  sdk/       @cairn/sdk     — <Copilot/> (React) and <cairn-widget> (Web Component, any
+                               framework — src/web-component.ts), verb executor, element
+                               ladder, server handler, realtime voice relay, failure
+                               dashboard (./dashboard), voice transcription (./transcribe-server)
 examples/demo-app/          — Next.js app exercising all of the above, including a real
                                archive-invoice write action and a live failure dashboard
 fixtures/                   — small fixture project the indexer's unit tests scan

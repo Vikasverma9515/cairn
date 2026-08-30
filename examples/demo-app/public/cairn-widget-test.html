@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Plain HTML, no React — Cairn Web Component test</title>
+</head>
+<body>
+  <h1>Plain static HTML page</h1>
+  <p>No React. No bundler processed this file. No JSX anywhere on this page.</p>
+  <p>The widget bottom-right is a real Custom Element loaded via a single &lt;script&gt; tag.</p>
+
+  <script src="/cairn-widget.js"></script>
+  <cairn-widget
+    endpoint="/api/copilot"
+    speak-endpoint="/api/copilot/speak"
+    persona="Cairn"
+    registered-actions="archiveInvoice"
+  ></cairn-widget>
+</body>
+</html>
