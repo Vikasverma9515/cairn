@@ -29,13 +29,26 @@ produce an unregistered action — see `packages/sdk/src/server.test.ts`.
 
 ```bash
 npm install
-cp .env.example .env   # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
+npm run build -w @cairn/indexer   # compiles the cairn CLI (packages/indexer/dist) — needed once
+cp .env.example .env              # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
 
 npx cairn build ./examples/demo-app             # writes examples/demo-app/ui-manifest.json
 npx cairn build ./examples/demo-app --provider groq   # or use Groq instead
 
 npm run dev -w demo-app                         # or: cd examples/demo-app && npm run dev
+# (npm run dev also auto-builds the manifest via predev if it's missing)
 ```
+
+`@cairn/core` and `@cairn/sdk` ship raw TypeScript (bundlers like Next.js
+transpile them fine via `transpilePackages`), but the `cairn` CLI runs
+standalone via plain `node`, outside any bundler — it needs the one-time
+compile above. This is also what makes it installable into a real, separate
+project: point a consumer's `package.json` at
+`"@cairn/indexer": "file:../cairn/packages/indexer"` (etc.) the way
+`~/Desktop/cairn-dashboard` does in this session's testing — an actual
+second Next.js app, outside this repo, installed as a real dependency
+rather than another workspace example, used to prove Cairn works as an
+installed product and not just inside its own monorepo.
 
 ```jsx
 // app/layout.tsx

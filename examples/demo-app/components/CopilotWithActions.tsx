@@ -23,6 +23,7 @@ export function CopilotWithActions() {
       onDo={handleDo}
       reportMissesEndpoint="/api/copilot/misses"
       transcribeEndpoint="/api/copilot/transcribe"
+      speakEndpoint="/api/copilot/speak"
     />
   );
 }

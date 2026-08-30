@@ -26,12 +26,21 @@ export interface CopilotProps {
    */
   reportMissesEndpoint?: string;
   /**
-   * If set, shows a mic button that records a short clip and POSTs it here
-   * for transcription (e.g. a route backed by Deepgram — see
-   * `@cairn/sdk/server`'s `createTranscribeHandler`). Unset by default, and
-   * hidden automatically if the browser has no microphone access.
+   * If set, shows a mic button that records audio and POSTs it here for
+   * transcription (e.g. a route backed by Deepgram — see
+   * `@cairn/sdk/transcribe-server`'s `createTranscribeHandler`). While
+   * recording, the growing clip is re-sent every ~2s so the question field
+   * fills in progressively instead of staying silent until you stop — not
+   * true word-by-word streaming, but not a dead mic either. Unset by
+   * default, and hidden automatically if the browser has no microphone access.
    */
   transcribeEndpoint?: string;
+  /**
+   * If set, the widget speaks each explain/highlight answer aloud (e.g. a
+   * route backed by Deepgram TTS — see `@cairn/sdk/speak-server`'s
+   * `createSpeakHandler`). Unset by default — text-only unless you opt in.
+   */
+  speakEndpoint?: string;
 }
 
 export function Copilot({
@@ -40,6 +49,7 @@ export function Copilot({
   onDo,
   reportMissesEndpoint,
   transcribeEndpoint,
+  speakEndpoint,
 }: CopilotProps) {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
@@ -50,6 +60,7 @@ export function Copilot({
   const [recording, setRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const transcribeInFlightRef = useRef(false);
 
   const micSupported =
     typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
@@ -78,7 +89,10 @@ export function Copilot({
       });
       const data = await res.json().catch(() => null);
       executeVerbResponse(data, pathname, {
-        onExplain: setAnswer,
+        onExplain: (text) => {
+          setAnswer(text);
+          void speak(text);
+        },
         onNavigate: (route) => router.push(route),
         onMiss: reportMiss,
         onDo,
@@ -91,6 +105,25 @@ export function Copilot({
     }
   }
 
+  async function speak(text: string) {
+    if (!speakEndpoint || !text.trim()) return;
+    try {
+      const res = await fetch(speakEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      audio.play().catch(() => URL.revokeObjectURL(url)); // autoplay can be blocked — fail silently
+    } catch {
+      // Best-effort — never let speech playback break the widget.
+    }
+  }
+
   async function startRecording() {
     if (!transcribeEndpoint || !micSupported) return;
     try {
@@ -98,14 +131,20 @@ export function Copilot({
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+        if (e.data.size === 0) return;
+        audioChunksRef.current.push(e.data);
+        // Not true streaming — re-transcribes the growing clip on each
+        // timeslice tick so the field visibly fills in while recording,
+        // rather than staying silent until stop() fires the final call
+        // below (which always runs after this, per the MediaRecorder spec —
+        // stop() flushes one last dataavailable before firing "stop").
+        void transcribeSoFar(recorder.mimeType || "audio/webm", true);
       };
       recorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
-        void transcribe(recorder.mimeType || "audio/webm");
+        void transcribeSoFar(recorder.mimeType || "audio/webm", false);
       };
       mediaRecorderRef.current = recorder;
-      recorder.start();
+      recorder.start(2000); // fires ondataavailable every 2s while recording
       setRecording(true);
     } catch {
       setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
@@ -113,13 +152,17 @@ export function Copilot({
   }
 
   function stopRecording() {
+    const stream = mediaRecorderRef.current?.stream;
     mediaRecorderRef.current?.stop();
+    stream?.getTracks().forEach((track) => track.stop());
     setRecording(false);
   }
 
-  async function transcribe(mimeType: string) {
+  async function transcribeSoFar(mimeType: string, isProgressive: boolean) {
     if (!transcribeEndpoint) return;
-    setLoading(true);
+    if (isProgressive && transcribeInFlightRef.current) return; // skip an overlapping tick — the next one will catch up
+    transcribeInFlightRef.current = true;
+    if (!isProgressive) setLoading(true);
     try {
       const blob = new Blob(audioChunksRef.current, { type: mimeType });
       const res = await fetch(transcribeEndpoint, {
@@ -130,13 +173,14 @@ export function Copilot({
       const data = await res.json().catch(() => null);
       if (data?.text) {
         setQuestion(data.text);
-      } else {
+      } else if (!isProgressive) {
         setAnswer("Couldn't make that out — try typing instead.");
       }
     } catch {
-      setAnswer("Couldn't reach the transcription service.");
+      if (!isProgressive) setAnswer("Couldn't reach the transcription service.");
     } finally {
-      setLoading(false);
+      transcribeInFlightRef.current = false;
+      if (!isProgressive) setLoading(false);
     }
   }
 
@@ -178,6 +222,7 @@ export function Copilot({
               </button>
             </div>
           </form>
+          {recording && <div className="cairn-recording-hint">● Listening — transcribing live…</div>}
           {loading && <div className="cairn-answer cairn-loading">Thinking…</div>}
           {!loading && answer && <div className="cairn-answer">{answer}</div>}
         </div>
@@ -272,6 +317,11 @@ const COPILOT_STYLES = `
 .cairn-send:disabled {
   background: #d1d5db;
   cursor: not-allowed;
+}
+.cairn-recording-hint {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: #dc2626;
 }
 .cairn-answer {
   margin-top: 12px;

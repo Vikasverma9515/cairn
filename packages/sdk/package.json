@@ -7,7 +7,8 @@
     "./server": "./src/server.ts",
     "./dashboard": "./src/dashboard.ts",
     "./dashboard-sqlite": "./src/dashboard-sqlite.ts",
-    "./transcribe-server": "./src/transcribe-server.ts"
+    "./transcribe-server": "./src/transcribe-server.ts",
+    "./speak-server": "./src/speak-server.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

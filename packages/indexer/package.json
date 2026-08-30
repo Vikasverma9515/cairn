@@ -3,10 +3,11 @@
   "version": "0.0.1",
   "type": "module",
   "bin": {
-    "cairn": "./bin/cairn.mjs"
+    "cairn": "./dist/cli.js"
   },
   "main": "src/index.ts",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -16,7 +17,6 @@
     "ts-morph": "^23.0.0"
   },
   "devDependencies": {
-    "tsx": "^4.19.1",
     "typescript": "^5.5.4",
     "vitest": "^2.1.9"
   }
