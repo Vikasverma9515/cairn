@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
+import { Compass, FileText, TriangleAlert } from "lucide-react";
 import { CopilotWithActions } from "../components/CopilotWithActions";
 import "./globals.css";
 
@@ -10,7 +12,18 @@ export const metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>
+      <body className="min-h-screen bg-[#f8f9fb] text-gray-900 antialiased">
+        <nav className="flex items-center gap-6 border-b border-gray-200 bg-white px-8 py-4">
+          <Link href="/" className="flex items-center gap-2 font-medium text-gray-800 hover:text-gray-950">
+            <Compass size={16} /> Home
+          </Link>
+          <Link href="/invoices" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
+            <FileText size={16} /> Invoices
+          </Link>
+          <Link href="/dashboard" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
+            <TriangleAlert size={16} /> Failures
+          </Link>
+        </nav>
         {children}
         <CopilotWithActions />
       </body>

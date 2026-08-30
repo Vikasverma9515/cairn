@@ -1,5 +1,7 @@
 "use client";
 
+import { Plus } from "lucide-react";
+
 export function CreateInvoiceButton() {
   async function handleCreate() {
     await fetch("/api/invoices", {
@@ -11,8 +13,12 @@ export function CreateInvoiceButton() {
   }
 
   return (
-    <button data-ai="create-invoice" onClick={handleCreate}>
-      New Invoice
+    <button
+      data-ai="create-invoice"
+      onClick={handleCreate}
+      className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+    >
+      <Plus size={16} /> New Invoice
     </button>
   );
 }

@@ -3,11 +3,15 @@ import { InvoiceList } from "../../components/InvoiceList";
 
 export default function InvoicesPage() {
   return (
-    <main style={{ padding: 40, maxWidth: 640 }}>
-      <h1>Invoices</h1>
-      <p>Every invoice you&apos;ve sent, with its status and amount.</p>
-      <CreateInvoiceButton />
-      <InvoiceList />
+    <main className="mx-auto max-w-2xl px-8 py-16">
+      <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Invoices</h1>
+      <p className="mt-3 text-gray-600">Every invoice you&apos;ve sent, with its status and amount.</p>
+      <div className="mt-6">
+        <CreateInvoiceButton />
+      </div>
+      <div className="mt-6">
+        <InvoiceList />
+      </div>
     </main>
   );
 }

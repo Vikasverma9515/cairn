@@ -53,27 +53,7 @@ export interface VerbLLM {
 
 export function createCopilotHandler(manifest: Manifest, options: CreateCopilotHandlerOptions = {}): CopilotHandler {
   const registeredActions = options.registeredActions ?? [];
-  const toolSchema = buildVerbToolSchema(registeredActions);
-  const provider = options.provider ?? "anthropic";
-
-  let llm: VerbLLM;
-  if (provider === "groq") {
-    const rotator = options.apiKeys
-      ? new KeyRotator(options.apiKeys)
-      : options.apiKey
-        ? new KeyRotator([options.apiKey])
-        : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
-    if (!rotator) {
-      throw new Error("createCopilotHandler: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
-    }
-    const model = options.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
-    llm = new GroqVerbLLM(rotator, model, toolSchema);
-  } else {
-    const client = new Anthropic({ apiKey: options.apiKey });
-    const model = options.model ?? process.env.CAIRN_RUNTIME_MODEL ?? "claude-opus-5";
-    llm = new AnthropicVerbLLM(client, model, toolSchema);
-  }
-
+  const llm = createVerbLLM(options);
   return createCopilotHandlerWithLLM(manifest, llm, { registeredActions });
 }
 
@@ -91,31 +71,69 @@ export function createCopilotHandlerWithLLM(
     if (!parsedRequest.success) {
       return { status: 400, body: { error: "invalid request body" } };
     }
-    const { route, question, visible } = parsedRequest.data;
-
-    let candidate: unknown;
-    try {
-      candidate = await llm.respond(systemPrompt, JSON.stringify({ route, question, visible }));
-    } catch (err) {
-      console.error("[cairn] copilot LLM call failed:", err);
-      return { status: 200, body: { verb: "explain", text: "Something went wrong on my end — try again in a moment." } };
-    }
-
-    // Core invariant: reject anything that doesn't match the fixed verb
-    // schema exactly, regardless of what the model was asked to do — this is
-    // what stops a prompt-injection payload in `question` from ever reaching
-    // the UI as an unvetted verb.
-    const parsedVerb = VerbResponseSchema.safeParse(candidate);
-    if (!parsedVerb.success) {
-      return { status: 200, body: { verb: "explain", text: "I'm not sure how to help with that." } };
-    }
-
-    if (parsedVerb.data.verb === "do" && !registeredActions.includes(parsedVerb.data.action)) {
-      return { status: 200, body: { verb: "explain", text: "That action isn't available here." } };
-    }
-
-    return { status: 200, body: parsedVerb.data };
+    const verb = await resolveVerb(llm, systemPrompt, registeredActions, parsedRequest.data);
+    return { status: 200, body: verb };
   };
+}
+
+/**
+ * The safety-critical core, shared by the HTTP handler above and the
+ * realtime relay (realtime-server.ts) — one place validates every LLM
+ * response against the fixed verb schema and the registered-actions
+ * allowlist, regardless of which transport the question arrived on.
+ */
+export async function resolveVerb(
+  llm: VerbLLM,
+  systemPrompt: string,
+  registeredActions: string[],
+  input: { route: string; question: string; visible: string[] },
+): Promise<VerbResponse> {
+  let candidate: unknown;
+  try {
+    candidate = await llm.respond(systemPrompt, JSON.stringify(input));
+  } catch (err) {
+    console.error("[cairn] copilot LLM call failed:", err);
+    return { verb: "explain", text: "Something went wrong on my end — try again in a moment." };
+  }
+
+  // Core invariant: reject anything that doesn't match the fixed verb
+  // schema exactly, regardless of what the model was asked to do — this is
+  // what stops a prompt-injection payload in `question` from ever reaching
+  // the UI as an unvetted verb.
+  const parsedVerb = VerbResponseSchema.safeParse(candidate);
+  if (!parsedVerb.success) {
+    return { verb: "explain", text: "I'm not sure how to help with that." };
+  }
+
+  if (parsedVerb.data.verb === "do" && !registeredActions.includes(parsedVerb.data.action)) {
+    return { verb: "explain", text: "That action isn't available here." };
+  }
+
+  return parsedVerb.data;
+}
+
+/** Builds the provider-appropriate VerbLLM from the same options createCopilotHandler accepts — reused by the realtime relay. */
+export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
+  const registeredActions = options.registeredActions ?? [];
+  const toolSchema = buildVerbToolSchema(registeredActions);
+  const provider = options.provider ?? "anthropic";
+
+  if (provider === "groq") {
+    const rotator = options.apiKeys
+      ? new KeyRotator(options.apiKeys)
+      : options.apiKey
+        ? new KeyRotator([options.apiKey])
+        : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
+    if (!rotator) {
+      throw new Error("createVerbLLM: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
+    }
+    const model = options.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
+    return new GroqVerbLLM(rotator, model, toolSchema);
+  }
+
+  const client = new Anthropic({ apiKey: options.apiKey });
+  const model = options.model ?? process.env.CAIRN_RUNTIME_MODEL ?? "claude-opus-5";
+  return new AnthropicVerbLLM(client, model, toolSchema);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +256,7 @@ function buildVerbToolSchema(registeredActions: string[]): Record<string, unknow
   };
 }
 
-function buildSystemPrompt(manifest: Manifest, registeredActions: string[]): string {
+export function buildSystemPrompt(manifest: Manifest, registeredActions: string[]): string {
   const pageSummaries = manifest.pages
     .map((p) => {
       const elements = p.elements.map((e) => `${e.id} (${e.does})`).join("; ") || "none";

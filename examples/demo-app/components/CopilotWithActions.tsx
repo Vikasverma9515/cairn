@@ -24,6 +24,7 @@ export function CopilotWithActions() {
       reportMissesEndpoint="/api/copilot/misses"
       transcribeEndpoint="/api/copilot/transcribe"
       speakEndpoint="/api/copilot/speak"
+      realtimeUrl="ws://localhost:3010"
     />
   );
 }

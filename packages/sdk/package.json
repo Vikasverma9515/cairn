@@ -2,15 +2,20 @@
   "name": "@cairn/sdk",
   "version": "0.0.1",
   "type": "module",
+  "bin": {
+    "cairn-realtime": "./dist/realtime-cli.js"
+  },
   "exports": {
     ".": "./src/index.tsx",
     "./server": "./src/server.ts",
     "./dashboard": "./src/dashboard.ts",
     "./dashboard-sqlite": "./src/dashboard-sqlite.ts",
     "./transcribe-server": "./src/transcribe-server.ts",
-    "./speak-server": "./src/speak-server.ts"
+    "./speak-server": "./src/speak-server.ts",
+    "./realtime-server": "./src/realtime-server.ts"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -21,11 +26,14 @@
     "@anthropic-ai/sdk": "^0.32.1",
     "@cairn/core": "0.0.1",
     "better-sqlite3": "^13.0.3",
-    "groq-sdk": "^1.6.0"
+    "groq-sdk": "^1.6.0",
+    "lucide-react": "^1.37.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/react": "^18.3.3",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.5.4",
     "vitest": "^2.1.9"
   }

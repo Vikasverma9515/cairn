@@ -1,17 +1,25 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import {
+  Loader2,
+  Mic,
+  MicOff,
+  PhoneCall,
+  PhoneOff,
+  Send,
+  Square,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
 import { collectVisible } from "./context-collector";
 import { logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
 
 export interface CopilotProps {
-  /**
-   * Reserved for a future client-side manifest fetch (e.g. inline citations
-   * in the panel). Not required today — the server handler owns the
-   * manifest and is the only thing that talks to the LLM.
-   */
+  /** Reserved for a future client-side manifest fetch. Not required — the server handler owns the manifest. */
   manifest?: string;
   /** Where the widget posts questions. Defaults to "/api/copilot". */
   endpoint?: string;
@@ -19,29 +27,27 @@ export interface CopilotProps {
   registeredActions?: string[];
   /** Called when the model returns a valid "do" verb for a registered action. */
   onDo?: (action: string, target?: string) => void;
-  /**
-   * If set, a lookup miss is also POSTed here (in addition to the default
-   * localStorage log) so failures can be aggregated server-side. Unset by
-   * default — misses stay client-only unless you opt in.
-   */
+  /** If set, a lookup miss is also POSTed here so failures can be aggregated server-side. */
   reportMissesEndpoint?: string;
   /**
    * If set, shows a mic button that records audio and POSTs it here for
-   * transcription (e.g. a route backed by Deepgram — see
-   * `@cairn/sdk/transcribe-server`'s `createTranscribeHandler`). While
-   * recording, the growing clip is re-sent every ~2s so the question field
-   * fills in progressively instead of staying silent until you stop — not
-   * true word-by-word streaming, but not a dead mic either. Unset by
-   * default, and hidden automatically if the browser has no microphone access.
+   * transcription — re-sent every ~2s while recording so the field fills in
+   * progressively. Hidden automatically if the browser has no mic access.
    */
   transcribeEndpoint?: string;
-  /**
-   * If set, the widget speaks each explain/highlight answer aloud (e.g. a
-   * route backed by Deepgram TTS — see `@cairn/sdk/speak-server`'s
-   * `createSpeakHandler`). Unset by default — text-only unless you opt in.
-   */
+  /** If set, the widget speaks each explain/highlight answer aloud (Deepgram TTS via `@cairn/sdk/speak-server`). */
   speakEndpoint?: string;
+  /**
+   * If set, shows a "start conversation" control that opens a live
+   * WebSocket to a `@cairn/sdk/realtime-server` relay (run via
+   * `cairn-realtime`) for a real-time voice conversation: streaming
+   * transcription, verbs executed as soon as they're resolved, and the
+   * answer spoken back — all without you touching the keyboard.
+   */
+  realtimeUrl?: string;
 }
+
+type Status = "idle" | "asking" | "recording" | "rt-connecting" | "rt-listening" | "rt-thinking" | "rt-speaking";
 
 export function Copilot({
   endpoint = "/api/copilot",
@@ -50,20 +56,44 @@ export function Copilot({
   reportMissesEndpoint,
   transcribeEndpoint,
   speakEndpoint,
+  realtimeUrl,
 }: CopilotProps) {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [recording, setRecording] = useState(false);
+  const [status, setStatus] = useState<Status>("idle");
+  const [caption, setCaption] = useState("");
+  const [rtMicMuted, setRtMicMuted] = useState(false);
+  const [rtSpeakerMuted, setRtSpeakerMuted] = useState(false);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const transcribeInFlightRef = useRef(false);
+  const rtSocketRef = useRef<WebSocket | null>(null);
+  const rtCleanupRef = useRef<(() => void) | null>(null);
+  const rtStateRef = useRef<Status>("idle"); // mirrors `status` for use inside audio callbacks (avoids stale closures)
+  const rtMicMutedRef = useRef(false);
+  const rtSpeakerMutedRef = useRef(false);
 
-  const micSupported =
-    typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
+  // Starts false on both server and client's first render (avoids a
+  // hydration mismatch — `navigator` doesn't exist during SSR), then
+  // updated after mount, once we're only ever running in the browser.
+  const [micSupported, setMicSupported] = useState(false);
+  useEffect(() => {
+    setMicSupported(!!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined");
+  }, []);
+
+  const asking = status === "asking";
+  const recording = status === "recording";
+  const realtimeActive = status.startsWith("rt-");
+  const busy = asking || status === "rt-thinking";
+
+  function setRtStatus(next: Status) {
+    rtStateRef.current = next;
+    setStatus(next);
+  }
 
   function reportMiss(context: MissContext) {
     logMiss(context);
@@ -72,14 +102,29 @@ export function Copilot({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(context),
-      }).catch(() => {
-        // Best-effort — never let dashboard reporting break the widget.
-      });
+      }).catch(() => {});
     }
   }
 
+  function handleVerb(raw: unknown) {
+    executeVerbResponse(raw, pathname, {
+      onExplain: (text) => {
+        setAnswer(text);
+        if (!realtimeActive) void speak(text); // realtime mode gets audio over the socket instead
+      },
+      onNavigate: (route) => router.push(route),
+      onMiss: reportMiss,
+      onDo,
+      registeredActions,
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Typed / push-to-talk question flow
+  // ---------------------------------------------------------------------
+
   async function ask(q: string) {
-    setLoading(true);
+    setStatus("asking");
     setAnswer(null);
     try {
       const res = await fetch(endpoint, {
@@ -88,20 +133,11 @@ export function Copilot({
         body: JSON.stringify({ route: pathname, question: q, visible: collectVisible() }),
       });
       const data = await res.json().catch(() => null);
-      executeVerbResponse(data, pathname, {
-        onExplain: (text) => {
-          setAnswer(text);
-          void speak(text);
-        },
-        onNavigate: (route) => router.push(route),
-        onMiss: reportMiss,
-        onDo,
-        registeredActions,
-      });
+      handleVerb(data);
     } catch {
       setAnswer("Something went wrong reaching the help service — try again in a moment.");
     } finally {
-      setLoading(false);
+      setStatus("idle");
     }
   }
 
@@ -118,34 +154,30 @@ export function Copilot({
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.onended = () => URL.revokeObjectURL(url);
-      audio.play().catch(() => URL.revokeObjectURL(url)); // autoplay can be blocked — fail silently
+      audio.play().catch(() => URL.revokeObjectURL(url));
     } catch {
       // Best-effort — never let speech playback break the widget.
     }
   }
 
   async function startRecording() {
-    if (!transcribeEndpoint || !micSupported) return;
+    if (!transcribeEndpoint || !micSupported || realtimeActive) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
+      setCaption("");
       recorder.ondataavailable = (e) => {
         if (e.data.size === 0) return;
         audioChunksRef.current.push(e.data);
-        // Not true streaming — re-transcribes the growing clip on each
-        // timeslice tick so the field visibly fills in while recording,
-        // rather than staying silent until stop() fires the final call
-        // below (which always runs after this, per the MediaRecorder spec —
-        // stop() flushes one last dataavailable before firing "stop").
         void transcribeSoFar(recorder.mimeType || "audio/webm", true);
       };
       recorder.onstop = () => {
         void transcribeSoFar(recorder.mimeType || "audio/webm", false);
       };
       mediaRecorderRef.current = recorder;
-      recorder.start(2000); // fires ondataavailable every 2s while recording
-      setRecording(true);
+      recorder.start(2000);
+      setStatus("recording");
     } catch {
       setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
     }
@@ -155,24 +187,20 @@ export function Copilot({
     const stream = mediaRecorderRef.current?.stream;
     mediaRecorderRef.current?.stop();
     stream?.getTracks().forEach((track) => track.stop());
-    setRecording(false);
+    setStatus("idle");
   }
 
   async function transcribeSoFar(mimeType: string, isProgressive: boolean) {
     if (!transcribeEndpoint) return;
-    if (isProgressive && transcribeInFlightRef.current) return; // skip an overlapping tick — the next one will catch up
+    if (isProgressive && transcribeInFlightRef.current) return;
     transcribeInFlightRef.current = true;
-    if (!isProgressive) setLoading(true);
     try {
       const blob = new Blob(audioChunksRef.current, { type: mimeType });
-      const res = await fetch(transcribeEndpoint, {
-        method: "POST",
-        headers: { "content-type": mimeType },
-        body: blob,
-      });
+      const res = await fetch(transcribeEndpoint, { method: "POST", headers: { "content-type": mimeType }, body: blob });
       const data = await res.json().catch(() => null);
       if (data?.text) {
         setQuestion(data.text);
+        setCaption(data.text);
       } else if (!isProgressive) {
         setAnswer("Couldn't make that out — try typing instead.");
       }
@@ -180,67 +208,296 @@ export function Copilot({
       if (!isProgressive) setAnswer("Couldn't reach the transcription service.");
     } finally {
       transcribeInFlightRef.current = false;
-      if (!isProgressive) setLoading(false);
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Real-time voice conversation
+  // ---------------------------------------------------------------------
+
+  async function startRealtime() {
+    if (!realtimeUrl || !micSupported || realtimeActive) return;
+    setAnswer(null);
+    setCaption("");
+    setRtStatus("rt-connecting");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ws = new WebSocket(realtimeUrl);
+      ws.binaryType = "arraybuffer";
+      rtSocketRef.current = ws;
+
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      // ScriptProcessorNode is deprecated in favor of AudioWorklet, but needs
+      // no separate worklet file to serve — fine for this scope, still
+      // supported everywhere. Routed through a silent gain (not straight to
+      // destination) so the mic input is never audibly looped back.
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      const silence = audioCtx.createGain();
+      silence.gain.value = 0;
+
+      processor.onaudioprocess = (e) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (rtMicMutedRef.current) return;
+        if (rtStateRef.current !== "rt-listening") return; // don't send our own mic while the agent is thinking/speaking
+        const pcm = floatTo16BitPCM(downsampleTo16k(e.inputBuffer.getChannelData(0), audioCtx.sampleRate));
+        ws.send(pcm);
+      };
+      source.connect(processor);
+      processor.connect(silence);
+      silence.connect(audioCtx.destination);
+
+      rtCleanupRef.current = () => {
+        processor.disconnect();
+        source.disconnect();
+        stream.getTracks().forEach((t) => t.stop());
+        void audioCtx.close();
+      };
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "context", route: pathname, visible: collectVisible() }));
+        setRtStatus("rt-listening");
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data !== "string") {
+          if (rtSpeakerMutedRef.current) return;
+          const blob = new Blob([event.data], { type: "audio/mpeg" });
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audio.onended = () => URL.revokeObjectURL(url);
+          audio.play().catch(() => URL.revokeObjectURL(url));
+          return;
+        }
+        const msg = JSON.parse(event.data);
+        if (msg.type === "interim") {
+          setCaption(msg.text);
+        } else if (msg.type === "final") {
+          setCaption(msg.text);
+          setRtStatus("rt-thinking");
+        } else if (msg.type === "verb") {
+          handleVerb(msg.verb);
+        } else if (msg.type === "speaking_start") {
+          setRtStatus("rt-speaking");
+        } else if (msg.type === "speaking_end") {
+          setRtStatus("rt-listening");
+          setCaption("");
+        } else if (msg.type === "error") {
+          setAnswer(msg.message ?? "Something went wrong.");
+        }
+      };
+
+      ws.onerror = () => {
+        setAnswer("Couldn't connect to the realtime voice service.");
+        endRealtime();
+      };
+      ws.onclose = () => {
+        if (rtStateRef.current !== "idle") endRealtime();
+      };
+    } catch {
+      setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
+      setRtStatus("idle");
+    }
+  }
+
+  function endRealtime() {
+    rtSocketRef.current?.close();
+    rtSocketRef.current = null;
+    rtCleanupRef.current?.();
+    rtCleanupRef.current = null;
+    setRtMicMuted(false);
+    setRtSpeakerMuted(false);
+    setCaption("");
+    setRtStatus("idle");
+  }
+
+  function toggleRtMic() {
+    rtMicMutedRef.current = !rtMicMutedRef.current;
+    setRtMicMuted(rtMicMutedRef.current);
+  }
+
+  function toggleRtSpeaker() {
+    rtSpeakerMutedRef.current = !rtSpeakerMutedRef.current;
+    setRtSpeakerMuted(rtSpeakerMutedRef.current);
+  }
+
+  const statusLabel: Record<Status, string> = {
+    idle: "",
+    asking: "Thinking…",
+    recording: "Listening — transcribing live…",
+    "rt-connecting": "Connecting…",
+    "rt-listening": "Listening…",
+    "rt-thinking": "Thinking…",
+    "rt-speaking": "Speaking…",
+  };
+
   return (
     <>
-      <style>{COPILOT_STYLES}</style>
-      <button className="cairn-fab" aria-label="Open Cairn help" onClick={() => setOpen((v) => !v)}>
-        {open ? "×" : "?"}
+      <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: COPILOT_STYLES }} />
+      <button className="cairn-fab" aria-label={open ? "Close Cairn help" : "Open Cairn help"} onClick={() => setOpen((v) => !v)}>
+        {open ? <X size={22} /> : <CairnMark />}
       </button>
       {open && (
         <div className="cairn-panel" role="dialog" aria-label="Cairn help panel">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const trimmed = question.trim();
-              if (trimmed) void ask(trimmed);
-            }}
-          >
-            <div className="cairn-input-row">
-              <input
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="What do you need help with?"
-                aria-label="Ask Cairn a question"
-                autoFocus
-              />
-              {transcribeEndpoint && micSupported && (
+          {(caption || (realtimeActive && statusLabel[status])) && (
+            <div className="cairn-caption">
+              {realtimeActive && <span className="cairn-caption-status">{statusLabel[status]}</span>}
+              {caption && <span>{caption}</span>}
+            </div>
+          )}
+
+          {realtimeActive ? (
+            <div className="cairn-rt-bar">
+              <span className={`cairn-rt-dot cairn-rt-dot-${status}`} />
+              <span className="cairn-rt-label">{statusLabel[status]}</span>
+              <div className="cairn-rt-controls">
                 <button
                   type="button"
-                  className={recording ? "cairn-mic cairn-mic-active" : "cairn-mic"}
-                  aria-label={recording ? "Stop recording" : "Ask by voice"}
-                  onClick={() => (recording ? stopRecording() : void startRecording())}
+                  className="cairn-icon-btn"
+                  aria-label={rtMicMuted ? "Unmute microphone" : "Mute microphone"}
+                  onClick={toggleRtMic}
                 >
-                  {recording ? "■" : "\u{1F3A4}"}
+                  {rtMicMuted ? <MicOff size={16} /> : <Mic size={16} />}
                 </button>
-              )}
-              <button type="submit" className="cairn-send" aria-label="Send" disabled={!question.trim() || loading}>
-                →
-              </button>
+                <button
+                  type="button"
+                  className="cairn-icon-btn"
+                  aria-label={rtSpeakerMuted ? "Unmute speaker" : "Mute speaker"}
+                  onClick={toggleRtSpeaker}
+                >
+                  {rtSpeakerMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                </button>
+                <button type="button" className="cairn-icon-btn cairn-icon-btn-end" aria-label="End conversation" onClick={endRealtime}>
+                  <PhoneOff size={16} />
+                </button>
+              </div>
             </div>
-          </form>
-          {recording && <div className="cairn-recording-hint">● Listening — transcribing live…</div>}
-          {loading && <div className="cairn-answer cairn-loading">Thinking…</div>}
-          {!loading && answer && <div className="cairn-answer">{answer}</div>}
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = question.trim();
+                if (trimmed) void ask(trimmed);
+              }}
+            >
+              <div className="cairn-input-row">
+                <input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="What do you need help with?"
+                  aria-label="Ask Cairn a question"
+                  disabled={recording}
+                  autoFocus
+                />
+                {realtimeUrl && micSupported && (
+                  <button
+                    type="button"
+                    className="cairn-icon-btn"
+                    aria-label="Start realtime conversation"
+                    onClick={() => void startRealtime()}
+                    disabled={busy || recording}
+                  >
+                    <PhoneCall size={16} />
+                  </button>
+                )}
+                {transcribeEndpoint && micSupported && (
+                  <button
+                    type="button"
+                    className={recording ? "cairn-icon-btn cairn-icon-btn-recording" : "cairn-icon-btn"}
+                    aria-label={recording ? "Stop recording" : "Ask by voice"}
+                    onClick={() => (recording ? stopRecording() : void startRecording())}
+                  >
+                    {recording ? <Square size={16} /> : <Mic size={16} />}
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="cairn-send"
+                  aria-label="Send"
+                  disabled={!question.trim() || busy || recording}
+                >
+                  {asking ? <Loader2 size={16} className="cairn-spin" /> : <Send size={16} />}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {!busy && answer && <div className="cairn-answer">{answer}</div>}
         </div>
       )}
     </>
   );
 }
 
+function CairnMark() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="7" y="12.5" width="6" height="2.6" rx="0.5" fill="currentColor" />
+      <rect x="4.5" y="8.5" width="11" height="2.6" rx="0.5" fill="currentColor" opacity="0.75" />
+      <rect x="8.2" y="4.5" width="3.6" height="2.6" rx="0.5" fill="currentColor" opacity="0.5" />
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Audio helpers (real-time PCM16 capture — standard Web Audio API patterns)
+// ---------------------------------------------------------------------------
+
+function downsampleTo16k(input: Float32Array, inputSampleRate: number): Float32Array {
+  const targetRate = 16000;
+  if (inputSampleRate === targetRate) return input;
+  const ratio = inputSampleRate / targetRate;
+  const outLength = Math.round(input.length / ratio);
+  const result = new Float32Array(outLength);
+  let offsetResult = 0;
+  let offsetInput = 0;
+  while (offsetResult < outLength) {
+    const nextOffsetInput = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetInput; i < nextOffsetInput && i < input.length; i++) {
+      accum += input[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetInput = nextOffsetInput;
+  }
+  return result;
+}
+
+function floatTo16BitPCM(input: Float32Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(input.length * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return buffer;
+}
+
 const COPILOT_STYLES = `
 @keyframes cairn-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.55); }
-  50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45); }
+  70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+}
+@keyframes cairn-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes cairn-rt-dot {
+  0%, 100% { opacity: 0.5; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 .cairn-glow {
-  animation: cairn-pulse 0.9s ease-out 2;
+  animation: cairn-pulse 1.1s ease-out 2;
   outline: 2px solid #6366f1;
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+.cairn-spin {
+  animation: cairn-spin 0.8s linear infinite;
 }
 .cairn-fab {
   position: fixed;
@@ -251,12 +508,17 @@ const COPILOT_STYLES = `
   height: 52px;
   border-radius: 999px;
   border: none;
-  background: #111827;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(155deg, #1f2430 0%, #0b0d12 100%);
   color: white;
-  font-size: 20px;
-  line-height: 1;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  transition: transform 0.15s ease;
+}
+.cairn-fab:hover {
+  transform: translateY(-1px);
 }
 .cairn-panel {
   position: fixed;
@@ -264,70 +526,138 @@ const COPILOT_STYLES = `
   bottom: 84px;
   z-index: 2147483000;
   width: 320px;
-  max-height: 420px;
+  max-height: 440px;
   overflow-y: auto;
-  background: white;
-  color: #111827;
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-  padding: 16px;
-  font: 14px/1.4 system-ui, -apple-system, sans-serif;
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  color: #0b0d12;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 20px 60px rgba(15, 15, 25, 0.22), 0 0 0 1px rgba(15, 15, 25, 0.04);
+  padding: 14px;
+  font: 13.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 .cairn-input-row {
   display: flex;
-  gap: 8px;
+  gap: 6px;
+  align-items: center;
 }
 .cairn-input-row input {
   flex: 1;
-}
-.cairn-panel input {
-  width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
+  padding: 9px 12px;
+  border: 1px solid rgba(11, 13, 18, 0.12);
+  border-radius: 10px;
   font: inherit;
+  background: rgba(255, 255, 255, 0.6);
+  color: #0b0d12;
 }
-.cairn-mic {
+.cairn-input-row input:disabled {
+  opacity: 0.55;
+}
+.cairn-input-row input:focus {
+  outline: none;
+  border-color: rgba(99, 102, 241, 0.55);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+.cairn-icon-btn {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  border: 1px solid #d1d5db;
-  background: white;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  border: 1px solid rgba(11, 13, 18, 0.12);
+  background: rgba(255, 255, 255, 0.55);
+  color: #33384a;
   cursor: pointer;
-  font-size: 16px;
 }
-.cairn-mic-active {
+.cairn-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.85);
+}
+.cairn-icon-btn-recording {
   background: #fee2e2;
   border-color: #fca5a5;
+  color: #b91c1c;
+  animation: cairn-pulse 1.4s ease-out infinite;
+}
+.cairn-icon-btn-end {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
 }
 .cairn-send {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
   border: none;
-  background: #111827;
+  background: linear-gradient(155deg, #4f5bd5, #6366f1);
   color: white;
   cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
 }
 .cairn-send:disabled {
-  background: #d1d5db;
+  background: rgba(11, 13, 18, 0.15);
+  color: rgba(11, 13, 18, 0.4);
   cursor: not-allowed;
 }
-.cairn-recording-hint {
-  margin-top: 10px;
+.cairn-caption {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.08);
+  color: #33384a;
   font-size: 12.5px;
-  color: #dc2626;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cairn-caption-status {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #6366f1;
+}
+.cairn-rt-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+}
+.cairn-rt-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #6366f1;
+  animation: cairn-rt-dot 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.cairn-rt-dot-rt-speaking {
+  background: #22c55e;
+}
+.cairn-rt-dot-rt-thinking {
+  background: #f59e0b;
+}
+.cairn-rt-label {
+  flex: 1;
+  font-size: 12.5px;
+  color: #33384a;
+}
+.cairn-rt-controls {
+  display: flex;
+  gap: 6px;
 }
 .cairn-answer {
-  margin-top: 12px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(11, 13, 18, 0.08);
   white-space: pre-wrap;
-}
-.cairn-loading {
-  color: #6b7280;
+  color: #0b0d12;
 }
 `;
