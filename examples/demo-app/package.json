@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "predev": "bash -c 'set -a; [ -f .env ] && . .env; set +a; [ -f ui-manifest.json ] || npx cairn build . --provider groq || true'",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

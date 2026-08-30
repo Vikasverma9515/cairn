@@ -173,6 +173,9 @@ export function Copilot({
                   {recording ? "■" : "\u{1F3A4}"}
                 </button>
               )}
+              <button type="submit" className="cairn-send" aria-label="Send" disabled={!question.trim() || loading}>
+                →
+              </button>
             </div>
           </form>
           {loading && <div className="cairn-answer cairn-loading">Thinking…</div>}
@@ -253,6 +256,22 @@ const COPILOT_STYLES = `
 .cairn-mic-active {
   background: #fee2e2;
   border-color: #fca5a5;
+}
+.cairn-send {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: none;
+  background: #111827;
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.cairn-send:disabled {
+  background: #d1d5db;
+  cursor: not-allowed;
 }
 .cairn-answer {
   margin-top: 12px;
