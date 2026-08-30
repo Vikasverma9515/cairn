@@ -303,7 +303,11 @@ export function Copilot({
           handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
           setRtStatus("rt-speaking");
-        } else if (msg.type === "speaking_end") {
+        } else if (msg.type === "speaking_end" || msg.type === "turn_complete") {
+          // turn_complete covers a verb with nothing spoken (a plain
+          // highlight/navigate/do often has no text) — without it the
+          // widget stayed on "Thinking…" forever, and since the mic only
+          // sends audio while "listening", the conversation was dead.
           setRtStatus("rt-listening");
           setCaption("");
         } else if (msg.type === "error") {

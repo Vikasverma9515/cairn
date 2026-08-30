@@ -37,12 +37,19 @@ type ServerMessage =
   | { type: "verb"; verb: VerbResponse }
   | { type: "speaking_start" }
   | { type: "speaking_end" }
+  | { type: "turn_complete" }
   | { type: "error"; message: string };
 
 export function createRealtimeServer(options: CreateRealtimeServerOptions): http.Server {
   const registeredActions = options.registeredActions ?? [];
   const llm = createVerbLLM(options);
-  const systemPrompt = buildSystemPrompt(options.manifest, registeredActions);
+  // "text" is optional on highlight/open/navigate/do in the base prompt —
+  // fine for the typed/HTTP path, which always has a visible answer area,
+  // but silence reads as broken in a live voice conversation (the client
+  // still recovers correctly either way, via turn_complete below).
+  const systemPrompt =
+    buildSystemPrompt(options.manifest, registeredActions) +
+    `\n\nYou are in a live voice conversation right now — the user is speaking out loud and may not be looking at the screen. Always include a short spoken "text" in your response, even for highlight/open/navigate/do (e.g. "Here it is" or "Taking you to Invoices now"), so they hear a confirmation instead of silence.`;
   const sttModel = options.sttModel ?? process.env.DEEPGRAM_MODEL ?? DEFAULT_STT_MODEL;
   const ttsVoice = options.ttsVoice ?? process.env.DEEPGRAM_VOICE ?? DEFAULT_TTS_VOICE;
   const deepgramApiKey = options.deepgramApiKey;
@@ -160,8 +167,16 @@ async function handleDeepgramMessage(
   });
   safeSend(client, { type: "verb", verb });
 
+  // The client only resumes listening (and only resumes sending mic audio —
+  // see the "listening"-only send guard client-side) once it hears the turn
+  // is over. A verb with no spoken text (highlight/navigate/do often have
+  // none) used to leave it stuck on "thinking" forever, with a dead mic,
+  // since only speaking_end used to signal that. turn_complete covers the
+  // no-speech case explicitly.
   if ("text" in verb && verb.text) {
     await speakAndSend(client, verb.text, deps);
+  } else {
+    safeSend(client, { type: "turn_complete" });
   }
 }
 

@@ -33,7 +33,7 @@ export function findElement(target: string): HTMLElement | null {
   return null;
 }
 
-export function highlightElement(el: HTMLElement, glowMs = 2400): void {
+export function highlightElement(el: HTMLElement, glowMs = 4000): void {
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.add("cairn-glow");
   window.setTimeout(() => el.classList.remove("cairn-glow"), glowMs);
