@@ -82,6 +82,22 @@ export function Copilot({
   const rtStartingRef = useRef(false); // closes the click-to-first-state-update gap so a rapid double-click can't open two sessions
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Streamed TTS playback: each server audio_chunk is raw PCM16, scheduled
+  // as its own AudioBufferSourceNode straight into this graph, gapless,
+  // instead of buffering a whole clip into one <audio> element first — that
+  // buffering was the "agent takes 5-10s to speak" bug (nothing plays until
+  // Deepgram AND the network finish delivering the entire reply).
+  const rtPlaybackCtxRef = useRef<AudioContext | null>(null);
+  const rtPlaybackGainRef = useRef<GainNode | null>(null);
+  const rtNextPlayTimeRef = useRef(0);
+  const rtScheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // True once the server says no more audio_chunks are coming for the
+  // current turn (speaking_end/turn_complete) — listening only resumes once
+  // this AND every scheduled chunk has actually finished playing, not just
+  // finished arriving, so the mic can't start sending while the agent is
+  // still audibly speaking.
+  const rtAudioDoneArrivingRef = useRef(true);
+
   // Starts false on both server and client's first render (avoids a
   // hydration mismatch — `navigator` doesn't exist during SSR), then
   // updated after mount, once we're only ever running in the browser.
@@ -256,6 +272,20 @@ export function Copilot({
       ws.binaryType = "arraybuffer";
       rtSocketRef.current = ws;
 
+      // Separate AudioContext from the mic capture graph below — one for
+      // capture, one for playback, matching how the two are independently
+      // lifecycled (playback keeps scheduling audio after a turn while the
+      // mic graph is simultaneously idle, and vice versa).
+      const playbackCtx = new AudioContext();
+      const playbackGain = playbackCtx.createGain();
+      playbackGain.gain.value = rtSpeakerMutedRef.current ? 0 : 1;
+      playbackGain.connect(playbackCtx.destination);
+      rtPlaybackCtxRef.current = playbackCtx;
+      rtPlaybackGainRef.current = playbackGain;
+      rtNextPlayTimeRef.current = 0;
+      rtScheduledSourcesRef.current = [];
+      rtAudioDoneArrivingRef.current = true;
+
       const audioCtx = new AudioContext();
       const source = audioCtx.createMediaStreamSource(stream);
       // ScriptProcessorNode is deprecated in favor of AudioWorklet, but needs
@@ -282,7 +312,36 @@ export function Copilot({
         source.disconnect();
         stream.getTracks().forEach((t) => t.stop());
         void audioCtx.close();
+        stopScheduledRtAudio();
+        void playbackCtx.close();
+        rtPlaybackCtxRef.current = null;
+        rtPlaybackGainRef.current = null;
       };
+
+      // Only flips back to "listening" (and lets the mic resume sending —
+      // see the listening-only send guard above) once BOTH the server has
+      // said no more audio is coming for this turn AND every chunk already
+      // scheduled has actually finished playing. Doing this from playback
+      // completion rather than from the server's speaking_end alone is what
+      // stops the mic picking up the tail end of the agent's own voice.
+      function maybeResumeListening() {
+        if (!rtAudioDoneArrivingRef.current) return;
+        if (rtScheduledSourcesRef.current.length > 0) return;
+        setRtStatus("rt-listening");
+        setCaption("");
+      }
+
+      function stopScheduledRtAudio() {
+        for (const node of rtScheduledSourcesRef.current) {
+          try {
+            node.stop();
+          } catch {
+            // may have already finished naturally
+          }
+        }
+        rtScheduledSourcesRef.current = [];
+        rtNextPlayTimeRef.current = rtPlaybackCtxRef.current?.currentTime ?? 0;
+      }
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: "context", route: pathname, visible: collectVisible() }));
@@ -291,11 +350,7 @@ export function Copilot({
       };
 
       ws.onmessage = (event) => {
-        if (typeof event.data !== "string") {
-          if (rtSpeakerMutedRef.current) return;
-          playResponseAudio(new Blob([event.data], { type: "audio/mpeg" }));
-          return;
-        }
+        if (typeof event.data !== "string") return; // audio now arrives as base64 inside audio_chunk, not raw binary frames
         const msg = JSON.parse(event.data);
         if (msg.type === "interim") {
           setCaption(msg.text);
@@ -305,14 +360,49 @@ export function Copilot({
         } else if (msg.type === "verb") {
           handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
+          rtAudioDoneArrivingRef.current = false;
           setRtStatus("rt-speaking");
+        } else if (msg.type === "audio_chunk") {
+          const ctx = rtPlaybackCtxRef.current;
+          const gain = rtPlaybackGainRef.current;
+          if (!ctx || !gain) return;
+          void ctx.resume().catch(() => {});
+
+          // Decode base64 linear16 PCM -> Float32 samples in [-1, 1], then
+          // schedule gapless-appended after whatever's already queued
+          // (rtNextPlayTimeRef) — this is what lets playback start on the
+          // first chunk instead of waiting for the whole reply.
+          const bytes = Uint8Array.from(atob(msg.audio), (c) => c.charCodeAt(0));
+          const sampleCount = bytes.length / 2;
+          const float32 = new Float32Array(sampleCount);
+          const view = new DataView(bytes.buffer);
+          for (let i = 0; i < sampleCount; i++) {
+            float32[i] = view.getInt16(i * 2, true) / 32768;
+          }
+          const sampleRate = typeof msg.sampleRate === "number" ? msg.sampleRate : 24000;
+          const buffer = ctx.createBuffer(1, sampleCount, sampleRate);
+          buffer.copyToChannel(float32, 0);
+
+          const bufferSource = ctx.createBufferSource();
+          bufferSource.buffer = buffer;
+          bufferSource.connect(gain);
+
+          const startAt = Math.max(ctx.currentTime, rtNextPlayTimeRef.current);
+          bufferSource.start(startAt);
+          rtNextPlayTimeRef.current = startAt + buffer.duration;
+
+          rtScheduledSourcesRef.current.push(bufferSource);
+          bufferSource.onended = () => {
+            rtScheduledSourcesRef.current = rtScheduledSourcesRef.current.filter((n) => n !== bufferSource);
+            maybeResumeListening();
+          };
         } else if (msg.type === "speaking_end" || msg.type === "turn_complete") {
           // turn_complete covers a verb with nothing spoken (a plain
-          // highlight/navigate/do often has no text) — without it the
-          // widget stayed on "Thinking…" forever, and since the mic only
-          // sends audio while "listening", the conversation was dead.
-          setRtStatus("rt-listening");
-          setCaption("");
+          // highlight/navigate/do often has no text) — no audio_chunk ever
+          // arrives for it, so rtScheduledSourcesRef is already empty and
+          // maybeResumeListening() resumes immediately below.
+          rtAudioDoneArrivingRef.current = true;
+          maybeResumeListening();
         } else if (msg.type === "error") {
           setAnswer(msg.message ?? "Something went wrong.");
         }
@@ -354,6 +444,12 @@ export function Copilot({
   function toggleRtSpeaker() {
     rtSpeakerMutedRef.current = !rtSpeakerMutedRef.current;
     setRtSpeakerMuted(rtSpeakerMutedRef.current);
+    // Zeroing the shared gain node silences output immediately, including
+    // whatever's mid-playback right now, and applies to every future
+    // scheduled chunk automatically — no per-chunk check needed.
+    if (rtPlaybackGainRef.current) {
+      rtPlaybackGainRef.current.gain.value = rtSpeakerMutedRef.current ? 0 : 1;
+    }
   }
 
   const statusLabel: Record<Status, string> = {
