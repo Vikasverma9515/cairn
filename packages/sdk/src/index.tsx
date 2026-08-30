@@ -76,6 +76,8 @@ export function Copilot({
   const rtStateRef = useRef<Status>("idle"); // mirrors `status` for use inside audio callbacks (avoids stale closures)
   const rtMicMutedRef = useRef(false);
   const rtSpeakerMutedRef = useRef(false);
+  const rtStartingRef = useRef(false); // closes the click-to-first-state-update gap so a rapid double-click can't open two sessions
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Starts false on both server and client's first render (avoids a
   // hydration mismatch — `navigator` doesn't exist during SSR), then
@@ -141,6 +143,29 @@ export function Copilot({
     }
   }
 
+  /**
+   * The one place that starts audio playback for a spoken response — stops
+   * whatever's currently playing first, so two responses (e.g. a rapid
+   * double-click on "start conversation", or two utterances resolved close
+   * together) can never be heard overlapping. Used by both the typed/mic
+   * path and the realtime path.
+   */
+  function playResponseAudio(blob: Blob) {
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause();
+      activeAudioRef.current.currentTime = 0;
+    }
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    activeAudioRef.current = audio;
+    const clear = () => {
+      URL.revokeObjectURL(url);
+      if (activeAudioRef.current === audio) activeAudioRef.current = null;
+    };
+    audio.onended = clear;
+    audio.play().catch(clear);
+  }
+
   async function speak(text: string) {
     if (!speakEndpoint || !text.trim()) return;
     try {
@@ -150,11 +175,7 @@ export function Copilot({
         body: JSON.stringify({ text }),
       });
       if (!res.ok) return;
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
-      audio.play().catch(() => URL.revokeObjectURL(url));
+      playResponseAudio(await res.blob());
     } catch {
       // Best-effort — never let speech playback break the widget.
     }
@@ -216,7 +237,12 @@ export function Copilot({
   // ---------------------------------------------------------------------
 
   async function startRealtime() {
-    if (!realtimeUrl || !micSupported || realtimeActive) return;
+    // rtStartingRef closes the gap between click and the first state update
+    // landing — without it a rapid double-click (or two-finger tap) could
+    // race past the `realtimeActive` check twice and open two sessions,
+    // which is exactly what "hearing the agent twice, in parallel" was.
+    if (!realtimeUrl || !micSupported || realtimeActive || rtStartingRef.current) return;
+    rtStartingRef.current = true;
     setAnswer(null);
     setCaption("");
     setRtStatus("rt-connecting");
@@ -258,16 +284,13 @@ export function Copilot({
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: "context", route: pathname, visible: collectVisible() }));
         setRtStatus("rt-listening");
+        rtStartingRef.current = false;
       };
 
       ws.onmessage = (event) => {
         if (typeof event.data !== "string") {
           if (rtSpeakerMutedRef.current) return;
-          const blob = new Blob([event.data], { type: "audio/mpeg" });
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          audio.onended = () => URL.revokeObjectURL(url);
-          audio.play().catch(() => URL.revokeObjectURL(url));
+          playResponseAudio(new Blob([event.data], { type: "audio/mpeg" }));
           return;
         }
         const msg = JSON.parse(event.data);
@@ -298,10 +321,14 @@ export function Copilot({
     } catch {
       setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
       setRtStatus("idle");
+      rtStartingRef.current = false;
     }
   }
 
   function endRealtime() {
+    rtStartingRef.current = false;
+    activeAudioRef.current?.pause();
+    activeAudioRef.current = null;
     rtSocketRef.current?.close();
     rtSocketRef.current = null;
     rtCleanupRef.current?.();
