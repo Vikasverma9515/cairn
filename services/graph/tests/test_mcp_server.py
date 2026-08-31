@@ -159,6 +159,8 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "recall_tool",
         "record_turn_tool",
         "recent_history_tool",
+        "analytics_tool",
+        "customer_overview_tool",
     } <= tool_names
 
 
@@ -260,6 +262,28 @@ def test_memory_tools_round_trip_through_the_real_compiled_server(tmp_path: Path
     history = _call(server, "recent_history_tool", {"customer_id": "acme"})
     assert history["turns"][0]["content"] == "hello"
     assert history["turns"][0]["role"] == "user"
+
+
+def test_analytics_tool_reflects_a_real_gated_action_through_the_compiled_server(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    _call(server, "apply_edit_tool", {"file_path": "a.ts", "old_text": "helper", "new_text": "helper2"})  # blocked -> logged
+
+    result = _call(server, "analytics_tool", {})
+    assert result["summary"]["total_actions"] == 1
+    assert result["summary"]["by_outcome"] == {"needs_approval": 1}
+
+
+def test_customer_overview_tool_lists_a_customer_after_a_remembered_fact_and_action(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    _call(server, "record_turn_tool", {"customer_id": "acme", "role": "user", "content": "hi"})
+
+    result = _call(server, "customer_overview_tool", {})
+    by_id = {c["customer_id"]: c for c in result["customers"]}
+    assert by_id["acme"]["conversation_turn_count"] == 1
 
 
 def test_gated_actions_are_recorded_in_the_audit_log_when_a_conn_is_given(tmp_path: Path):

@@ -440,6 +440,43 @@ crashing). Dogfooded live: loaded the `echo` provider via
 `load_provider`, fed it into `llm_planner`, routed a real request through
 `route_request` end to end.
 
+## Analytics (Month 5, first slice)
+
+`analytics.py` is pillar 7 — "helps the company analyze the customer,
+write the analytics, makes a dashboard to help company know their
+product more." Deliberately the data layer only, not a rendered
+dashboard (a real dashboard UI is a separate frontend concern) — real
+SQL aggregations over data this service already collects (`action_log`
+from `store.py`, `conversation_turns` from `memory.py`), returned as
+plain dicts.
+
+- **`action_summary`** — counts by outcome and by risk tier, optionally
+  windowed by `since_days`. The two numbers a company evaluating this
+  wants first: how much did the agent do, how much needed a human.
+- **`top_tools`** — which tools actually get used, ranked by call count.
+- **`daily_activity`** — one row per day with activity, a real time
+  series (no zero-padding — a dashboard decides how to fill gaps).
+- **`approval_rate`** — fraction of gated decisions that actually
+  proceeded vs. stopped for approval. Returns `None`, not `0.0`, when
+  there's no data yet — a real "unknown" instead of a misleading zero.
+- **`customer_overview`** — the roster a company-facing dashboard starts
+  from: every customer with either an action or a conversation turn,
+  combining `store.py`'s action_log and `memory.py`'s conversation_turns
+  (two separate db connections, since a real deployment might not point
+  both at the same file).
+
+Every function is scoped by an optional `customer_id` — omit for a
+company-wide view, pass one for a single customer's usage, same
+multi-tenant shape as `memory.py`. Wired into the MCP server as
+`analytics_tool` and `customer_overview_tool`.
+
+9 tests (`test_analytics.py`) plus 2 more in `test_mcp_server.py`
+exercising both tools through the real compiled server. Dogfooded live:
+an approved edit, a blocked delete, and a recorded conversation turn
+through the real server — `analytics_tool` correctly reported 2 actions
+(1 applied, 1 needs_approval), a 0.5 approval rate, and per-tool counts;
+`customer_overview_tool` correctly listed the customer.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same

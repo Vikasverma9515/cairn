@@ -46,6 +46,7 @@ from cairn_graph.actions import (
     delete_file,
     run_command,
 )
+from cairn_graph.analytics import action_summary, approval_rate, customer_overview, daily_activity, top_tools
 from cairn_graph.build import build_graph
 from cairn_graph.memory import open_memory_store, recall, recent_history, record_turn, remember
 from cairn_graph.reachability import compute_dead_symbols
@@ -400,6 +401,34 @@ def build_server(
         with _lock:
             turns = recent_history(memory_conn, customer_id, limit)
         return {"turns": [{"role": t.role, "content": t.content, "created_at": t.created_at} for t in turns]}
+
+    @server.tool()
+    def analytics_tool(customer_id: str | None = None, since_days: int | None = None) -> dict[str, Any]:
+        """Usage analytics for a dashboard: action counts by outcome and
+        risk tier, the most-used tools, daily activity for the last 30
+        days, and the approval rate (fraction of gated decisions that
+        actually proceeded). Omit customer_id for a company-wide view."""
+        with _lock:
+            return {
+                "summary": action_summary(conn, customer_id, since_days),
+                "top_tools": top_tools(conn, customer_id),
+                "daily_activity": daily_activity(conn, customer_id),
+                "approval_rate": approval_rate(conn, customer_id),
+            }
+
+    @server.tool()
+    def customer_overview_tool() -> dict[str, Any]:
+        """The customer roster for a company-facing dashboard: every
+        customer who has taken an action or had a conversation turn
+        recorded, with counts of each."""
+        with _lock:
+            overview = customer_overview(conn, memory_conn)
+        return {
+            "customers": [
+                {"customer_id": c.customer_id, "action_count": c.action_count, "conversation_turn_count": c.conversation_turn_count}
+                for c in overview
+            ]
+        }
 
     return server
 
