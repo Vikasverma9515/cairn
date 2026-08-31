@@ -2,55 +2,47 @@
 :host {
   all: initial;
   font: 13.5px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
-  color: rgba(255, 255, 255, 0.92);
+  color: #0b0d12;
 }
 * { box-sizing: border-box; }
 @keyframes cairn-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45); }
-  70% { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
 }
 @keyframes cairn-pulse-green {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
-  70% { box-shadow: 0 0 0 12px rgba(52, 211, 153, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+}
+@keyframes cairn-pulse-indigo {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
 }
 @keyframes cairn-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes cairn-rt-dot {
   0%, 100% { opacity: 0.5; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.15); }
 }
-@keyframes cairn-fab-breathe {
-  0%, 100% { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 22px 2px rgba(99, 102, 241, 0.35), 0 0 40px 8px rgba(139, 92, 246, 0.18); }
-  50% { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 26px 4px rgba(99, 102, 241, 0.5), 0 0 52px 12px rgba(139, 92, 246, 0.28); }
-}
-@keyframes cairn-panel-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.96); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
 @keyframes cairn-bubble-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 @keyframes cairn-word-sweep {
-  0% { opacity: 0.4; text-shadow: none; }
-  35% { opacity: 1; color: #c7d2fe; text-shadow: 0 0 14px rgba(129, 140, 248, 0.6); }
-  100% { opacity: 1; color: inherit; text-shadow: none; }
+  from { opacity: 0.32; }
+  to { opacity: 1; }
 }
 @keyframes cairn-thinking-bounce {
-  0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
-  40% { opacity: 1; transform: translateY(-3px); }
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 0.9; transform: translateY(-3px); }
 }
 .cairn-glow {
-  animation: cairn-pulse 1.1s ease-out 2;
+  animation: cairn-pulse-indigo 1.1s ease-out 2;
   outline: 2px solid #6366f1;
   outline-offset: 3px;
   border-radius: 8px;
-  box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.16), 0 0 24px 4px rgba(139, 92, 246, 0.35);
 }
 .cairn-spin { animation: cairn-spin 0.8s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
+  .cairn-fab, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
     animation: none !important;
     transition: none !important;
   }
@@ -61,122 +53,109 @@
   right: 20px;
   bottom: 20px;
   z-index: 2147483000;
-  width: 54px;
-  height: 54px;
+  width: 52px;
+  height: 52px;
   border-radius: 999px;
   border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(155deg, #2a2f45 0%, #0b0d16 100%);
+  background: #14151b;
   color: white;
   cursor: pointer;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 22px 2px rgba(99, 102, 241, 0.35), 0 0 40px 8px rgba(139, 92, 246, 0.18);
-  animation: cairn-fab-breathe 3.2s ease-in-out infinite;
-  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.cairn-fab:hover { transform: translateY(-2px) scale(1.04); }
+.cairn-fab:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
 .cairn-fab-speaking {
-  box-shadow: 0 8px 24px rgba(52, 211, 153, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 0 5px rgba(52, 211, 153, 0.22);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22), 0 6px 20px rgba(0, 0, 0, 0.25);
   animation: cairn-pulse-green 1.2s ease-out infinite;
 }
 
+/* No shared background/border/shadow on the panel itself \u2014 every piece
+   below (title, bubbles, input, buttons) floats independently on its own
+   minimal glass, directly over the host page, the way a caption track
+   floats over a video rather than sitting in a drawn box. */
 .cairn-panel {
   position: fixed;
   right: 20px;
-  bottom: 86px;
+  bottom: 82px;
   z-index: 2147483000;
-  width: 336px;
+  width: 320px;
   max-height: 460px;
   overflow-y: auto;
   overflow-x: hidden;
-  background: rgba(10, 10, 18, 0.32);
-  backdrop-filter: blur(34px) saturate(160%);
-  -webkit-backdrop-filter: blur(34px) saturate(160%);
-  color: rgba(255, 255, 255, 0.94);
-  border-radius: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
-  padding: 16px;
+  flex-direction: column;
+  gap: 10px;
   display: none;
 }
-.cairn-panel.cairn-open { display: block; animation: cairn-panel-in 0.24s cubic-bezier(0.16, 1, 0.3, 1); }
-.cairn-panel::-webkit-scrollbar { width: 6px; }
-.cairn-panel::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 999px; }
+.cairn-panel.cairn-open { display: flex; }
+.cairn-panel::-webkit-scrollbar { width: 0; }
 
 .cairn-panel-title {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-weight: 650;
-  font-size: 12.5px;
-  letter-spacing: 0.01em;
-  color: rgba(255, 255, 255, 0.94);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
-  margin-bottom: 12px;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0b0d12;
+  text-shadow: 0 0 1px #fff, 0 0 6px rgba(255, 255, 255, 0.9), 0 1px 2px rgba(255, 255, 255, 0.9);
 }
 .cairn-panel-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
-  background: linear-gradient(135deg, #818cf8, #c084fc);
-  box-shadow: 0 0 8px 1px rgba(139, 92, 246, 0.7);
-  animation: cairn-rt-dot 2.4s ease-in-out infinite;
+  background: #6366f1;
 }
 
-.cairn-stack { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.cairn-stack { display: flex; flex-direction: column; gap: 8px; }
 .cairn-bubble {
-  max-width: 88%;
+  max-width: 90%;
   padding: 9px 13px;
-  border-radius: 16px;
-  font-size: 13px;
-  line-height: 1.48;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  animation: cairn-bubble-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  border-radius: 14px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #0b0d12;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(11, 13, 18, 0.06);
+  box-shadow: 0 6px 20px rgba(15, 15, 20, 0.1);
+  animation: cairn-bubble-in 0.22s ease-out;
 }
 .cairn-bubble-user {
   align-self: flex-end;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.62), rgba(168, 85, 247, 0.5));
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(199, 210, 254, 0.28);
-  color: #f8f7ff;
-  border-bottom-right-radius: 5px;
+  border-color: rgba(99, 102, 241, 0.22);
+  border-bottom-right-radius: 4px;
 }
 .cairn-bubble-agent {
   align-self: flex-start;
-  background: rgba(20, 20, 30, 0.5);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.94);
-  border-bottom-left-radius: 5px;
+  border-bottom-left-radius: 4px;
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 .cairn-bubble-text { white-space: pre-wrap; }
-.cairn-word { display: inline-block; animation: cairn-word-sweep 0.6s ease forwards; }
+.cairn-word { display: inline-block; animation: cairn-word-sweep 0.4s ease forwards; }
 .cairn-chip {
   align-self: flex-start;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(129, 140, 248, 0.35), rgba(192, 132, 252, 0.3));
-  color: #e0e7ff;
+  background: rgba(11, 13, 18, 0.06);
+  color: rgba(11, 13, 18, 0.6);
 }
 .cairn-thinking { display: inline-flex; gap: 4px; padding: 2px 0; }
 .cairn-thinking-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
-  background: #c4b5fd;
+  background: rgba(11, 13, 18, 0.55);
   animation: cairn-thinking-bounce 1.1s ease-in-out infinite;
 }
 .cairn-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
@@ -186,24 +165,23 @@
 .cairn-input-row input {
   flex: 1;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(11, 13, 18, 0.1);
   border-radius: 999px;
   padding: 10px 14px;
   font: inherit;
-  background: rgba(20, 20, 30, 0.4);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  color: rgba(255, 255, 255, 0.95);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  transition: background 0.15s ease, border-color 0.15s ease;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  color: #0b0d12;
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.cairn-input-row input::placeholder { color: rgba(255, 255, 255, 0.42); }
-.cairn-input-row input:disabled { opacity: 0.5; }
+.cairn-input-row input::placeholder { color: rgba(11, 13, 18, 0.4); }
+.cairn-input-row input:disabled { opacity: 0.55; }
 .cairn-input-row input:focus {
   outline: none;
-  background: rgba(255, 255, 255, 0.11);
-  border-color: rgba(165, 180, 252, 0.55);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 .cairn-icon-btn, .cairn-send {
   flex-shrink: 0;
@@ -213,48 +191,59 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(20, 20, 30, 0.4);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(11, 13, 18, 0.1);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  color: #33384a;
   cursor: pointer;
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
   transition: background 0.15s ease, transform 0.15s ease;
 }
-.cairn-icon-btn:hover { background: rgba(255, 255, 255, 0.16); transform: translateY(-1px); }
+.cairn-icon-btn:hover { background: rgba(255, 255, 255, 0.96); transform: translateY(-1px); }
 .cairn-send {
   border: none;
-  background: linear-gradient(135deg, #6366f1, #a855f7);
+  background: #14151b;
   color: white;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
-.cairn-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(99, 102, 241, 0.55); }
+.cairn-send:hover:not(:disabled) { transform: translateY(-1px); }
 .cairn-send:disabled, .cairn-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 .cairn-icon-btn-recording {
-  background: linear-gradient(135deg, #f87171, #ef4444);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: #ef4444;
+  border-color: #ef4444;
   color: white;
   animation: cairn-pulse 1.4s ease-out infinite;
 }
 .cairn-icon-btn-speaking {
-  background: linear-gradient(135deg, #34d399, #10b981);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: #10b981;
+  border-color: #10b981;
   color: white;
   animation: cairn-pulse-green 1.2s ease-out infinite;
 }
-.cairn-icon-btn-end { background: linear-gradient(135deg, #f87171, #ef4444); border-color: rgba(255, 255, 255, 0.2); color: white; }
-.cairn-rt-bar { display: flex; align-items: center; gap: 8px; padding: 6px 4px; }
-.cairn-rt-dot {
-  width: 9px;
-  height: 9px;
+.cairn-icon-btn-end { background: #ef4444; border-color: #ef4444; color: white; }
+.cairn-rt-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
   border-radius: 999px;
-  background: #818cf8;
-  box-shadow: 0 0 8px 1px rgba(129, 140, 248, 0.7);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(11, 13, 18, 0.06);
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
+}
+.cairn-rt-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #6366f1;
   animation: cairn-rt-dot 1.2s ease-in-out infinite;
   flex-shrink: 0;
 }
-.cairn-rt-dot-rt-speaking { background: #34d399; box-shadow: 0 0 8px 1px rgba(52, 211, 153, 0.7); }
-.cairn-rt-dot-rt-thinking { background: #fbbf24; box-shadow: 0 0 8px 1px rgba(251, 191, 36, 0.7); }
-.cairn-rt-label { flex: 1; font-size: 12.5px; color: rgba(255, 255, 255, 0.85); text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55); }
+.cairn-rt-dot-rt-speaking { background: #10b981; }
+.cairn-rt-dot-rt-thinking { background: #f59e0b; }
+.cairn-rt-label { flex: 1; font-size: 12.5px; color: #33384a; }
 .cairn-rt-controls { display: flex; gap: 6px; }
 `,rt='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>',Ae='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" x2="12" y1="18" y2="22"/></svg>',Cr='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="22"/></svg>',Mr='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>',Or='<svg class="cairn-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>',Rr='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',nt='<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="7" y="12.5" width="6" height="2.6" rx="0.5" fill="currentColor"/><rect x="4.5" y="8.5" width="11" height="2.6" rx="0.5" fill="currentColor" opacity="0.75"/><rect x="8.2" y="4.5" width="3.6" height="2.6" rx="0.5" fill="currentColor" opacity="0.5"/></svg>',Nr='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/></svg>',Br='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.83 16.57a1 1 0 0 0 1.21-.3l.36-.47A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A17.87 17.87 0 0 1 9.3 17.6"/><path d="M4.27 5.34C3.5 6.44 4 8 4 8a17.9 17.9 0 0 0 2.14 6.6"/><path d="M2 2v0"/><line x1="2" y1="2" x2="22" y2="22"/></svg>',st='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>',jr='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>',Le=class extends HTMLElement{shadow;fab;panel;titleEl;personaTextEl;stackEl;userBubbleEl;agentBubbleEl;chipEl;agentTextEl;thinkingEl;formEl;inputEl;sendBtn;micBtn=null;phoneBtn=null;rtBar;rtDot;rtLabel;rtMicBtn;rtSpeakerBtn;rtEndBtn;isOpen=!1;status="idle";recording=!1;touringActive=!1;caption="";answer=null;lastQuestion=null;tourGeneration=0;mediaRecorder=null;audioChunks=[];transcribeInFlight=!1;activeAudio=null;history=[];rtSocket=null;rtCleanup=null;rtMicMuted=!1;rtSpeakerMuted=!1;rtStarting=!1;rtPlaybackCtx=null;rtPlaybackGain=null;rtNextPlayTime=0;rtScheduledSources=[];rtAudioDoneArriving=!0;rtTourAudioDoneResolve=null;static get observedAttributes(){return["persona"]}connectedCallback(){this.shadow||(this.shadow=this.attachShadow({mode:"open"}),this.buildDom())}attributeChangedCallback(e){e==="persona"&&this.personaTextEl&&(this.personaTextEl.textContent=this.persona)}get endpoint(){return this.getAttribute("endpoint")??"/api/copilot"}get speakEndpoint(){return this.getAttribute("speak-endpoint")}get transcribeEndpoint(){return this.getAttribute("transcribe-endpoint")}get reportMissesEndpoint(){return this.getAttribute("report-misses-endpoint")}get realtimeUrl(){return this.getAttribute("realtime-url")}get persona(){return this.getAttribute("persona")??"Cairn"}get registeredActions(){return(this.getAttribute("registered-actions")??"").split(",").map(e=>e.trim()).filter(Boolean)}get realtimeActive(){return this.status.startsWith("rt-")}get busy(){return this.status==="asking"||this.status==="rt-thinking"||this.touringActive}micSupported(){return typeof navigator<"u"&&!!navigator.mediaDevices?.getUserMedia&&typeof MediaRecorder<"u"}buildDom(){let e=document.createElement("style");e.textContent=Ar,this.shadow.appendChild(e),this.fab=document.createElement("button"),this.fab.className="cairn-fab",this.fab.innerHTML=nt,this.fab.setAttribute("aria-label",`Open ${this.persona} help`),this.fab.addEventListener("click",()=>this.toggleOpen()),this.shadow.appendChild(this.fab),this.panel=document.createElement("div"),this.panel.className="cairn-panel",this.panel.setAttribute("role","dialog"),this.titleEl=document.createElement("div"),this.titleEl.className="cairn-panel-title";let t=document.createElement("span");t.className="cairn-panel-dot",t.setAttribute("aria-hidden","true"),this.titleEl.appendChild(t),this.personaTextEl=document.createElement("span"),this.personaTextEl.textContent=this.persona,this.titleEl.appendChild(this.personaTextEl),this.panel.appendChild(this.titleEl),this.stackEl=document.createElement("div"),this.stackEl.className="cairn-stack",this.stackEl.style.display="none",this.userBubbleEl=document.createElement("div"),this.userBubbleEl.className="cairn-bubble cairn-bubble-user",this.userBubbleEl.style.display="none",this.stackEl.appendChild(this.userBubbleEl),this.agentBubbleEl=document.createElement("div"),this.agentBubbleEl.className="cairn-bubble cairn-bubble-agent",this.agentBubbleEl.style.display="none",this.chipEl=document.createElement("span"),this.chipEl.className="cairn-chip",this.chipEl.style.display="none",this.agentBubbleEl.appendChild(this.chipEl),this.agentTextEl=document.createElement("span"),this.agentTextEl.className="cairn-bubble-text",this.agentBubbleEl.appendChild(this.agentTextEl),this.thinkingEl=document.createElement("span"),this.thinkingEl.className="cairn-thinking",this.thinkingEl.setAttribute("aria-label","Thinking"),this.thinkingEl.style.display="none",this.thinkingEl.innerHTML='<span class="cairn-thinking-dot"></span><span class="cairn-thinking-dot"></span><span class="cairn-thinking-dot"></span>',this.agentBubbleEl.appendChild(this.thinkingEl),this.stackEl.appendChild(this.agentBubbleEl),this.panel.appendChild(this.stackEl),this.rtBar=document.createElement("div"),this.rtBar.className="cairn-rt-bar",this.rtBar.style.display="none",this.rtDot=document.createElement("span"),this.rtDot.className="cairn-rt-dot",this.rtBar.appendChild(this.rtDot),this.rtLabel=document.createElement("span"),this.rtLabel.className="cairn-rt-label",this.rtBar.appendChild(this.rtLabel);let n=document.createElement("div");n.className="cairn-rt-controls",this.rtMicBtn=document.createElement("button"),this.rtMicBtn.type="button",this.rtMicBtn.className="cairn-icon-btn",this.rtMicBtn.innerHTML=Ae,this.rtMicBtn.setAttribute("aria-label","Mute microphone"),this.rtMicBtn.addEventListener("click",()=>this.toggleRtMic()),n.appendChild(this.rtMicBtn),this.rtSpeakerBtn=document.createElement("button"),this.rtSpeakerBtn.type="button",this.rtSpeakerBtn.className="cairn-icon-btn",this.rtSpeakerBtn.innerHTML=st,this.rtSpeakerBtn.setAttribute("aria-label","Mute speaker"),this.rtSpeakerBtn.addEventListener("click",()=>this.toggleRtSpeaker()),n.appendChild(this.rtSpeakerBtn),this.rtEndBtn=document.createElement("button"),this.rtEndBtn.type="button",this.rtEndBtn.className="cairn-icon-btn cairn-icon-btn-end",this.rtEndBtn.innerHTML=Br,this.rtEndBtn.setAttribute("aria-label","End conversation"),this.rtEndBtn.addEventListener("click",()=>this.endRealtime()),n.appendChild(this.rtEndBtn),this.rtBar.appendChild(n),this.panel.appendChild(this.rtBar),this.formEl=document.createElement("form");let s=document.createElement("div");s.className="cairn-input-row",this.inputEl=document.createElement("input"),this.inputEl.placeholder="What do you need help with?",this.inputEl.setAttribute("aria-label",`Ask ${this.persona} a question`),this.inputEl.addEventListener("input",()=>this.updateBusyState()),s.appendChild(this.inputEl),this.realtimeUrl&&this.micSupported()&&(this.phoneBtn=document.createElement("button"),this.phoneBtn.type="button",this.phoneBtn.className="cairn-icon-btn",this.phoneBtn.innerHTML=Nr,this.phoneBtn.setAttribute("aria-label","Start realtime conversation"),this.phoneBtn.addEventListener("click",()=>void this.startRealtime()),s.appendChild(this.phoneBtn)),this.transcribeEndpoint&&this.micSupported()&&(this.micBtn=document.createElement("button"),this.micBtn.type="button",this.micBtn.className="cairn-icon-btn",this.micBtn.innerHTML=Ae,this.micBtn.setAttribute("aria-label","Ask by voice"),this.micBtn.addEventListener("click",()=>this.recording?this.stopRecording():void this.startRecording()),s.appendChild(this.micBtn)),this.sendBtn=document.createElement("button"),this.sendBtn.type="submit",this.sendBtn.className="cairn-send",this.sendBtn.innerHTML=rt,this.sendBtn.setAttribute("aria-label","Send"),s.appendChild(this.sendBtn),this.formEl.appendChild(s),this.formEl.addEventListener("submit",i=>{i.preventDefault();let a=this.inputEl.value.trim();a&&this.ask(a)}),this.panel.appendChild(this.formEl),this.shadow.appendChild(this.panel),this.render()}toggleOpen(){this.isOpen=!this.isOpen,this.panel.classList.toggle("cairn-open",this.isOpen),this.fab.innerHTML=this.isOpen?Rr:nt,this.fab.setAttribute("aria-label",this.isOpen?`Close ${this.persona} help`:`Open ${this.persona} help`),this.isOpen&&!this.realtimeActive&&this.inputEl.focus()}render(){let e=this.realtimeActive;if(this.fab.classList.toggle("cairn-fab-speaking",this.status==="rt-speaking"),this.rtBar.style.display=e?"flex":"none",this.formEl.style.display=e?"none":"block",e){this.rtDot.className=`cairn-rt-dot cairn-rt-dot-${this.status}`,this.rtLabel.textContent=tt[this.status];let o=this.status==="rt-speaking";this.rtMicBtn.className=o?"cairn-icon-btn cairn-icon-btn-speaking":"cairn-icon-btn",this.rtSpeakerBtn.className=o?"cairn-icon-btn cairn-icon-btn-speaking":"cairn-icon-btn",this.rtMicBtn.innerHTML=this.rtMicMuted?Cr:Ae,this.rtMicBtn.setAttribute("aria-label",this.rtMicMuted?"Unmute microphone":"Mute microphone"),this.rtSpeakerBtn.innerHTML=this.rtSpeakerMuted?jr:st,this.rtSpeakerBtn.setAttribute("aria-label",this.rtSpeakerMuted?"Unmute speaker":"Mute speaker")}let t=tt[this.status],n=this.touringActive?this.caption:"",s=!this.touringActive&&(this.recording||e)?this.caption:this.lastQuestion??"",i=!!this.answer||this.busy;this.stackEl.style.display=s||i?"flex":"none",this.userBubbleEl.style.display=s?"block":"none",this.userBubbleEl.textContent=s,this.agentBubbleEl.style.display=i?"flex":"none";let a=n||(e&&!n?t:"");this.chipEl.style.display=a?"inline-block":"none",this.chipEl.textContent=a,this.answer?(this.agentTextEl.style.display="inline",this.renderCaptionWords(this.agentTextEl,this.answer),this.thinkingEl.style.display="none"):(this.agentTextEl.style.display="none",this.agentTextEl.textContent="",this.thinkingEl.style.display=this.busy?"inline-flex":"none"),this.phoneBtn&&(this.phoneBtn.disabled=this.busy||this.recording),this.updateBusyState()}setStatus(e){this.status=e,this.render()}setCaption(e){this.caption=e,this.render()}updateBusyState(){this.inputEl.disabled=this.recording||this.touringActive,this.sendBtn.disabled=this.busy||this.recording||!this.inputEl.value.trim(),this.sendBtn.innerHTML=this.busy?Or:rt,this.micBtn&&(this.micBtn.disabled=this.touringActive)}setAnswer(e){this.answer=e,this.render()}renderCaptionWords(e,t){e.innerHTML="";let n=t.split(" ");n.forEach((s,i)=>{let a=document.createElement("span");a.className="cairn-word",a.style.animationDelay=`${Math.min(i*55,2800)}ms`,a.textContent=i<n.length-1?s+" ":s,e.appendChild(a)})}reportMiss(e){_e(e);let t=this.reportMissesEndpoint;t&&fetch(t,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(e)}).catch(()=>{})}async ask(e){this.setStatus("asking"),this.setAnswer(null),this.lastQuestion=e,this.inputEl.value="",this.render();try{let n=await(await fetch(this.endpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({route:location.pathname,question:e,visible:Oe(),history:this.history})})).json().catch(()=>null);this.handleVerb(n),this.history=[...this.history,{role:"user",text:e},{role:"assistant",text:Ir(n)}].slice(-Sr)}catch{this.setAnswer("Something went wrong reaching the help service \u2014 try again in a moment.")}finally{this.setStatus("idle")}}handleVerb(e){et(e,location.pathname,{onExplain:t=>{this.setAnswer(t),this.realtimeActive||this.speak(t)},onNavigate:t=>{location.assign(t)},onMiss:t=>this.reportMiss(t),onDo:(t,n)=>{this.dispatchEvent(new CustomEvent("cairn-do",{detail:{action:t,target:n},bubbles:!0,composed:!0}))},onTour:t=>void this.runTour(t),registeredActions:this.registeredActions})}async runTour(e){let t=++this.tourGeneration,n=this.realtimeActive;this.touringActive=!0,n&&this.setStatus("rt-speaking"),this.setAnswer(null);let s=location.pathname;try{for(let i=0;i<e.length;i++){if(this.tourGeneration!==t)return;let a=e[i];if(this.setCaption(`Step ${i+1} of ${e.length}`),this.setAnswer(a.text),a.route&&a.route!==s){location.assign(a.route);return}if(a.target){let o=be(a.target);o?xe(o):this.reportMiss({attempted:a.target,route:s})}if(n&&this.rtSocket?.readyState===WebSocket.OPEN?await this.speakOverRealtime(a.text):this.speakEndpoint?await this.speakAndWait(a.text):await new Promise(o=>setTimeout(o,Math.max(1200,a.text.length*45))),this.tourGeneration!==t)return}if(this.tourGeneration!==t)return;this.setCaption(""),n&&this.realtimeActive&&this.setStatus("rt-listening")}finally{this.tourGeneration===t&&(this.touringActive=!1,this.render())}}playResponseAudio(e){this.activeAudio&&(this.activeAudio.pause(),this.activeAudio.currentTime=0);let t=URL.createObjectURL(e),n=new Audio(t);return this.activeAudio=n,new Promise(s=>{let i=()=>{URL.revokeObjectURL(t),this.activeAudio===n&&(this.activeAudio=null),s()};n.onended=i,n.play().catch(i)})}async speak(e){if(!(!this.speakEndpoint||!e.trim()))try{let t=await fetch(this.speakEndpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({text:e})});if(!t.ok)return;this.playResponseAudio(await t.blob())}catch{}}async speakAndWait(e){if(!(!this.speakEndpoint||!e.trim()))try{let t=await fetch(this.speakEndpoint,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({text:e})});if(!t.ok)return;await this.playResponseAudio(await t.blob())}catch{}}speakOverRealtime(e){return new Promise(t=>{let n=this.rtSocket;if(!n||n.readyState!==WebSocket.OPEN){t();return}this.rtAudioDoneArriving=!1,this.rtTourAudioDoneResolve=t,n.send(JSON.stringify({type:"speak",text:e}))})}async startRecording(){if(!(!this.transcribeEndpoint||!this.micSupported()||this.realtimeActive))try{let e=await navigator.mediaDevices.getUserMedia({audio:!0}),t=new MediaRecorder(e);this.audioChunks=[],this.setCaption(""),t.ondataavailable=n=>{n.data.size!==0&&(this.audioChunks.push(n.data),this.transcribeSoFar(t.mimeType||"audio/webm",!0))},t.onstop=()=>void this.transcribeSoFar(t.mimeType||"audio/webm",!1),this.mediaRecorder=t,t.start(2e3),this.recording=!0,this.micBtn&&(this.micBtn.innerHTML=Mr,this.micBtn.classList.add("cairn-icon-btn-recording"),this.micBtn.setAttribute("aria-label","Stop recording")),this.render()}catch{this.setAnswer("Couldn't access the microphone \u2014 check your browser's permission for this site.")}}stopRecording(){let e=this.mediaRecorder?.stream;this.mediaRecorder?.stop(),e?.getTracks().forEach(t=>t.stop()),this.recording=!1,this.micBtn&&(this.micBtn.innerHTML=Ae,this.micBtn.classList.remove("cairn-icon-btn-recording"),this.micBtn.setAttribute("aria-label","Ask by voice")),this.render()}async transcribeSoFar(e,t){if(this.transcribeEndpoint&&!(t&&this.transcribeInFlight)){this.transcribeInFlight=!0;try{let n=new Blob(this.audioChunks,{type:e}),i=await(await fetch(this.transcribeEndpoint,{method:"POST",headers:{"content-type":e},body:n})).json().catch(()=>null);i?.text?(this.inputEl.value=i.text,this.setCaption(i.text),this.updateBusyState()):t||this.setAnswer("Couldn't make that out \u2014 try typing instead.")}catch{t||this.setAnswer("Couldn't reach the transcription service.")}finally{this.transcribeInFlight=!1}}}async startRealtime(){if(!(!this.realtimeUrl||!this.micSupported()||this.realtimeActive||this.rtStarting)){this.rtStarting=!0,this.setAnswer(null),this.setCaption(""),this.setStatus("rt-connecting");try{let e=await navigator.mediaDevices.getUserMedia({audio:!0}),t=new WebSocket(this.realtimeUrl);t.binaryType="arraybuffer",this.rtSocket=t;let n=new AudioContext,s=n.createGain();s.gain.value=this.rtSpeakerMuted?0:1,s.connect(n.destination),this.rtPlaybackCtx=n,this.rtPlaybackGain=s,this.rtNextPlayTime=0,this.rtScheduledSources=[],this.rtAudioDoneArriving=!0;let i=new AudioContext,a=i.createMediaStreamSource(e),o=i.createScriptProcessor(4096,1,1),d=i.createGain();d.gain.value=0;let u=()=>{if(this.rtAudioDoneArriving&&!(this.rtScheduledSources.length>0)){if(this.touringActive){this.rtTourAudioDoneResolve?.(),this.rtTourAudioDoneResolve=null;return}this.setStatus("rt-listening"),this.setCaption("")}},y=()=>{for(let A of this.rtScheduledSources)try{A.stop()}catch{}this.rtScheduledSources=[],this.rtNextPlayTime=this.rtPlaybackCtx?.currentTime??0},k=()=>{y(),this.rtAudioDoneArriving=!0,t.readyState===WebSocket.OPEN&&t.send(JSON.stringify({type:"barge_in"})),this.setStatus("rt-listening"),this.setCaption("")};o.onaudioprocess=A=>{if(t.readyState!==WebSocket.OPEN||this.rtMicMuted)return;if(this.status==="rt-speaking"&&!this.touringActive){$r(A.inputBuffer.getChannelData(0))>Lr&&k();return}if(this.status!=="rt-listening")return;let _=Vr(Pr(A.inputBuffer.getChannelData(0),i.sampleRate));t.send(_)},a.connect(o),o.connect(d),d.connect(i.destination),this.rtCleanup=()=>{o.disconnect(),a.disconnect(),e.getTracks().forEach(A=>A.stop()),i.close(),y(),n.close(),this.rtPlaybackCtx=null,this.rtPlaybackGain=null},t.onopen=()=>{t.send(JSON.stringify({type:"context",route:location.pathname,visible:Oe()})),this.setStatus("rt-listening"),this.rtStarting=!1},t.onmessage=A=>{if(typeof A.data!="string")return;let _=JSON.parse(A.data);if(_.type==="interim")this.setCaption(_.text);else if(_.type==="final")this.setCaption(_.text),this.setStatus("rt-thinking");else if(_.type==="verb")this.handleVerb(_.verb);else if(_.type==="speaking_start")this.rtAudioDoneArriving=!1,this.setStatus("rt-speaking");else if(_.type==="audio_chunk"){let ae=this.rtPlaybackCtx,$e=this.rtPlaybackGain;if(!ae||!$e)return;ae.resume().catch(()=>{});let Pe=Uint8Array.from(atob(_.audio),V=>V.charCodeAt(0)),Ce=Pe.length/2,Ve=new Float32Array(Ce),it=new DataView(Pe.buffer);for(let V=0;V<Ce;V++)Ve[V]=it.getInt16(V*2,!0)/32768;let at=typeof _.sampleRate=="number"?_.sampleRate:24e3,Me=ae.createBuffer(1,Ce,at);Me.copyToChannel(Ve,0);let oe=ae.createBufferSource();oe.buffer=Me,oe.connect($e);let De=Math.max(ae.currentTime,this.rtNextPlayTime);oe.start(De),this.rtNextPlayTime=De+Me.duration,this.rtScheduledSources.push(oe),oe.onended=()=>{this.rtScheduledSources=this.rtScheduledSources.filter(V=>V!==oe),u()}}else _.type==="speaking_end"||_.type==="turn_complete"?(this.rtAudioDoneArriving=!0,u()):_.type==="error"&&this.setAnswer(_.message??"Something went wrong.")},t.onerror=()=>{this.setAnswer("Couldn't connect to the realtime voice service."),this.endRealtime()},t.onclose=()=>{this.status!=="idle"&&this.endRealtime()}}catch{this.setAnswer("Couldn't access the microphone \u2014 check your browser's permission for this site."),this.setStatus("idle"),this.rtStarting=!1}}}endRealtime(){this.rtStarting=!1,this.activeAudio?.pause(),this.activeAudio=null,this.rtSocket?.close(),this.rtSocket=null,this.rtCleanup?.(),this.rtCleanup=null,this.rtMicMuted=!1,this.rtSpeakerMuted=!1,this.setCaption(""),this.setStatus("idle"),this.tourGeneration++,this.touringActive=!1,this.rtTourAudioDoneResolve?.(),this.rtTourAudioDoneResolve=null,this.render()}toggleRtMic(){this.rtMicMuted=!this.rtMicMuted,this.render()}toggleRtSpeaker(){this.rtSpeakerMuted=!this.rtSpeakerMuted,this.rtPlaybackGain&&(this.rtPlaybackGain.gain.value=this.rtSpeakerMuted?0:1),this.render()}};function Ir(r){if(!r||typeof r!="object")return"(no response)";let e=r;if(typeof e.text=="string"&&e.text)return e.text;switch(e.verb){case"highlight":case"open":return`(highlighted ${String(e.target)})`;case"navigate":return`(navigated to ${String(e.route)})`;case"do":return`(ran ${String(e.action)}${e.target?` on ${String(e.target)}`:""})`;case"tour":return Array.isArray(e.steps)?e.steps.map(t=>t.text??"").join(" "):"(tour)";default:return"(no response)"}}var Lr=.02;function $r(r){let e=0;for(let t=0;t<r.length;t++)e+=r[t]*r[t];return Math.sqrt(e/r.length)}function Pr(r,e){if(e===16e3)return r;let n=e/16e3,s=Math.round(r.length/n),i=new Float32Array(s),a=0,o=0;for(;a<s;){let d=Math.round((a+1)*n),u=0,y=0;for(let k=o;k<d&&k<r.length;k++)u+=r[k],y++;i[a]=y>0?u/y:0,a++,o=d}return i}function Vr(r){let e=new ArrayBuffer(r.length*2),t=new DataView(e);for(let n=0;n<r.length;n++){let s=Math.max(-1,Math.min(1,r[n]));t.setInt16(n*2,s<0?s*32768:s*32767,!0)}return e}typeof customElements<"u"&&!customElements.get("cairn-widget")&&customElements.define("cairn-widget",Le);})();

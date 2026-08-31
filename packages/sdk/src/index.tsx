@@ -914,12 +914,16 @@ function floatTo16BitPCM(input: Float32Array): ArrayBuffer {
 
 const COPILOT_STYLES = `
 @keyframes cairn-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45); }
-  70% { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
 }
 @keyframes cairn-pulse-green {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
-  70% { box-shadow: 0 0 0 12px rgba(52, 211, 153, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+}
+@keyframes cairn-pulse-indigo {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
 }
 @keyframes cairn-spin {
   from { transform: rotate(0deg); }
@@ -929,41 +933,29 @@ const COPILOT_STYLES = `
   0%, 100% { opacity: 0.5; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.15); }
 }
-@keyframes cairn-fab-breathe {
-  0%, 100% { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 22px 2px rgba(99, 102, 241, 0.35), 0 0 40px 8px rgba(139, 92, 246, 0.18); }
-  50% { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 26px 4px rgba(99, 102, 241, 0.5), 0 0 52px 12px rgba(139, 92, 246, 0.28); }
-}
-@keyframes cairn-panel-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.96); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
 @keyframes cairn-bubble-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 @keyframes cairn-word-sweep {
-  0% { opacity: 0.4; text-shadow: none; }
-  35% { opacity: 1; color: #c7d2fe; text-shadow: 0 0 14px rgba(129, 140, 248, 0.6); }
-  100% { opacity: 1; color: inherit; text-shadow: none; }
+  from { opacity: 0.32; }
+  to { opacity: 1; }
 }
 @keyframes cairn-thinking-bounce {
-  0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
-  40% { opacity: 1; transform: translateY(-3px); }
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 0.9; transform: translateY(-3px); }
 }
 .cairn-glow {
-  animation: cairn-pulse 1.1s ease-out 2;
+  animation: cairn-pulse-indigo 1.1s ease-out 2;
   outline: 2px solid #6366f1;
   outline-offset: 3px;
   border-radius: 8px;
-  box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.16), 0 0 24px 4px rgba(139, 92, 246, 0.35);
 }
 .cairn-spin {
   animation: cairn-spin 0.8s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
+  .cairn-fab, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
     animation: none !important;
     transition: none !important;
   }
@@ -974,112 +966,95 @@ const COPILOT_STYLES = `
   right: 20px;
   bottom: 20px;
   z-index: 2147483000;
-  width: 54px;
-  height: 54px;
+  width: 52px;
+  height: 52px;
   border-radius: 999px;
   border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(155deg, #2a2f45 0%, #0b0d16 100%);
+  background: #14151b;
   color: white;
   cursor: pointer;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 22px 2px rgba(99, 102, 241, 0.35), 0 0 40px 8px rgba(139, 92, 246, 0.18);
-  animation: cairn-fab-breathe 3.2s ease-in-out infinite;
-  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .cairn-fab:hover {
-  transform: translateY(-2px) scale(1.04);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 .cairn-fab-speaking {
-  box-shadow: 0 8px 24px rgba(52, 211, 153, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-    0 0 0 5px rgba(52, 211, 153, 0.22);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22), 0 6px 20px rgba(0, 0, 0, 0.25);
   animation: cairn-pulse-green 1.2s ease-out infinite;
 }
 
+/* No shared background/border/shadow on the panel itself — every piece
+   below (title, bubbles, input, buttons) floats independently on its own
+   minimal glass, directly over the host page, the way a caption track
+   floats over a video rather than sitting in a drawn box. */
 .cairn-panel {
   position: fixed;
   right: 20px;
-  bottom: 86px;
+  bottom: 82px;
   z-index: 2147483000;
-  width: 336px;
+  width: 320px;
   max-height: 460px;
   overflow-y: auto;
   overflow-x: hidden;
-  background: rgba(10, 10, 18, 0.32);
-  -webkit-backdrop-filter: blur(34px) saturate(160%);
-  backdrop-filter: blur(34px) saturate(160%);
-  color: rgba(255, 255, 255, 0.94);
-  border-radius: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   font: 13.5px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
-  transform-origin: bottom right;
-  animation: cairn-panel-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .cairn-panel::-webkit-scrollbar {
-  width: 6px;
-}
-.cairn-panel::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
+  width: 0;
 }
 
 .cairn-panel-title {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-weight: 650;
-  font-size: 12.5px;
-  letter-spacing: 0.01em;
-  color: rgba(255, 255, 255, 0.94);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
-  margin-bottom: 12px;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0b0d12;
+  text-shadow: 0 0 1px #fff, 0 0 6px rgba(255, 255, 255, 0.9), 0 1px 2px rgba(255, 255, 255, 0.9);
 }
 .cairn-panel-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
-  background: linear-gradient(135deg, #818cf8, #c084fc);
-  box-shadow: 0 0 8px 1px rgba(139, 92, 246, 0.7);
-  animation: cairn-rt-dot 2.4s ease-in-out infinite;
+  background: #6366f1;
 }
 
 .cairn-stack {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 12px;
 }
 .cairn-bubble {
-  max-width: 88%;
+  max-width: 90%;
   padding: 9px 13px;
-  border-radius: 16px;
-  font-size: 13px;
-  line-height: 1.48;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  animation: cairn-bubble-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  border-radius: 14px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #0b0d12;
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(11, 13, 18, 0.06);
+  box-shadow: 0 6px 20px rgba(15, 15, 20, 0.1);
+  animation: cairn-bubble-in 0.22s ease-out;
 }
 .cairn-bubble-user {
   align-self: flex-end;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.62), rgba(168, 85, 247, 0.5));
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(199, 210, 254, 0.28);
-  color: #f8f7ff;
-  border-bottom-right-radius: 5px;
+  border-color: rgba(99, 102, 241, 0.22);
+  border-bottom-right-radius: 4px;
 }
 .cairn-bubble-agent {
   align-self: flex-start;
-  background: rgba(20, 20, 30, 0.5);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.94);
-  border-bottom-left-radius: 5px;
+  border-bottom-left-radius: 4px;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1089,18 +1064,18 @@ const COPILOT_STYLES = `
 }
 .cairn-word {
   display: inline-block;
-  animation: cairn-word-sweep 0.6s ease forwards;
+  animation: cairn-word-sweep 0.4s ease forwards;
 }
 .cairn-chip {
   align-self: flex-start;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(129, 140, 248, 0.35), rgba(192, 132, 252, 0.3));
-  color: #e0e7ff;
+  background: rgba(11, 13, 18, 0.06);
+  color: rgba(11, 13, 18, 0.6);
 }
 .cairn-thinking {
   display: inline-flex;
@@ -1108,10 +1083,10 @@ const COPILOT_STYLES = `
   padding: 2px 0;
 }
 .cairn-thinking-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
-  background: #c4b5fd;
+  background: rgba(11, 13, 18, 0.55);
   animation: cairn-thinking-bounce 1.1s ease-in-out infinite;
 }
 .cairn-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
@@ -1126,27 +1101,26 @@ const COPILOT_STYLES = `
   flex: 1;
   box-sizing: border-box;
   padding: 10px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(11, 13, 18, 0.1);
   border-radius: 999px;
   font: inherit;
-  background: rgba(20, 20, 30, 0.4);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  color: rgba(255, 255, 255, 0.95);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  transition: background 0.15s ease, border-color 0.15s ease;
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  color: #0b0d12;
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .cairn-input-row input::placeholder {
-  color: rgba(255, 255, 255, 0.42);
+  color: rgba(11, 13, 18, 0.4);
 }
 .cairn-input-row input:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
 }
 .cairn-input-row input:focus {
   outline: none;
-  background: rgba(255, 255, 255, 0.11);
-  border-color: rgba(165, 180, 252, 0.55);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 .cairn-icon-btn {
   flex-shrink: 0;
@@ -1156,33 +1130,34 @@ const COPILOT_STYLES = `
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(20, 20, 30, 0.4);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(11, 13, 18, 0.1);
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  color: #33384a;
   cursor: pointer;
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
   transition: background 0.15s ease, transform 0.15s ease;
 }
 .cairn-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.96);
   transform: translateY(-1px);
 }
 .cairn-icon-btn-recording {
-  background: linear-gradient(135deg, #f87171, #ef4444);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: #ef4444;
+  border-color: #ef4444;
   color: white;
   animation: cairn-pulse 1.4s ease-out infinite;
 }
 .cairn-icon-btn-speaking {
-  background: linear-gradient(135deg, #34d399, #10b981);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: #10b981;
+  border-color: #10b981;
   color: white;
   animation: cairn-pulse-green 1.2s ease-out infinite;
 }
 .cairn-icon-btn-end {
-  background: linear-gradient(135deg, #f87171, #ef4444);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: #ef4444;
+  border-color: #ef4444;
   color: white;
 }
 .cairn-send {
@@ -1194,19 +1169,18 @@ const COPILOT_STYLES = `
   justify-content: center;
   border-radius: 999px;
   border: none;
-  background: linear-gradient(135deg, #6366f1, #a855f7);
+  background: #14151b;
   color: white;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .cairn-send:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.55);
 }
 .cairn-send:disabled {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.3);
+  background: rgba(11, 13, 18, 0.12);
+  color: rgba(11, 13, 18, 0.35);
   box-shadow: none;
   cursor: not-allowed;
 }
@@ -1215,30 +1189,32 @@ const COPILOT_STYLES = `
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 4px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(11, 13, 18, 0.06);
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
 }
 .cairn-rt-dot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
-  background: #818cf8;
-  box-shadow: 0 0 8px 1px rgba(129, 140, 248, 0.7);
+  background: #6366f1;
   animation: cairn-rt-dot 1.2s ease-in-out infinite;
   flex-shrink: 0;
 }
 .cairn-rt-dot-rt-speaking {
-  background: #34d399;
-  box-shadow: 0 0 8px 1px rgba(52, 211, 153, 0.7);
+  background: #10b981;
 }
 .cairn-rt-dot-rt-thinking {
-  background: #fbbf24;
-  box-shadow: 0 0 8px 1px rgba(251, 191, 36, 0.7);
+  background: #f59e0b;
 }
 .cairn-rt-label {
   flex: 1;
   font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.85);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  color: #33384a;
 }
 .cairn-rt-controls {
   display: flex;
