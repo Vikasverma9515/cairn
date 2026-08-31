@@ -35,6 +35,15 @@ def main(argv: list[str] | None = None) -> int:
     dead_p = sub.add_parser("dead", help="list unexported symbols unreachable from any export")
     dead_p.add_argument("--db", default=".cairn-graph.db")
 
+    vectorize_p = sub.add_parser("vectorize", help="embed every symbol into the semantic (vector) index")
+    vectorize_p.add_argument("--db", default=".cairn-graph.db")
+    vectorize_p.add_argument("--vectors", default=".cairn-graph-vectors")
+
+    semantic_p = sub.add_parser("semantic", help="search the graph by meaning, not name")
+    semantic_p.add_argument("query")
+    semantic_p.add_argument("--vectors", default=".cairn-graph-vectors")
+    semantic_p.add_argument("--limit", type=int, default=10)
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -45,6 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stats(args.db)
     if args.command == "dead":
         return _run_dead(args.db)
+    if args.command == "vectorize":
+        return _run_vectorize(args.db, args.vectors)
+    if args.command == "semantic":
+        return _run_semantic(args.query, args.vectors, args.limit)
     return 1
 
 
@@ -103,6 +116,30 @@ def _run_dead(db: str) -> int:
     print(f"{len(result.dead)} unreachable, unexported symbol(s) ({result.reachable_count} reachable):")
     for sym in result.dead:
         print(f"  {sym.kind:10s} {sym.name}  —  {sym.file_path}")
+    return 0
+
+
+def _run_vectorize(db: str, vectors: str) -> int:
+    from cairn_graph.vectors import build_vector_index
+
+    start = time.time()
+    summary = build_vector_index(db, vectors)
+    elapsed = time.time() - start
+    print(f"cairn-graph vectorize: {summary.symbols_embedded} symbol(s) embedded in {summary.batches} batch(es) — {elapsed:.2f}s")
+    print(f"wrote {vectors}")
+    return 0
+
+
+def _run_semantic(query: str, vectors: str, limit: int) -> int:
+    from cairn_graph.vectors import search_semantic
+
+    results = search_semantic(vectors, query, limit=limit)
+    if not results:
+        print(f"no semantic matches for {query!r} (index empty or missing — run `vectorize` first?)")
+        return 0
+    for r in results:
+        parent_note = f" (in {r['parent']})" if r.get("parent") else ""
+        print(f"{r['score']:.3f}  {r['kind']:10s} {r['name']}{parent_note}  —  {r['file']}:{r['start_line']}")
     return 0
 
 

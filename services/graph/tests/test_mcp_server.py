@@ -11,8 +11,10 @@ from cairn_graph.mcp_server import (
     get_symbol_usages,
     reindex,
     search_symbols,
+    semantic_search,
 )
 from cairn_graph.store import open_store
+from cairn_graph.vectors import build_vector_index
 
 
 def write(path: Path, content: str) -> None:
@@ -94,9 +96,52 @@ def test_reindex_picks_up_a_new_file(tmp_path: Path):
     assert after["files"] == before["files"] + 1
 
 
+def _fake_embed(texts):
+    # Deterministic, network-free stand-in — same trick as test_vectors.py.
+    import hashlib
+    import math
+    import re
+
+    dim = 32
+    vectors = []
+    for text in texts:
+        vec = [0.0] * dim
+        for word in re.findall(r"[a-zA-Z_]+", text.lower()):
+            idx = int(hashlib.sha256(word.encode()).hexdigest(), 16) % dim
+            vec[idx] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        vectors.append([v / norm for v in vec])
+    return vectors
+
+
+def test_semantic_search_returns_empty_before_vectorize_has_run(tmp_path: Path):
+    _, db = _built(tmp_path)
+    result = semantic_search(str(tmp_path / "vectors"), "anything")
+    assert result["results"] == []
+
+
+def test_semantic_search_finds_a_match_after_vectorize(tmp_path: Path):
+    _, db = _built(tmp_path)
+    vector_dir = tmp_path / "vectors"
+    build_vector_index(str(db), str(vector_dir), embed_fn=_fake_embed)
+
+    result = semantic_search(str(vector_dir), "helper", embed_fn=_fake_embed)
+
+    assert result["query"] == "helper"
+    assert any(r["name"] == "helper" for r in result["results"])
+
+
 def test_build_server_registers_all_expected_tools(tmp_path: Path):
     _, db = _built(tmp_path)
-    server = build_server(str(db), str(tmp_path))
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"))
     tools = asyncio.run(server.list_tools())
     tool_names = {t.name for t in tools}
-    assert {"search", "usages", "dead_code", "stats_tool", "reindex_tool"} <= tool_names
+    assert {
+        "search",
+        "usages",
+        "dead_code",
+        "stats_tool",
+        "reindex_tool",
+        "semantic",
+        "vectorize_tool",
+    } <= tool_names

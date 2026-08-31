@@ -24,6 +24,7 @@ from typing import Any
 from cairn_graph.build import build_graph
 from cairn_graph.reachability import compute_dead_symbols
 from cairn_graph.store import open_store, stats
+from cairn_graph.vectors import build_vector_index, search_semantic
 
 
 def search_symbols(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -86,6 +87,16 @@ def get_index_stats(conn: sqlite3.Connection) -> dict[str, int]:
     return stats(conn)
 
 
+def semantic_search(vector_dir: str, query: str, limit: int = 10, embed_fn=None) -> dict[str, Any]:
+    """Find code by what it does, not what it's named — the complement to
+    `search_symbols`'s substring match. Returns an empty list, not an
+    error, when `vectorize` hasn't been run yet. `embed_fn` exists so
+    tests can inject a deterministic embedder instead of loading the real
+    model."""
+    results = search_semantic(vector_dir, query, limit=limit, embed_fn=embed_fn)
+    return {"query": query, "results": results}
+
+
 def reindex(db_path: str, root: str, workers: int | None = None) -> dict[str, Any]:
     """Lets an agent trigger a re-index after making changes, instead of
     only ever serving whatever was indexed at server startup — the graph
@@ -103,7 +114,7 @@ def reindex(db_path: str, root: str, workers: int | None = None) -> dict[str, An
     }
 
 
-def build_server(db_path: str, root: str):
+def build_server(db_path: str, root: str, vector_dir: str = ".cairn-graph-vectors"):
     """Constructs the MCPServer with tools bound to one open connection —
     factored out from `main()` so tests can construct a server against a
     temp db without going through argv/stdio."""
@@ -112,10 +123,12 @@ def build_server(db_path: str, root: str):
     server = MCPServer(
         "cairn-graph",
         instructions=(
-            "Query Cairn's structure graph for a codebase: search symbols, "
-            "see where a name is used, find unreferenced dead code, or "
-            "re-index after changes. Everything here is name-based, not "
-            "type-resolved — treat results as strong hints, not proof."
+            "Query Cairn's structure graph for a codebase: search symbols "
+            "by name, search by meaning, see where a name is used, find "
+            "unreferenced dead code, or re-index after changes. Name-based "
+            "results are exact but not type-resolved; semantic results are "
+            "similarity ranked, not exact — treat both as strong hints, "
+            "not proof."
         ),
     )
     conn = open_store(db_path)
@@ -149,6 +162,22 @@ def build_server(db_path: str, root: str):
         conn = open_store(db_path)
         return result
 
+    @server.tool()
+    def semantic(query: str, limit: int = 10) -> dict[str, Any]:
+        """Search the codebase by meaning rather than name — e.g. "sums up
+        line item prices" can find `calculateInvoiceTotal`. Requires
+        `vectorize_tool` to have been run at least once; returns an empty
+        result list otherwise, not an error."""
+        return semantic_search(vector_dir, query, limit)
+
+    @server.tool()
+    def vectorize_tool() -> dict[str, Any]:
+        """Embed every symbol in the current graph into the semantic index —
+        run once after the first `build`, and again whenever `semantic`
+        results feel stale relative to `reindex_tool`."""
+        summary = build_vector_index(db_path, vector_dir)
+        return {"symbols_embedded": summary.symbols_embedded, "batches": summary.batches}
+
     return server
 
 
@@ -158,10 +187,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="cairn-graph-mcp")
     parser.add_argument("root", help="directory the graph indexes")
     parser.add_argument("--db", default=".cairn-graph.db")
+    parser.add_argument("--vectors", default=".cairn-graph-vectors")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"])
     args = parser.parse_args()
 
-    server = build_server(args.db, args.root)
+    server = build_server(args.db, args.root, args.vectors)
     server.run(transport=args.transport)
 
 

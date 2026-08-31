@@ -176,6 +176,10 @@ function (`search_symbols`, `get_symbol_usages`, `find_dead_code`,
 - **`reindex_tool`** — re-scan after the agent (or the user) changes
   files, so the graph doesn't silently drift stale over a long session;
   only changed files are re-parsed.
+- **`semantic`** — search by meaning instead of name (see "Semantic search"
+  below).
+- **`vectorize_tool`** — (re)build the semantic index after a `build` or
+  `reindex_tool`.
 
 **API-drift note, found live, not assumed**: this targets `mcp` 2.x, where
 `FastMCP` was renamed to `MCPServer`. Importing the old `mcp.server.fastmcp`
@@ -189,15 +193,56 @@ same "verify against the running package, not training data" discipline
 that caught the `tree-sitter-language-pack` download issue and the
 `FastMCP` rename itself.
 
+## Semantic search
+
+`vectors.py` adds the second index the plan calls for alongside the
+structure graph: search by what code *does*, not what it's named.
+`calculateInvoiceTotal` and a query like "sum up line item prices" are
+unrelated by substring but adjacent by meaning — `query`/`search` can't
+find that match; `semantic` can.
+
+```bash
+python -m cairn_graph.cli vectorize --db .cairn-graph.db --vectors .cairn-graph-vectors
+python -m cairn_graph.cli semantic "sum up line item prices" --vectors .cairn-graph-vectors
+```
+
+Two design choices, both driven by the same on-prem/no-data-leakage
+constraint that shaped the tree-sitter choice:
+
+- **Embeddings run locally via `fastembed`** (ONNX runtime, no `torch` —
+  a far lighter install than `sentence-transformers` for the same job).
+  Model weights (`BAAI/bge-small-en-v1.5`, ~67MB) are fetched once from
+  Hugging Face on first use and cached under `~/.cache/fastembed`; every
+  embedding call after that runs fully offline. Verified live: a real
+  `TextEmbedding` call downloads and embeds successfully in this
+  environment, confirmed by dimension (384) and a working
+  nearest-neighbor query, not assumed from the package's docs.
+- **Storage is Qdrant in embedded mode** (`QdrantClient(path=...)`) — no
+  server process, just an on-disk index next to the SQLite graph, the
+  same "no infra to run" shape as the rest of this service. Verified live
+  with a real collection create/upsert/query round-trip. A real Qdrant
+  server (`QdrantClient(url=...)`) is a drop-in swap for a deployment that
+  outgrows embedded mode; not needed at this product's realistic scale.
+
+Each symbol's embedding text is its own source lines (read off disk at
+index time, capped at 40 lines), not just its name — the embedding
+captures what the code actually does. Both `build_vector_index` and
+`search_semantic` take an injectable `embed_fn`, so the test suite (5
+tests in `test_vectors.py`, plus 2 more exercising the MCP `semantic`
+tool) runs against a deterministic hashing-trick fake embedder — real
+nearest-neighbor-by-shared-vocabulary behavior, asserted exactly, with no
+network call or model load in the hot path of `pytest`.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
   shape of work as adding Python was: one `LanguageSpec` plus a
   language-specific extraction branch (a new grammar family likely needs
   its own walker, same reasoning as `_walk_python`'s docstring).
-- **Vector index / hybrid retrieval** — this is the structure-graph third
-  of the plan's three-index design; the embeddings layer (Qdrant, per the
-  plan) is a separate, not-yet-started piece.
+- **Incremental vector sync** — `vectorize` is currently a full rebuild;
+  the structure graph's incremental (content-hash, skip-unchanged) sync
+  doesn't yet apply to the vector index. Fine at hundreds of files, worth
+  revisiting before claiming it at "lakhs of files" scale.
 - **Stress test against a large *external* open-source monorepo** — this
   repo (76 files) proves the pipeline is correct; it doesn't prove
   "lakhs of files" doesn't hit some wall this size can't reveal. Worth
