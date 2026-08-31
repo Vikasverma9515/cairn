@@ -59,6 +59,7 @@ class FileOutcome:
     imports: tuple[tuple[str, tuple[str, ...], bool, int], ...]
     calls: tuple[tuple[str | None, str, int], ...]
     framework_roots: tuple[str, ...] = ()
+    references: tuple[tuple[str | None, str, int], ...] = ()
 
 
 @dataclass
@@ -149,17 +150,19 @@ def _parse_one(path: str) -> FileOutcome:
         imports=tuple((i.source, i.names, i.is_relative, i.line) for i in result.imports),
         calls=tuple((c.caller, c.callee, c.line) for c in result.calls),
         framework_roots=tuple(result.framework_roots),
+        references=tuple((r.referrer, r.name, r.line) for r in result.references),
     )
 
 
 def _outcome_to_extract_result(outcome: FileOutcome):
-    from cairn_graph.extract import CallEdge, ExtractResult, ImportRecord, Symbol
+    from cairn_graph.extract import CallEdge, ExtractResult, ImportRecord, Reference, Symbol
 
     return ExtractResult(
         symbols=[Symbol(kind=k, name=n, start_line=sl, end_line=el, exported=exp, parent=p) for (k, n, sl, el, exp, p) in outcome.symbols],
         imports=[ImportRecord(source=s, names=n, is_relative=r, line=l) for (s, n, r, l) in outcome.imports],
         calls=[CallEdge(caller=c, callee=cal, line=l) for (c, cal, l) in outcome.calls],
         framework_roots=list(outcome.framework_roots),
+        references=[Reference(referrer=r, name=n, line=l) for (r, n, l) in outcome.references],
     )
 
 

@@ -15,7 +15,12 @@ API reading as dead).
 
 Reachability itself is the same name-based heuristic extract.py's call
 edges already are: symbol A is reachable if some already-reachable
-symbol calls a name matching A, or imports A by name from A's file.
+symbol calls (or merely *references* — see extract.py's Reference) a
+name matching A, or imports A by name from A's file. Calls and
+references are unioned into one "uses" signal here even though
+extract.py keeps them as separate record types — that distinction (call
+vs. bare reference) doesn't matter for "is this reachable at all", only
+for anything wanting to know *how* a name was used.
 """
 
 from __future__ import annotations
@@ -51,22 +56,23 @@ def compute_dead_symbols(conn: sqlite3.Connection) -> ReachabilityResult:
         if sym.parent is not None:
             by_parent.setdefault(sym.parent, []).append(sym)
 
-    calls_by_caller = _load_calls_by_caller(conn)
+    uses_by_context = _load_uses_by_context(conn)  # calls + references, unioned — see module docstring
     files_importing_name = _load_import_usages(conn)
     framework_root_names = _load_framework_root_names(conn)
-    top_level_callees = _load_top_level_callees(conn)
+    top_level_uses = _load_top_level_uses(conn)
 
     reachable_ids: set[int] = set()
-    # `caller IS NULL` means the call happens outside any named function —
-    # module top-level side-effect code, or (very commonly in test files)
-    # inside an anonymous callback passed straight to describe()/it()/etc.
-    # Either way it runs unconditionally whenever the file loads, so its
-    # callee is reachable regardless of whether anything traceable "calls"
-    # the enclosing scope — found live: dogfooding against this repo's own
-    # *.test.ts files, every locally-defined test helper class/fixture
-    # function used only inside a describe() block read as dead without
-    # this, since the callback wrapping it has no name to traverse from.
-    roots = [s for s in symbols if s.exported or s.name in framework_root_names or s.name in top_level_callees]
+    # A `NULL` caller/referrer means the use happens outside any named
+    # function — module top-level side-effect code, or (very commonly in
+    # test files) inside an anonymous callback passed straight to
+    # describe()/it()/etc. Either way it runs unconditionally whenever the
+    # file loads, so what it uses is reachable regardless of whether
+    # anything traceable "calls" the enclosing scope — found live:
+    # dogfooding against this repo's own *.test.ts files, every locally-
+    # defined test helper class/fixture function used only inside a
+    # describe() block read as dead without this, since the callback
+    # wrapping it has no name to traverse from.
+    roots = [s for s in symbols if s.exported or s.name in framework_root_names or s.name in top_level_uses]
     queue: list[SymbolRef] = roots
     for s in queue:
         reachable_ids.add(s.id)
@@ -88,10 +94,11 @@ def compute_dead_symbols(conn: sqlite3.Connection) -> ReachabilityResult:
                     reachable_ids.add(method.id)
                     queue.append(method)
 
-        # Follow call edges from this symbol's name to any symbol with a
-        # matching name (heuristic, not type-resolved — see extract.py).
-        for callee_name in calls_by_caller.get(current.name, ()):
-            for candidate in by_name.get(callee_name, ()):
+        # Follow calls/references from this symbol's name to any symbol
+        # with a matching name (heuristic, not type-resolved — see
+        # extract.py).
+        for used_name in uses_by_context.get(current.name, ()):
+            for candidate in by_name.get(used_name, ()):
                 if candidate.id not in reachable_ids:
                     reachable_ids.add(candidate.id)
                     queue.append(candidate)
@@ -118,17 +125,19 @@ def _load_symbols(conn: sqlite3.Connection) -> list[SymbolRef]:
     return [SymbolRef(id=r[0], file_id=r[1], file_path=r[2], kind=r[3], name=r[4], exported=bool(r[5]), parent=r[6]) for r in rows]
 
 
-def _load_calls_by_caller(conn: sqlite3.Connection) -> dict[str, set[str]]:
-    rows = conn.execute("SELECT caller, callee FROM calls WHERE caller IS NOT NULL").fetchall()
+def _load_uses_by_context(conn: sqlite3.Connection) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
-    for caller, callee in rows:
+    for caller, callee in conn.execute("SELECT caller, callee FROM calls WHERE caller IS NOT NULL").fetchall():
         out.setdefault(caller, set()).add(callee)
+    for referrer, name in conn.execute("SELECT referrer, name FROM references_ WHERE referrer IS NOT NULL").fetchall():
+        out.setdefault(referrer, set()).add(name)
     return out
 
 
-def _load_top_level_callees(conn: sqlite3.Connection) -> set[str]:
-    rows = conn.execute("SELECT DISTINCT callee FROM calls WHERE caller IS NULL").fetchall()
-    return {r[0] for r in rows}
+def _load_top_level_uses(conn: sqlite3.Connection) -> set[str]:
+    names = {r[0] for r in conn.execute("SELECT DISTINCT callee FROM calls WHERE caller IS NULL").fetchall()}
+    names |= {r[0] for r in conn.execute("SELECT DISTINCT name FROM references_ WHERE referrer IS NULL").fetchall()}
+    return names
 
 
 def _load_framework_root_names(conn: sqlite3.Connection) -> set[str]:

@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS framework_roots (
   name TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_framework_roots_name ON framework_roots(name);
+
+CREATE TABLE IF NOT EXISTS references_ (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  referrer TEXT,
+  name TEXT NOT NULL,
+  line INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_references_name ON references_(name);
 """
 
 
@@ -149,6 +158,10 @@ def upsert_file(
     conn.executemany(
         "INSERT INTO framework_roots (file_id, name) VALUES (?, ?)",
         [(file_id, name) for name in result.framework_roots],
+    )
+    conn.executemany(
+        "INSERT INTO references_ (file_id, referrer, name, line) VALUES (?, ?, ?, ?)",
+        [(file_id, r.referrer, r.name, r.line) for r in result.references],
     )
 
 

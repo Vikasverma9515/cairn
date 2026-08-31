@@ -144,6 +144,81 @@ def test_symbol_used_only_inside_an_anonymous_top_level_callback_is_not_dead(tmp
     assert "FakeClient" not in dead_names
 
 
+def test_component_used_only_as_jsx_is_not_dead(tmp_path: Path):
+    # <CairnMark /> is a bare identifier reference, not a call_expression
+    # — found live: this exact pattern (packages/sdk/src/index.tsx) read
+    # as dead before general reference tracking was added.
+    write(
+        tmp_path / "a.tsx",
+        """
+        function CairnMark() { return null; }
+        export function App() { return <CairnMark />; }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    assert "CairnMark" not in {s.name for s in result.dead}
+
+
+def test_callback_passed_by_reference_is_not_dead(tmp_path: Path):
+    # onClick={handleArchive} passes the function as a value, never calls
+    # it directly — found live in examples/demo-app's real components.
+    write(
+        tmp_path / "a.tsx",
+        """
+        function handleArchive() { return 1; }
+        export function Row() { return <button onClick={handleArchive} />; }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    assert "handleArchive" not in {s.name for s in result.dead}
+
+
+def test_type_used_only_in_an_annotation_is_not_dead(tmp_path: Path):
+    write(
+        tmp_path / "a.ts",
+        """
+        interface Status { code: number; }
+        export function report(): Status { return { code: 1 }; }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    assert "Status" not in {s.name for s in result.dead}
+
+
+def test_reference_tracking_does_not_make_everything_reachable(tmp_path: Path):
+    # The critical regression guard: general reference tracking must not
+    # degrade into "every declared name is trivially reachable" (which
+    # would happen if a declaration's own name node were counted as a
+    # reference to itself). A truly unused, unexported function with no
+    # reference anywhere else must still read as dead.
+    write(
+        tmp_path / "a.ts",
+        """
+        export function used() { return 1; }
+        function trulyDead() { return 2; }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    assert "trulyDead" in {s.name for s in result.dead}
+    assert "used" not in {s.name for s in result.dead}
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

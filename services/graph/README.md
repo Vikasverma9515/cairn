@@ -93,33 +93,45 @@ bugs found and fixed along the way, each with a regression test:
    only inside a `describe()` block read as dead.
 
 Net effect on this repo's own `dead` output while fixing these, in
-order: **234 → 47 → 29 → 15** false positives (the 47→29 step also
-included excluding a checked-in minified bundle file that was polluting
-results with meaningless single-letter symbol names — see `_looks_generated`
-in `build.py`). The remaining 15 are honestly all one of two *known*,
-not-yet-built gaps, not unexplained noise:
+order: **234 → 47 → 29 → 15 → 0** false positives against the real
+87-file monorepo (TS/TSX/JS + this service's own Python source). The
+47→29 step also included excluding a checked-in minified bundle file
+that was polluting results with meaningless single-letter symbol names
+— see `_looks_generated` in `build.py`.
+
+The last 15 were both the same underlying gap, confirmed identically in
+Python too (running `dead` against `cairn_graph`'s own source flagged
+`_parse_one`, only ever referenced as `pool.submit(_parse_one, path)` —
+passed as a value, never called; not a language-specific bug):
 
 - **Type-position references** — a type/interface used only in an
-  annotation (`function f(): Status`, `const x: ConnectionDeps`) isn't
-  tracked; only value-position calls and imports are.
+  annotation (`function f(): Status`, `const x: ConnectionDeps`).
 - **Values passed by reference, not called** — `<CairnMark />` as JSX,
-  `onClick={handleArchive}` as a prop, a function passed to `.map()` —
-  anything that's a bare identifier *reference* rather than a
-  `call_expression` or `new_expression` isn't captured yet.
+  `onClick={handleArchive}` as a prop, a function passed to `pool.submit`
+  or `.map()`.
 
-Both are the same underlying fix: extend `extract.py` to record a general
-"identifier referenced here" signal alongside the existing call-edge
-tracking, not just calls specifically. Worth doing before trusting this
-pass to actually delete anything — for now it's accurate enough to
-*suggest*, not accurate enough to *act on unsupervised*.
+Fixed by adding a general, deliberately loose `Reference` capture
+(`extract.py`) alongside the existing precise call/instantiation
+tracking — any bare identifier used as a value or type, not just the
+callee of an actual call. The one hard correctness requirement this
+introduced: a declaration's *own* name node must never count as a
+reference to itself, or every declared symbol would trivially "use
+itself" and nothing would ever read as dead again — enforced by
+excluding each declaration's own name-node position (tracked by
+`(start_byte, end_byte)`, not by node type, since e.g. a `type_alias`'s
+own name and a type it references are both the same `type_identifier`
+node type). Guarded by a regression test
+(`test_reference_tracking_does_not_make_everything_reachable`) that
+proves a genuinely unused function still reads as dead, specifically to
+catch this failure mode if it ever regresses.
 
-Confirmed the same gap shows up identically in Python, not just JS/TS:
-running `dead` against `cairn_graph`'s own source (real dogfood — the
-Python parser parsing itself) flagged `_parse_one`, which is only ever
-referenced as `pool.submit(_parse_one, path)` — passed as a value, never
-directly called. Same category as the JS/TS cases above, not a
-language-specific bug; reassuring that the gap is well-understood rather
-than a pile of unrelated edge cases.
+At this point the pass has real, tested coverage for every reachability
+path found dogfooding it against two real, differently-shaped codebases
+(this TS/TSX/JS+Python monorepo, and the pass's own Python source) —
+accurate enough to trust for suggestions. Still worth a human in the loop
+before deleting anything on a codebase this hasn't been run against yet;
+"zero false positives on two repos" isn't the same claim as "zero false
+positives, period."
 
 ## Language support
 
@@ -142,9 +154,6 @@ same `call` node every plain function call produces.
 
 ## What's not built yet
 
-- **General identifier-reference tracking** — see directly above; the
-  concrete next fix now that call/instantiation/framework-root/anonymous-
-  caller reachability all have real test coverage.
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
   shape of work as adding Python was: one `LanguageSpec` plus a
   language-specific extraction branch (a new grammar family likely needs

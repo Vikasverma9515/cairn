@@ -48,6 +48,25 @@ class CallEdge:
     line: int
 
 
+@dataclass(frozen=True)
+class Reference:
+    """A bare identifier used as a value or type, outside any call —
+    `<Widget />` as JSX, `onClick={handler}` as a prop, `x: Status` as a
+    type annotation, `.map(fn)` passing a function by name. Calls and
+    instantiations are still tracked precisely as CallEdges (kept
+    separate on purpose — that distinction matters for anything beyond
+    reachability); this is the deliberately loose catch-all underneath
+    them so reachability doesn't miss the many real ways a name gets used
+    without ever being the callee of a call_expression/new_expression.
+    Two known false-positive classes this was added specifically to fix
+    — see reachability.py and the README's "Dead code detection" section
+    for how each was found."""
+
+    referrer: str | None  # enclosing symbol name, or None
+    name: str
+    line: int
+
+
 @dataclass
 class ExtractResult:
     symbols: list[Symbol] = field(default_factory=list)
@@ -65,10 +84,19 @@ class ExtractResult:
     # as "framework-invoked, not dead" instead of pretending pure static
     # analysis covers every runtime's calling convention.
     framework_roots: list[str] = field(default_factory=list)
+    references: list[Reference] = field(default_factory=list)
 
 
 def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractResult:
     result = ExtractResult()
+    # Positions (start_byte, end_byte) of every declaration's own name
+    # node — must be excluded from reference collection, or every declared
+    # symbol would trivially "reference itself" at its own declaration
+    # site and nothing would ever read as dead again. Shared across both
+    # walkers via the same result object's tracking, not a return value,
+    # so each declaration branch can register its own name inline right
+    # where it already extracts it.
+    skip: set[tuple[int, int]] = set()
     # Split by grammar family rather than one dispatcher branching on every
     # node type: Python and JS/TS share some node *type names* ("call",
     # "import_statement") with completely different internal structure —
@@ -76,9 +104,9 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
     # language anyway (no real savings) or silently mishandles one
     # language's version of a name it wasn't written for.
     if language == "python":
-        _walk_python(root, source, result, enclosing=None)
+        _walk_python(root, source, result, enclosing=None, skip=skip)
     else:
-        _walk(root, source, result, enclosing=None)
+        _walk(root, source, result, enclosing=None, skip=skip)
     return result
 
 
@@ -91,7 +119,7 @@ def _is_exported(node: Node) -> bool:
     return parent is not None and parent.type == _DECLARATION_EXPORT_PARENT
 
 
-def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) -> None:
+def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
     next_enclosing = enclosing
 
     if node.type == "import_statement":
@@ -100,6 +128,7 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="function",
@@ -115,6 +144,7 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="method",
@@ -130,6 +160,7 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="class",
@@ -144,6 +175,7 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
     elif node.type == "interface_declaration":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="interface",
@@ -157,6 +189,7 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
     elif node.type == "type_alias_declaration":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="type_alias",
@@ -175,6 +208,7 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
         value_node = node.child_by_field_name("value")
         if name_node is not None and value_node is not None and value_node.type in ("arrow_function", "function_expression"):
             name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
             declarator_export = node.parent is not None and node.parent.parent is not None and node.parent.parent.type == _DECLARATION_EXPORT_PARENT
             out.symbols.append(
                 Symbol(
@@ -205,9 +239,15 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
         if ctor_node is not None and ctor_node.type == "identifier":
             out.calls.append(CallEdge(caller=enclosing, callee="constructor", line=node.start_point[0] + 1))
             out.calls.append(CallEdge(caller=enclosing, callee=_text(ctor_node, source), line=node.start_point[0] + 1))
+    elif node.type in ("identifier", "type_identifier", "property_identifier") and (node.start_byte, node.end_byte) not in skip:
+        # The deliberately loose catch-all — see Reference's docstring.
+        # Runs last so every more-precise branch above (which already
+        # recorded its own name-node position in `skip`) takes priority;
+        # this only fires for identifiers nothing else claimed.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
 
     for child in node.children:
-        _walk(child, source, out, next_enclosing)
+        _walk(child, source, out, next_enclosing, skip)
 
 
 def _callee_name(call_node: Node, source: bytes) -> str | None:
@@ -259,7 +299,7 @@ def _py_is_public(name: str) -> bool:
     return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
 
 
-def _walk_python(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) -> None:
+def _walk_python(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
     next_enclosing = enclosing
 
     if node.type in ("import_statement", "import_from_statement"):
@@ -268,6 +308,7 @@ def _walk_python(node: Node, source: bytes, out: ExtractResult, enclosing: str |
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="method" if enclosing is not None else "function",
@@ -283,6 +324,7 @@ def _walk_python(node: Node, source: bytes, out: ExtractResult, enclosing: str |
         name_node = node.child_by_field_name("name")
         if name_node is not None:
             name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
             out.symbols.append(
                 Symbol(
                     kind="class",
@@ -298,9 +340,15 @@ def _walk_python(node: Node, source: bytes, out: ExtractResult, enclosing: str |
         callee = _py_callee_name(node, source)
         if callee is not None:
             out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+    elif node.type == "identifier" and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the JS/TS walker — see
+        # Reference's docstring. Python has no separate "type_identifier"/
+        # "property_identifier" node types; a member-access property and a
+        # plain name are both just "identifier" here.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
 
     for child in node.children:
-        _walk_python(child, source, out, next_enclosing)
+        _walk_python(child, source, out, next_enclosing, skip)
 
 
 def _py_callee_name(call_node: Node, source: bytes) -> str | None:
