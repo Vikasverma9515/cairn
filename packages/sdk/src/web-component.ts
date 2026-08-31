@@ -123,7 +123,7 @@ const STYLES = `
   right: 20px;
   bottom: 82px;
   z-index: 2147483000;
-  width: 320px;
+  width: min(320px, calc(100vw - 40px));
   max-height: 460px;
   overflow-y: auto;
   overflow-x: hidden;

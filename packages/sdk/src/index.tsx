@@ -997,7 +997,7 @@ const COPILOT_STYLES = `
   right: 20px;
   bottom: 82px;
   z-index: 2147483000;
-  width: 320px;
+  width: min(320px, calc(100vw - 40px));
   max-height: 460px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -1100,6 +1100,7 @@ const COPILOT_STYLES = `
 }
 .cairn-input-row input {
   flex: 1;
+  min-width: 0;
   box-sizing: border-box;
   padding: 10px 14px;
   border: none;
