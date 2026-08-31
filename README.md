@@ -110,6 +110,7 @@ self-contained, no dependencies to install):
   endpoint="/api/copilot"
   speak-endpoint="/api/copilot/speak"
   transcribe-endpoint="/api/copilot/transcribe"
+  realtime-url="ws://localhost:3010"
   persona="Cairn"
   registered-actions="archiveInvoice"
 ></cairn-widget>
@@ -121,17 +122,19 @@ self-contained, no dependencies to install):
 </script>
 ```
 
-The backend side (`createCopilotHandler`/`createRealtimeServer` from
-`@cairn/sdk/server`) is plain Node — nothing above requires Next.js on the
-server either, an Express/Fastify route works the same way the Next.js
-route above does.
+Full parity with `<Copilot/>` — typed Q&A, tours, push-to-talk mic, and
+live realtime voice conversation (streaming TTS, barge-in, mute controls)
+all work the same way via this one tag. The backend side
+(`createCopilotHandler`/`createRealtimeServer` from `@cairn/sdk/server`) is
+plain Node — nothing above requires Next.js on the server either, an
+Express/Fastify route works the same way the Next.js route above does.
 
 Live-verified working end-to-end from a genuinely static HTML file with
 zero React and zero build step:
-`examples/demo-app/public/cairn-widget-test.html`.
-
-Not yet in the Web Component version: live realtime voice conversation
-(`realtimeUrl`) — see [ROADMAP.md](./ROADMAP.md) Phase 1.
+`examples/demo-app/public/cairn-widget-test.html` — including the
+realtime path, verified against the real relay with a synthetic mic
+stream (this sandbox has no real microphone; see ROADMAP.md Phase 1 for
+exactly what was and wasn't exercised that way).
 
 ## Analyzing a non-Next.js app (`cairn build` in crawl mode)
 

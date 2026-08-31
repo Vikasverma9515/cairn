@@ -1,19 +1,16 @@
 # Roadmap: any project, any framework
 
 Cairn's goal is to be installable in *any* web project and become that
-app's in-app voice consultant — not just Next.js. Two things are worth
-separating, because they're at very different stages:
-
-- **The agent** — LLM verb resolution, live voice (streaming TTS, barge-in,
-  tours, conversation memory), finding and clicking real DOM elements — is
-  already framework-agnostic in its logic. `createCopilotHandler` and
-  `createRealtimeServer` (`packages/sdk/src/server.ts`,
-  `realtime-server.ts`) are plain Node `http`/`ws`, nothing Next.js-specific.
-  `findElement`/`highlightElement` (`packages/sdk/src/element-ladder.ts`)
-  are plain `document.querySelector`. This part doesn't need a rewrite.
-- **The packaging** — the widget is a React component, and the analyzer
-  (`cairn build`) only reads Next.js App/Pages Router conventions. These
-  are the actual blockers, and this roadmap is about removing them.
+app's in-app voice consultant — not just Next.js. Status: **Phases 0-3 are
+done** — install (`cairn init`), analyze (`cairn build`, source-read or
+crawl), and run (`<cairn-widget>` or `<Copilot/>`, full voice parity
+either way) all work outside Next.js now, each live-verified, not just
+planned. What's left (Phase 4) is open-source project health — CI exists
+and `CONTRIBUTING.md` is written, but issue templates, a docs site, and
+community-contributed scaffolders for frameworks beyond what's built in
+are still open — plus the smaller honest gaps called out inline below
+(no automated tests for crawl mode/`cairn init`, crawl mode's auth/SPA
+limits, not yet published to npm).
 
 ## Phase 0 — real, installable package ✅
 
@@ -23,7 +20,7 @@ instead of exact pins. Framework scope stays Next.js-only here — this
 phase is packaging hygiene, not new capability. (Not yet actually published
 to the npm registry — that's a deliberate separate step.)
 
-## Phase 1 — framework-agnostic widget (MVP shipped, voice parity pending)
+## Phase 1 — framework-agnostic widget ✅
 
 `<cairn-widget>` (`packages/sdk/src/web-component.ts`) is a real, working
 Web Component — Shadow DOM for style isolation, self-registers on load,
@@ -34,22 +31,30 @@ static asset — no JSX, nothing compiled it) round-tripped a real question
 through `/api/copilot` to a real LLM and got a correct spoken+displayed
 answer back, exactly the way `<Copilot/>` does in the Next.js apps.
 
-Covers: typed questions, explain/highlight/navigate/do/tour execution,
-spoken answers (`speak-endpoint`), push-to-talk mic (`transcribe-endpoint`),
-persona. The backend (`createCopilotHandler`/`createRealtimeServer`)
-already needed no framework — nothing to build there, just needs an
-Express/Fastify doc example alongside the existing Next.js one.
+Full feature parity with `<Copilot/>`, including live realtime voice
+conversation — streaming TTS, gapless PCM audio scheduling, barge-in, mic
+mute/speaker mute, tours narrating over an open call, conversation memory.
+The backend (`createCopilotHandler`/`createRealtimeServer`) needed zero
+changes for any of this, confirming the original "framework-agnostic under
+the hood" premise. **Live-verified against the real relay**, not just
+typechecked: this sandbox has no real microphone, so `getUserMedia` was
+shimmed with a synthetic audio stream to let the rest of the pipeline run
+for real — confirmed a genuine WebSocket reaches the live relay, real
+synthetic server messages (`speaking_start`, a real base64 PCM16
+`audio_chunk`, `turn_complete`) dispatched onto that live socket correctly
+schedule real Web Audio API playback (no throw, correct buffer math), the
+widget correctly holds `rt-speaking` until *both* the audio finishes
+playing *and* the server's completion signal arrives (not just one or the
+other), and `endRealtime()` tears down cleanly. Barge-in's internal
+threshold logic is a byte-for-byte port of the already-verified React
+version; only the live-mic RMS trigger itself wasn't re-exercised (same
+no-real-mic boundary as everywhere else this session).
 
-**Deliberately deferred, not yet done:** live realtime voice conversation
-(`realtimeUrl`, streaming TTS, barge-in) only exists in the React widget
-today. Re-implementing and re-verifying mic PCM streaming + gapless audio
-scheduling + barge-in a second time, in one pass, without being able to
-re-run the full live-mic verification, was a real risk not worth taking
-blind — `<Copilot/>` (React) stays the fully-featured implementation until
-that's built and verified on its own. The two are **separate
-implementations** right now, not one core with two thin wrappers as
-originally sketched — unifying them is follow-up work once the vanilla
-path has realtime voice too, not before.
+`<Copilot/>` (React) and `<cairn-widget>` (vanilla) are still two separate
+implementations sharing the same framework-neutral core — not yet unified
+into one core with two thin wrappers as originally sketched. Both are now
+fully-featured, so unifying them is a pure refactor whenever it's worth
+doing, not blocked on missing functionality anymore.
 
 ## Phase 2 — runtime-crawl analyzer ✅
 
