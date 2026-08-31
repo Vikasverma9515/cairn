@@ -13,7 +13,9 @@ from cairn_graph.actions import (
     RiskTier,
     apply_edit,
     build_apply_edit_action,
+    build_run_command_action,
     decide,
+    run_command,
 )
 
 
@@ -80,3 +82,42 @@ def test_apply_edit_refuses_a_path_that_escapes_the_root(tmp_path: Path):
         apply_edit(str(root), "../outside.txt", "secret", "leaked")
 
     assert outside.read_text() == "secret"  # untouched
+
+
+def test_build_run_command_action_is_always_critical_tier():
+    action = build_run_command_action(["echo", "hi"])
+    assert action.risk is RiskTier.CRITICAL
+
+
+def test_build_run_command_action_rejects_empty_command():
+    with pytest.raises(ValueError):
+        build_run_command_action([])
+
+
+def test_run_command_always_needs_approval_in_either_mode():
+    action = build_run_command_action(["echo", "hi"])
+    assert decide(action, PermissionMode.AUTO) is Decision.NEEDS_APPROVAL
+    assert decide(action, PermissionMode.REVIEW) is Decision.NEEDS_APPROVAL
+
+
+def test_run_command_executes_with_cwd_pinned_to_root(tmp_path: Path):
+    (tmp_path / "marker.txt").write_text("present")
+
+    result = run_command(str(tmp_path), ["ls", "marker.txt"])
+
+    assert result["returncode"] == 0
+    assert "marker.txt" in result["stdout"]
+    assert result["timed_out"] is False
+
+
+def test_run_command_captures_nonzero_exit_and_stderr(tmp_path: Path):
+    result = run_command(str(tmp_path), ["ls", "does-not-exist.txt"])
+
+    assert result["returncode"] != 0
+    assert result["stderr"] != ""
+
+
+def test_run_command_times_out_instead_of_hanging(tmp_path: Path):
+    result = run_command(str(tmp_path), ["sleep", "5"], timeout=1)
+
+    assert result["timed_out"] is True

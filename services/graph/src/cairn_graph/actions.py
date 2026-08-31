@@ -21,8 +21,11 @@ hard to reverse, or affects something beyond the one file being edited.
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
+
+_OUTPUT_CAP = 10_000  # chars — enough to be useful, not enough for a runaway process to flood the response
 
 
 class RiskTier(str, Enum):
@@ -105,3 +108,38 @@ def apply_edit(root: str, file_path: str, old_text: str, new_text: str) -> dict:
     with open(target, "w", encoding="utf-8") as f:
         f.write(content.replace(old_text, new_text, 1))
     return {"file_path": file_path, "bytes_written": len(content) - len(old_text) + len(new_text)}
+
+
+def build_run_command_action(command: list[str]) -> ActionRequest:
+    """Arbitrary command execution is the textbook CRITICAL action — no
+    scoping check can make "run whatever this string says" reversible or
+    contained the way a single-file text edit is. It always needs
+    approval (see `decide()`); this exists so the tier isn't just a name
+    with nothing behind it."""
+    if not command:
+        raise ValueError("command must not be empty")
+    return ActionRequest(
+        tool_name="run_command",
+        description=f"Run: {' '.join(command)}",
+        risk=RiskTier.CRITICAL,
+        args={"command": command},
+    )
+
+
+def run_command(root: str, command: list[str], timeout: int = 30) -> dict:
+    """Runs with cwd pinned to the indexed root and shell=False — argv
+    form only, no shell string interpolation. Approval is enforced by the
+    caller (via `decide()`); this function trusts that it was already
+    cleared, same contract as `apply_edit`."""
+    if not command:
+        raise ValueError("command must not be empty")
+    try:
+        proc = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout, shell=False)
+    except subprocess.TimeoutExpired as exc:
+        return {"timed_out": True, "returncode": None, "stdout": (exc.stdout or "")[:_OUTPUT_CAP], "stderr": (exc.stderr or "")[:_OUTPUT_CAP]}
+    return {
+        "timed_out": False,
+        "returncode": proc.returncode,
+        "stdout": proc.stdout[:_OUTPUT_CAP],
+        "stderr": proc.stderr[:_OUTPUT_CAP],
+    }

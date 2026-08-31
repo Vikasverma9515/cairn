@@ -21,7 +21,15 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from cairn_graph.actions import Decision, PermissionMode, apply_edit, build_apply_edit_action, decide
+from cairn_graph.actions import (
+    Decision,
+    PermissionMode,
+    apply_edit,
+    build_apply_edit_action,
+    build_run_command_action,
+    decide,
+    run_command,
+)
 from cairn_graph.build import build_graph
 from cairn_graph.reachability import compute_dead_symbols
 from cairn_graph.store import open_store, stats
@@ -111,6 +119,19 @@ def apply_edit_gated(
     return {"status": "applied", **result}
 
 
+def run_command_gated(root: str, command: list[str], mode: PermissionMode, approved: bool = False) -> dict[str, Any]:
+    """CRITICAL tier means `decide()` returns NEEDS_APPROVAL here in every
+    mode — this function's mode argument only exists to keep the same
+    shape as `apply_edit_gated`; it never changes the outcome for a
+    CRITICAL action, by design."""
+    action = build_run_command_action(command)
+    decision = decide(action, mode)
+    if decision is Decision.NEEDS_APPROVAL and not approved:
+        return {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
+    result = run_command(root, command)
+    return {"status": "ran", **result}
+
+
 def semantic_search(vector_dir: str, query: str, limit: int = 10, embed_fn=None) -> dict[str, Any]:
     """Find code by what it does, not what it's named — the complement to
     `search_symbols`'s substring match. Returns an empty list, not an
@@ -159,9 +180,11 @@ def build_server(
             "unreferenced dead code, or re-index after changes. Name-based "
             "results are exact but not type-resolved; semantic results are "
             "similarity ranked, not exact — treat both as strong hints, "
-            "not proof. apply_edit_tool is gated: a needs_approval response "
-            "means show the description to the human and call again with "
-            "approved=true only after they say yes — never on your own."
+            "not proof. apply_edit_tool and run_command_tool are gated: a "
+            "needs_approval response means show the description to the "
+            "human and call again with approved=true only after they say "
+            "yes — never on your own. run_command_tool always needs "
+            "approval, in either permission mode."
         ),
     )
     conn = open_store(db_path)
@@ -219,6 +242,14 @@ def build_server(
         return status="needs_approval" instead of editing anything; see the
         server instructions for how to handle that."""
         return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved)
+
+    @server.tool()
+    def run_command_tool(command: list[str], approved: bool = False) -> dict[str, Any]:
+        """Run a shell command (argv list, e.g. ["npm", "test"]) with cwd
+        pinned to the indexed root. CRITICAL risk — always returns
+        status="needs_approval" on the first call, in either permission
+        mode; see the server instructions for the approval flow."""
+        return run_command_gated(root, command, permission_mode, approved)
 
     return server
 

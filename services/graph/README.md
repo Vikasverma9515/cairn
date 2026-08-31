@@ -180,8 +180,10 @@ function (`search_symbols`, `get_symbol_usages`, `find_dead_code`,
   below).
 - **`vectorize_tool`** — (re)build the semantic index after a `build` or
   `reindex_tool`.
-- **`apply_edit_tool`** — the first action tool, gated by the permission
-  layer below; everything else in this list is read-only.
+- **`apply_edit_tool`** — REVIEW-tier action, gated by the permission
+  layer below.
+- **`run_command_tool`** — CRITICAL-tier action, always gated regardless
+  of mode. Everything else in this list is read-only.
 
 **API-drift note, found live, not assumed**: this targets `mcp` 2.x, where
 `FastMCP` was renamed to `MCPServer`. Importing the old `mcp.server.fastmcp`
@@ -251,32 +253,40 @@ Three risk tiers, one rule each:
   action: a single-file text replace) — proceeds in auto mode, stops and
   asks in review mode. This is the entire behavioral difference between
   the two modes.
-- **CRITICAL** (destructive, or reaches outside the indexed root — nothing
-  wired up to this tier yet) — always stops, in *either* mode. Mirrors
-  this agent's own "Prohibited" / "Explicit permission required" action
-  categories: some things don't get an auto-mode bypass, ever.
+- **CRITICAL** (destructive, or can't be scoped/reversed the way a single
+  file edit can) — always stops, in *either* mode, no auto-mode bypass.
+  Mirrors this agent's own "Prohibited" / "Explicit permission required"
+  action categories.
 
-The one action live right now is `apply_edit` — a single-file text
-replace, same semantics as this agent's own Edit tool: the text to
-replace must match exactly once in the file, or the edit is refused
-rather than guessing which occurrence was meant. Scoped to the indexed
-root with a real path-escape check (`os.path.realpath` +
-`os.path.commonpath`, not string-prefix matching) — verified live with a
-`../` traversal attempt that gets rejected before touching disk, not just
-asserted in a unit test.
+Two actions live right now:
+
+- **`apply_edit`** (REVIEW) — a single-file text replace, same semantics
+  as this agent's own Edit tool: the text to replace must match exactly
+  once in the file, or the edit is refused rather than guessing which
+  occurrence was meant. Scoped to the indexed root with a real
+  path-escape check (`os.path.realpath` + `os.path.commonpath`, not
+  string-prefix matching) — verified live with a `../` traversal attempt
+  that gets rejected before touching disk.
+- **`run_command`** (CRITICAL) — runs an argv-form command (`shell=False`,
+  no string interpolation) with `cwd` pinned to the indexed root, output
+  capped at 10k chars, a real timeout (`subprocess.TimeoutExpired`
+  caught and reported as `timed_out: true`, not left to hang). Always
+  needs approval — there's no scoping check that could make "run
+  whatever this says" safe enough to auto-mode, so `decide()` doesn't
+  even look at the mode for this tier.
 
 Server default is **review mode** — a server doesn't silently start
-willing to auto-apply edits; that's an explicit `--mode auto` opt-in.
-`apply_edit_tool`'s gated response shape mirrors this agent's own
-tool-permission flow: a `needs_approval` response carries a human-readable
-`description`; the caller shows it to a person and calls again with
-`approved=true` only after they say yes — the tool never decides that for
-itself.
+willing to auto-apply edits; that's an explicit `--mode auto` opt-in
+(and doesn't affect `run_command` either way). Both gated tools share one
+response shape, mirroring this agent's own tool-permission flow: a
+`needs_approval` response carries a human-readable `description`; the
+caller shows it to a person and calls again with `approved=true` only
+after they say yes — the tool never decides that for itself.
 
-8 new tests (`test_actions.py`) plus 3 more in `test_mcp_server.py`
-covering the MCP-bound gated flow (blocked in review mode, proceeds in
-auto mode, proceeds in review mode once approved) — all verified against
-a real file on disk, not mocked I/O.
+14 new tests (`test_actions.py`) plus 5 more in `test_mcp_server.py`
+covering both gated flows end to end (blocked in review mode, proceeds in
+auto mode, proceeds once approved, CRITICAL blocked even in auto mode) —
+all verified against real files and real subprocesses, not mocked I/O.
 
 ## What's not built yet
 

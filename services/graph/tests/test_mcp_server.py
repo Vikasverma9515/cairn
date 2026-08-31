@@ -12,6 +12,7 @@ from cairn_graph.mcp_server import (
     get_index_stats,
     get_symbol_usages,
     reindex,
+    run_command_gated,
     search_symbols,
     semantic_search,
 )
@@ -147,6 +148,7 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "semantic",
         "vectorize_tool",
         "apply_edit_tool",
+        "run_command_tool",
     } <= tool_names
 
 
@@ -178,3 +180,15 @@ def test_apply_edit_gated_proceeds_in_review_mode_once_approved(tmp_path: Path):
 
     assert result["status"] == "applied"
     assert f.read_text() == "const greeting = 'hello';"
+
+
+def test_run_command_gated_needs_approval_even_in_auto_mode(tmp_path: Path):
+    result = run_command_gated(str(tmp_path), ["echo", "hi"], PermissionMode.AUTO)
+    assert result["status"] == "needs_approval"
+
+
+def test_run_command_gated_runs_once_approved(tmp_path: Path):
+    (tmp_path / "marker.txt").write_text("present")
+    result = run_command_gated(str(tmp_path), ["ls", "marker.txt"], PermissionMode.AUTO, approved=True)
+    assert result["status"] == "ran"
+    assert "marker.txt" in result["stdout"]
