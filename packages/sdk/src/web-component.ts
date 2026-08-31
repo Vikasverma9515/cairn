@@ -73,8 +73,9 @@ const STYLES = `
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @keyframes cairn-word-sweep {
-  from { opacity: 0.32; }
-  to { opacity: 1; }
+  0% { opacity: 0.35; text-shadow: none; }
+  35% { opacity: 1; color: #4f46e5; text-shadow: 0 0 10px rgba(99, 102, 241, 0.45); }
+  100% { opacity: 1; color: inherit; text-shadow: none; }
 }
 @keyframes cairn-thinking-bounce {
   0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
@@ -557,8 +558,6 @@ export class CairnWidgetElement extends HTMLElement {
       this.rtSpeakerBtn.setAttribute("aria-label", this.rtSpeakerMuted ? "Unmute speaker" : "Mute speaker");
     }
 
-    const statusLabel = STATUS_LABEL[this.status];
-
     // `caption` is overloaded by design (see its setters elsewhere): during
     // a tour it's a step-progress label ("Step 1 of 2"), not user speech,
     // so it reads as a small chip over the agent's bubble instead. While
@@ -575,9 +574,11 @@ export class CairnWidgetElement extends HTMLElement {
     this.userBubbleEl.textContent = userCaption;
 
     this.agentBubbleEl.style.display = showAgent ? "flex" : "none";
-    const chipText = tourChip || (realtimeActive && !tourChip ? statusLabel : "");
-    this.chipEl.style.display = chipText ? "inline-block" : "none";
-    this.chipEl.textContent = chipText;
+    // Only the tour step counter shows here — generic realtime status
+    // (listening/thinking/speaking) already has its own place in the
+    // rt-bar below; showing it a second time here was a real duplication.
+    this.chipEl.style.display = tourChip ? "inline-block" : "none";
+    this.chipEl.textContent = tourChip;
 
     if (this.answer) {
       this.agentTextEl.style.display = "inline";
@@ -812,7 +813,22 @@ export class CairnWidgetElement extends HTMLElement {
         return;
       }
       this.rtAudioDoneArriving = false;
-      this.rtTourAudioDoneResolve = resolve;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.rtTourAudioDoneResolve = null;
+        resolve();
+      };
+      this.rtTourAudioDoneResolve = finish;
+      // Safety net: if the server's "this step's audio is fully done"
+      // confirmation is ever dropped (a flaky Deepgram Flushed event, a
+      // closed connection mid-turn), don't let the tour hang on this step
+      // forever with the mic never resuming — move on instead.
+      setTimeout(() => {
+        if (!settled) console.warn("[cairn] tour step audio confirmation timed out — continuing");
+        finish();
+      }, 15000);
       ws.send(JSON.stringify({ type: "speak", text }));
     });
   }

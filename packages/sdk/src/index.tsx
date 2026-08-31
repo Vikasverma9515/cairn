@@ -364,7 +364,22 @@ export function Copilot({
         return;
       }
       rtAudioDoneArrivingRef.current = false;
-      rtTourAudioDoneRef.current = resolve;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        rtTourAudioDoneRef.current = null;
+        resolve();
+      };
+      rtTourAudioDoneRef.current = finish;
+      // Safety net: if the server's "this step's audio is fully done"
+      // confirmation is ever dropped (a flaky Deepgram Flushed event, a
+      // closed connection mid-turn), don't let the tour hang on this step
+      // forever with the mic never resuming — move on instead.
+      setTimeout(() => {
+        if (!settled) console.warn("[cairn] tour step audio confirmation timed out — continuing");
+        finish();
+      }, 15000);
       ws.send(JSON.stringify({ type: "speak", text }));
     });
   }
@@ -698,9 +713,6 @@ export function Copilot({
               {(answer || busy) && (
                 <div className="cairn-bubble cairn-bubble-agent" key={`a-${answer ?? status}`}>
                   {tourChip && <span className="cairn-chip">{tourChip}</span>}
-                  {realtimeActive && !tourChip && statusLabel[status] && (
-                    <span className="cairn-chip">{statusLabel[status]}</span>
-                  )}
                   {answer ? (
                     <span className="cairn-bubble-text">{renderCaptionWords(answer)}</span>
                   ) : (
@@ -934,8 +946,9 @@ const COPILOT_STYLES = `
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes cairn-word-sweep {
-  from { opacity: 0.32; }
-  to { opacity: 1; }
+  0% { opacity: 0.35; text-shadow: none; }
+  35% { opacity: 1; color: #4f46e5; text-shadow: 0 0 10px rgba(99, 102, 241, 0.45); }
+  100% { opacity: 1; color: inherit; text-shadow: none; }
 }
 @keyframes cairn-thinking-bounce {
   0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
