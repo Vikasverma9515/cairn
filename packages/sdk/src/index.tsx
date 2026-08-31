@@ -995,7 +995,7 @@ const COPILOT_STYLES = `
 .cairn-panel {
   position: fixed;
   right: 20px;
-  bottom: 82px;
+  bottom: 96px;
   z-index: 2147483000;
   width: min(320px, calc(100vw - 40px));
   max-height: 460px;
