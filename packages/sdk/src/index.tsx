@@ -1033,29 +1033,31 @@ const COPILOT_STYLES = `
   flex-direction: column;
   gap: 8px;
 }
+/* No card, no background, no blur — the message itself is just text,
+   held legible over any host page by a soft light halo behind the
+   letters instead of a drawn surface. The same technique real burned-in
+   captions use over unpredictable video. */
 .cairn-bubble {
   max-width: 90%;
-  padding: 9px 13px;
-  border-radius: 14px;
-  font-size: 13.5px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
+  font-weight: 500;
   color: #0b0d12;
-  background: rgba(255, 255, 255, 0.78);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
-  backdrop-filter: blur(22px) saturate(160%);
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
+  text-shadow:
+    0 0 2px rgba(255, 255, 255, 0.95),
+    0 0 6px rgba(255, 255, 255, 0.85),
+    0 0 14px rgba(255, 255, 255, 0.6);
   animation: cairn-bubble-in 0.22s ease-out;
 }
 .cairn-bubble-user {
   align-self: flex-end;
-  border-bottom-right-radius: 4px;
+  text-align: right;
 }
 .cairn-bubble-agent {
   align-self: flex-start;
-  border-bottom-left-radius: 4px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 .cairn-bubble-text {
   white-space: pre-wrap;
@@ -1066,14 +1068,14 @@ const COPILOT_STYLES = `
 }
 .cairn-chip {
   align-self: flex-start;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(11, 13, 18, 0.06);
-  color: rgba(11, 13, 18, 0.6);
+  color: rgba(11, 13, 18, 0.55);
+  text-shadow:
+    0 0 2px rgba(255, 255, 255, 0.95),
+    0 0 6px rgba(255, 255, 255, 0.85);
 }
 .cairn-thinking {
   display: inline-flex;
@@ -1085,6 +1087,7 @@ const COPILOT_STYLES = `
   height: 5px;
   border-radius: 999px;
   background: rgba(11, 13, 18, 0.55);
+  box-shadow: 0 0 3px 1px rgba(255, 255, 255, 0.9);
   animation: cairn-thinking-bounce 1.1s ease-in-out infinite;
 }
 .cairn-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
