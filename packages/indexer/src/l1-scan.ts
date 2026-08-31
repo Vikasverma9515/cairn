@@ -179,7 +179,20 @@ function findInteractiveElements(sf: SourceFile, relFile: string): RawElement[] 
     }
 
     const line = node.getStartLineNumber();
-    const id = dataAi ?? slugify(text ?? ariaLabel ?? `${bucket}-${line}`);
+    // Raw text/aria-label, NOT slugified, when there's no data-ai — the
+    // runtime widget's findElement() ladder (element-ladder.ts) matches
+    // aria-label and text exactly as they appear on the element (case/
+    // whitespace-normalized, but never hyphenated). A slugified id like
+    // "new-invoice" would never match a button whose actual text is "New
+    // Invoice" — this was a real, live latent gap: crawl.ts's runtime-DOM
+    // analyzer never had it (built after this one, with the ladder's real
+    // matching rules in mind), and this fix brings the source-reading path
+    // in line with it. Only the last-resort synthetic fallback (no data-ai,
+    // no aria-label, no text at all — an icon-only button with no
+    // accessible name) still gets slugified; that case was already
+    // unfindable via the ladder regardless of formatting, so slugifying it
+    // doesn't make anything newly broken, just keeps the id readable.
+    const id = dataAi ?? text ?? ariaLabel ?? slugify(`${bucket}-${line}`);
 
     results.push({
       id,

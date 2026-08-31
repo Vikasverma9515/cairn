@@ -41,6 +41,11 @@ describe("scanL1", () => {
     expect(link).toBeDefined();
     expect(link?.tag).toBe("a");
     expect(link?.handlerCall).toBe("navigate /contact");
+    // Raw text, not slugified ("contact-us") — the runtime widget's
+    // findElement() ladder matches an element's actual (normalized) text
+    // content, never a hyphenated slug, so the manifest id has to be the
+    // real value or a highlight/click on this element would never resolve.
+    expect(link?.id).toBe("Contact us");
   });
 
   it("treats a *Button-named component with an onClick as a button (heuristic)", () => {
@@ -50,6 +55,7 @@ describe("scanL1", () => {
     expect(archiveButton).toBeDefined();
     expect(archiveButton?.tag).toBe("button");
     expect(archiveButton?.handlerCall).toBe("POST /api/items/archive");
+    expect(archiveButton?.id).toBe("Archive"); // same reasoning — raw text, not slugified
   });
 
   it("finds the create-item button with its data-ai id and traced API call", () => {
