@@ -103,6 +103,18 @@ CREATE TABLE IF NOT EXISTS action_log (
 );
 CREATE INDEX IF NOT EXISTS idx_action_log_created ON action_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_action_log_customer ON action_log(customer_id);
+
+-- What the vector index last embedded for each file, keyed by path (not
+-- file_id — a changed file gets a fresh file_id on reindex, see
+-- upsert_file's delete-then-reinsert, so path is the only stable key
+-- across builds). Lets vectors.py skip re-embedding a file whose content
+-- hasn't changed since it was last vectorized, the same incremental
+-- lever build.py already applies to parsing.
+CREATE TABLE IF NOT EXISTS vector_sync (
+  path TEXT PRIMARY KEY,
+  content_hash TEXT NOT NULL,
+  embedded_at REAL NOT NULL
+);
 """
 
 
@@ -236,6 +248,25 @@ def list_action_log(conn: sqlite3.Connection, limit: int = 50, customer_id: str 
             (limit,),
         ).fetchall()
     return [ActionLogEntry(*row) for row in rows]
+
+
+def get_vector_sync_state(conn: sqlite3.Connection) -> dict[str, str]:
+    """path -> content_hash last embedded — the vector-index counterpart
+    to `existing_hashes()`, same shape, same purpose."""
+    rows = conn.execute("SELECT path, content_hash FROM vector_sync").fetchall()
+    return {path: content_hash for path, content_hash in rows}
+
+
+def set_vector_sync_state(conn: sqlite3.Connection, path: str, content_hash: str) -> None:
+    conn.execute(
+        "INSERT INTO vector_sync (path, content_hash, embedded_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(path) DO UPDATE SET content_hash = excluded.content_hash, embedded_at = excluded.embedded_at",
+        (path, content_hash, time.time()),
+    )
+
+
+def remove_vector_sync_state(conn: sqlite3.Connection, path: str) -> None:
+    conn.execute("DELETE FROM vector_sync WHERE path = ?", (path,))
 
 
 def stats(conn: sqlite3.Connection) -> dict[str, int]:

@@ -81,6 +81,72 @@ def test_build_vector_index_on_empty_graph_embeds_nothing(tmp_path: Path):
     assert summary.batches == 0
 
 
+def test_second_call_with_no_changes_embeds_nothing(tmp_path: Path):
+    write(tmp_path / "a.ts", "export function total() { return 1; }")
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+    vectors = tmp_path / "vectors"
+
+    build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+    second = build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    assert second.symbols_embedded == 0
+    assert second.files_skipped_unchanged == 1
+    assert second.files_changed == 0
+
+
+def test_changing_one_file_only_re_embeds_that_files_symbols(tmp_path: Path):
+    write(tmp_path / "a.ts", "export function total() { return 1; }")
+    write(tmp_path / "b.ts", "export function other() { return 2; }")
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+    vectors = tmp_path / "vectors"
+    build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    write(tmp_path / "a.ts", "export function total() { return 999; }")
+    build_graph(str(tmp_path), str(db))  # re-parse so the graph reflects the change
+    second = build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    assert second.files_changed == 1
+    assert second.files_skipped_unchanged == 1
+    assert second.symbols_embedded == 1
+
+
+def test_incremental_update_is_reflected_in_search_results(tmp_path: Path):
+    # Correctness, not just counts: after a file changes and gets
+    # re-embedded, searching should find its *new* content, not a stale
+    # vector left over from before the change.
+    write(tmp_path / "a.ts", "export function calculateInvoiceTotal(items) { return 1; }")
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+    vectors = tmp_path / "vectors"
+    build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    write(tmp_path / "a.ts", "export function sendWelcomeEmailToUser(user) { return 1; }")
+    build_graph(str(tmp_path), str(db))
+    build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    results = search_semantic(str(vectors), "send a welcome email", embed_fn=_fake_embed, limit=1)
+    assert results[0]["name"] == "sendWelcomeEmailToUser"
+
+
+def test_deleting_a_file_removes_its_vectors_and_is_reported(tmp_path: Path):
+    write(tmp_path / "a.ts", "export function total() { return 1; }")
+    write(tmp_path / "b.ts", "export function other() { return 2; }")
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+    vectors = tmp_path / "vectors"
+    build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    (tmp_path / "b.ts").unlink()
+    build_graph(str(tmp_path), str(db))  # re-scan so the graph reflects the deletion
+    second = build_vector_index(str(db), str(vectors), embed_fn=_fake_embed)
+
+    assert second.files_removed == 1
+    results = search_semantic(str(vectors), "other", embed_fn=_fake_embed, limit=10)
+    assert all(r["name"] != "other" for r in results)
+
+
 def test_search_semantic_results_include_location(tmp_path: Path):
     write(tmp_path / "a.ts", "export function widgetRenderer() { return 1; }")
     db = tmp_path / "graph.db"

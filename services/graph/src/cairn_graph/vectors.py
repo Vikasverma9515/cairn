@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+from cairn_graph.store import get_vector_sync_state, open_store, remove_vector_sync_state, set_vector_sync_state
+
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 _MAX_SNIPPET_LINES = 40
 
@@ -89,20 +91,26 @@ def _load_symbols(conn: sqlite3.Connection) -> list[SymbolForEmbedding]:
     return [SymbolForEmbedding(*row) for row in rows]
 
 
-def _open_collection(vector_dir: str, dim: int):
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, VectorParams
+def _delete_points_for_file(client, file_path: str) -> None:
+    """Removes every existing point for one file before re-embedding it —
+    necessary, not just tidy: a changed file gets fresh symbol ids on
+    reindex (upsert_file deletes and reinserts its rows), so its old
+    vector points would otherwise become permanently orphaned garbage in
+    the collection, never overwritten by an upsert under a new id."""
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-    client = QdrantClient(path=vector_dir)
     if not client.collection_exists("symbols"):
-        client.create_collection(collection_name="symbols", vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
-    return client
+        return
+    client.delete(collection_name="symbols", points_selector=Filter(must=[FieldCondition(key="file", match=MatchValue(value=file_path))]))
 
 
 @dataclass
 class VectorIndexSummary:
     symbols_embedded: int
     batches: int
+    files_changed: int = 0
+    files_skipped_unchanged: int = 0
+    files_removed: int = 0
 
 
 def build_vector_index(
@@ -112,22 +120,57 @@ def build_vector_index(
     embed_fn: EmbedFn | None = None,
     batch_size: int = 64,
 ) -> VectorIndexSummary:
-    """Full rebuild of the vector index from the current structure graph.
-    Reads each symbol's own source lines off disk (not just its name) so
-    the embedding captures what the code actually does, not just what
-    it's called."""
-    from qdrant_client.models import PointStruct
+    """Incremental: only (re-)embeds files whose content_hash has changed
+    since the last `build_vector_index` call, the same content-hash lever
+    `build.py` uses for parsing — the thing that keeps a lakhs-of-files
+    repo's *second* vectorize fast, not just its second parse. Reads each
+    symbol's own source lines off disk (not just its name) so the
+    embedding captures what the code actually does, not just what it's
+    called."""
+    conn = open_store(db_path)  # ensures vector_sync exists even if this db was never opened via open_store before
 
-    conn = sqlite3.connect(db_path)
-    symbols = _load_symbols(conn)
+    current_files = dict(conn.execute("SELECT path, content_hash FROM files").fetchall())
+    synced = get_vector_sync_state(conn)
+
+    changed_paths = {p for p, h in current_files.items() if synced.get(p) != h}
+    removed_paths = set(synced) - set(current_files)
+    skipped_paths = set(current_files) - changed_paths
+
+    if not changed_paths and not removed_paths:
+        return VectorIndexSummary(
+            symbols_embedded=0, batches=0, files_changed=0, files_skipped_unchanged=len(skipped_paths), files_removed=0
+        )
+
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+
+    # One client for this whole call, never two: embedded Qdrant holds an
+    # exclusive file lock on `vector_dir`, so a second QdrantClient(path=...)
+    # against the same directory while this one is still open raises
+    # RuntimeError — found live the first time this function both deleted
+    # stale points *and* needed to create the collection in the same call,
+    # via a leftover `_open_collection()` call that opened a second client.
+    client = QdrantClient(path=vector_dir)
+    for path in removed_paths | changed_paths:
+        _delete_points_for_file(client, path)
+    for path in removed_paths:
+        remove_vector_sync_state(conn, path)
+    conn.commit()
+
+    all_symbols = _load_symbols(conn)
+    symbols = [s for s in all_symbols if s.file_path in changed_paths]
+
     if not symbols:
-        return VectorIndexSummary(symbols_embedded=0, batches=0)
+        return VectorIndexSummary(
+            symbols_embedded=0, batches=0, files_changed=len(changed_paths), files_skipped_unchanged=len(skipped_paths), files_removed=len(removed_paths)
+        )
 
     texts = [_symbol_text(s.kind, s.name, s.parent, _read_snippet(s.file_path, s.start_line, s.end_line)) for s in symbols]
 
     first_batch = embed_texts(texts[:1], model_name=model_name, embed_fn=embed_fn)
     dim = len(first_batch[0]) if first_batch else 0
-    client = _open_collection(vector_dir, dim)
+    if not client.collection_exists("symbols"):
+        client.create_collection(collection_name="symbols", vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
 
     batches = 0
     for start in range(0, len(symbols), batch_size):
@@ -152,7 +195,17 @@ def build_vector_index(
         client.upsert(collection_name="symbols", points=points)
         batches += 1
 
-    return VectorIndexSummary(symbols_embedded=len(symbols), batches=batches)
+    for path in changed_paths:
+        set_vector_sync_state(conn, path, current_files[path])
+    conn.commit()
+
+    return VectorIndexSummary(
+        symbols_embedded=len(symbols),
+        batches=batches,
+        files_changed=len(changed_paths),
+        files_skipped_unchanged=len(skipped_paths),
+        files_removed=len(removed_paths),
+    )
 
 
 def search_semantic(

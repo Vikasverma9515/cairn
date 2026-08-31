@@ -247,11 +247,31 @@ constraint that shaped the tree-sitter choice:
 Each symbol's embedding text is its own source lines (read off disk at
 index time, capped at 40 lines), not just its name — the embedding
 captures what the code actually does. Both `build_vector_index` and
-`search_semantic` take an injectable `embed_fn`, so the test suite (5
-tests in `test_vectors.py`, plus 2 more exercising the MCP `semantic`
-tool) runs against a deterministic hashing-trick fake embedder — real
+`search_semantic` take an injectable `embed_fn`, so the test suite runs
+against a deterministic hashing-trick fake embedder — real
 nearest-neighbor-by-shared-vocabulary behavior, asserted exactly, with no
 network call or model load in the hot path of `pytest`.
+
+**Incremental, like the structure graph is** — `vectorize` only
+(re-)embeds files whose content hash changed since the last call (a new
+`vector_sync` table in `store.py`, same shape as the graph's own
+`existing_hashes()`). A changed file gets a fresh set of symbol ids on
+reindex (`upsert_file` deletes and reinserts its rows), so re-vectorizing
+also deletes that file's *old* Qdrant points first — via a payload
+filter on `file`, not by tracking old ids — or they'd become permanently
+orphaned garbage the collection never overwrites. A removed file's
+points are deleted and its `vector_sync` row dropped. **Found live while
+building this**: embedded Qdrant holds an exclusive file lock per
+storage directory, so opening a second `QdrantClient` against the same
+`vector_dir` while the first is still alive (an early version did this —
+one client for the delete step, a second for `create_collection`)
+crashes with `RuntimeError: Storage folder ... is already accessed by
+another instance`. Fixed by using exactly one client for the whole call.
+Dogfooded live against the real cairn monorepo (661 symbols): first
+`vectorize` took 533.79s of real embedding work; a second `vectorize`
+with nothing changed took **0.14s wall time, 0 symbols embedded** — the
+scale lever pillar 8/9's "works even at lakhs of files" needs on the
+vector index, not just the parse graph, measured, not assumed.
 
 ## Permission gate (Month 2, first slice)
 
@@ -561,10 +581,12 @@ just that the happy path prints something). 154 tests total, all passing.
   shape of work as adding Python was: one `LanguageSpec` plus a
   language-specific extraction branch (a new grammar family likely needs
   its own walker, same reasoning as `_walk_python`'s docstring).
-- **Incremental vector sync** — `vectorize` is currently a full rebuild;
-  the structure graph's incremental (content-hash, skip-unchanged) sync
-  doesn't yet apply to the vector index. Fine at hundreds of files, worth
-  revisiting before claiming it at "lakhs of files" scale.
+- **Real hosted voice/LLM providers** — `providers.py` has the
+  Protocol/registry seam but no verified Cartesia/Deepgram/Groq/hosted-
+  LLM implementation; needs a credentialed account to build against
+  safely (see that module's docstring for why this wasn't guessed).
+- **A rendered analytics dashboard** — `analytics.py` is the data layer;
+  an actual UI on top of it is a separate frontend concern.
 - **Stress test against a large *external* open-source monorepo** — this
   repo (76 files) proves the pipeline is correct; it doesn't prove
   "lakhs of files" doesn't hit some wall this size can't reveal. Worth
