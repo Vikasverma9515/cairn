@@ -57,6 +57,7 @@ voice relay).
   Next-specific, that's a sign it belongs in `index.tsx` instead.
 
 See [ROADMAP.md](./ROADMAP.md) for the current state of "any framework"
-support and what's still open — Phase 2's crawler in particular has no
-automated test suite yet (needs a headless-browser fixture in CI), only a
-live-verified manual run; a contribution there is very welcome.
+support and what's still open — auth-gated apps and SPA-only client-side
+routing aren't handled by crawl mode yet (`packages/indexer/src/crawl.ts`,
+covered by `crawl.test.ts` for the cases that already work); a
+contribution there is very welcome.

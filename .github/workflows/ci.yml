@@ -18,6 +18,11 @@ jobs:
 
       - run: npm ci
 
+      # crawl.test.ts (packages/indexer) launches a real headless Chromium
+      # to crawl a local test server — needs the browser binary installed,
+      # it doesn't ship with the playwright npm package itself.
+      - run: npx playwright install --with-deps chromium
+
       - run: npm run typecheck
 
       - run: npm test

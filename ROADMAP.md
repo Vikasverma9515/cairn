@@ -5,12 +5,13 @@ app's in-app voice consultant — not just Next.js. Status: **Phases 0-3 are
 done** — install (`cairn init`), analyze (`cairn build`, source-read or
 crawl), and run (`<cairn-widget>` or `<Copilot/>`, full voice parity
 either way) all work outside Next.js now, each live-verified, not just
-planned. What's left (Phase 4) is open-source project health — CI exists
-and `CONTRIBUTING.md` is written, but issue templates, a docs site, and
+planned, and both the crawler and `cairn init` now have real automated
+test coverage (not just the live manual runs that originally proved them).
+What's left (Phase 4) is open-source project health — CI exists and
+`CONTRIBUTING.md` is written, but issue templates, a docs site, and
 community-contributed scaffolders for frameworks beyond what's built in
 are still open — plus the smaller honest gaps called out inline below
-(no automated tests for crawl mode/`cairn init`, crawl mode's auth/SPA
-limits, not yet published to npm).
+(crawl mode's auth/SPA limits, not yet published to npm).
 
 ## Phase 0 — real, installable package ✅
 
@@ -86,10 +87,20 @@ apps (crawls whatever's reachable unauthenticated), no SPA client-side-only
 routing detection (relies on real `<a href>` links, won't discover routes
 reachable only via `router.push()`-style navigation), no crawl-time
 caching keyed on a hash of the deployed build the way the source-reader's
-git-commit-scoped cache is — a repeat crawl re-visits every page. No
-automated test suite for this yet either (no headless-browser fixture in
-CI) — covered only by the live run above, not a repeatable `npm test`
-case.
+git-commit-scoped cache is — a repeat crawl re-visits every page.
+
+**Automated test coverage added** (`packages/indexer/src/crawl.test.ts`) —
+spins up a real local HTTP server (two plain HTML pages) and runs the real
+`crawlSite()` against it with a real headless Chromium: same-origin
+crawling, external links extracted as elements but never followed for
+further crawling, `maxPages`/`maxDepth` caps, a 404 start URL degrading to
+zero pages instead of throwing, and the raw-not-slugified id behavior —
+6 tests, ~6s, no LLM key needed (element extraction only, no describe
+step). CI installs Chromium via `playwright install --with-deps` to run
+this. `cairn init` has its own coverage too
+(`packages/indexer/src/init.test.ts`, 10 tests, pure filesystem — no
+browser needed): framework detection, the write-only-if-absent guarantee,
+and that the generated scaffolds are actually syntactically valid.
 
 ## Scaling to large codebases
 
@@ -176,18 +187,18 @@ actually `npm install`ed the generated `cairn-server.cjs`'s real
 dependencies (Express, `@cairn/sdk`/`@cairn/core` via `file:`), ran it for
 real, and `curl`ed `/api/copilot` — got back a correct (degraded-to-
 explain, since the manifest was empty) response from a real Groq call
-through the actual generated file, not a hand-written stand-in.
+through the actual generated file, not a hand-written stand-in. Now backed
+by `packages/indexer/src/init.test.ts` too (10 tests, pure filesystem) —
+framework detection for both Next.js router styles and the fallback,
+never overwriting an existing file, and that the generated scaffolds are
+syntactically valid.
 
 ## Phase 4 — open-source polish (partial)
 
 Done: CI (`.github/workflows/ci.yml` — typecheck, test, determinism check,
-builds `@cairn/indexer`) and `CONTRIBUTING.md`.
+builds `@cairn/indexer`, installs Chromium for `crawl.test.ts`) and
+`CONTRIBUTING.md`.
 
 Still open: issue templates, a real docs site, and — the actual point of
 open-sourcing this — community-contributed scaffolders/crawlers for
-frameworks beyond whatever's built in. Also still open, called out
-honestly rather than left implicit: **no automated test coverage for
-crawl mode** (Phase 2) or `cairn init` (Phase 3) — both are covered only
-by the live manual runs described above, not a repeatable `npm test`
-case; a headless-browser fixture for CI is the concrete next step for
-either.
+frameworks beyond whatever's built in.
