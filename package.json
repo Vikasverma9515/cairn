@@ -1,6 +1,7 @@
 {
   "name": "cairn",
   "private": true,
+  "repository": "git+https://github.com/Vikasverma9515/cairn.git",
   "workspaces": [
     "packages/*",
     "examples/*"

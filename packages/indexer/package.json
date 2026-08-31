@@ -1,8 +1,11 @@
 {
   "name": "@cairn/indexer",
   "version": "0.1.0",
-  "description": "Cairn's static analyzer — scans a Next.js codebase and writes ui-manifest.json (the `cairn` CLI).",
+  "description": "Cairn's analyzer and installer (the `cairn` CLI) — scans Next.js source or crawls any running app, and scaffolds the backend either way.",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/Vikasverma9515/cairn.git", "directory": "packages/indexer" },
+  "homepage": "https://github.com/Vikasverma9515/cairn#readme",
+  "bugs": "https://github.com/Vikasverma9515/cairn/issues",
   "type": "module",
   "bin": {
     "cairn": "dist/cli.js"

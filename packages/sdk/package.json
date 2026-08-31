@@ -1,8 +1,11 @@
 {
   "name": "@cairn/sdk",
   "version": "0.1.0",
-  "description": "In-app AI copilot widget + server handlers for Cairn (Next.js today; see the repo ROADMAP.md for other frameworks).",
+  "description": "In-app AI copilot — <Copilot/> for React/Next.js, <cairn-widget> for any framework — plus the server handlers and realtime voice relay behind them.",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/Vikasverma9515/cairn.git", "directory": "packages/sdk" },
+  "homepage": "https://github.com/Vikasverma9515/cairn#readme",
+  "bugs": "https://github.com/Vikasverma9515/cairn/issues",
   "type": "module",
   "bin": {
     "cairn-realtime": "dist/realtime-cli.js"

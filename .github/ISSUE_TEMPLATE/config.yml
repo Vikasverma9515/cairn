@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions / setup help
+    url: https://github.com/Vikasverma9515/cairn/blob/main/CONTRIBUTING.md
+    about: Check CONTRIBUTING.md and README.md's Quick start first — most setup questions are answered there.
