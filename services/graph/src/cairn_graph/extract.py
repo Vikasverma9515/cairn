@@ -53,6 +53,18 @@ class ExtractResult:
     symbols: list[Symbol] = field(default_factory=list)
     imports: list[ImportRecord] = field(default_factory=list)
     calls: list[CallEdge] = field(default_factory=list)
+    # Names the *runtime*, not any code in this codebase, is what actually
+    # invokes — found live: Cairn's own CairnWidgetElement is registered via
+    # customElements.define("cairn-widget", CairnWidgetElement) and never
+    # explicitly `new`'d anywhere; the browser instantiates it when the
+    # custom element tag appears in HTML. No amount of call-edge tracking
+    # inside the codebase can see that, so it's treated as its own
+    # first-class signal — a narrow, explicit, growable list of known
+    # framework-invocation conventions, not a guess. Same idea as the
+    # existing Next.js indexer already special-casing _app.tsx/api routes
+    # as "framework-invoked, not dead" instead of pretending pure static
+    # analysis covers every runtime's calling convention.
+    framework_roots: list[str] = field(default_factory=list)
 
 
 def extract(root: Node, source: bytes) -> ExtractResult:
@@ -170,6 +182,20 @@ def _walk(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) 
         callee = _callee_name(node, source)
         if callee is not None:
             out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+        _check_framework_root(node, source, out)
+    elif node.type == "new_expression":
+        # `new Widget()` is how every class actually gets used — missing
+        # this meant a class's own constructor (and, transitively, every
+        # method it calls) was invisible to reachability even when the
+        # class was instantiated everywhere. Found live: dogfooding this
+        # against Cairn's own web-component.ts flagged its constructor and
+        # the whole buildDom()-and-everything-it-calls chain as "dead"
+        # because `new CairnWidgetElement()` was the only thing invoking
+        # it, and that was never captured as a call edge at all.
+        ctor_node = node.child_by_field_name("constructor")
+        if ctor_node is not None and ctor_node.type == "identifier":
+            out.calls.append(CallEdge(caller=enclosing, callee="constructor", line=node.start_point[0] + 1))
+            out.calls.append(CallEdge(caller=enclosing, callee=_text(ctor_node, source), line=node.start_point[0] + 1))
 
     for child in node.children:
         _walk(child, source, out, next_enclosing)
@@ -185,6 +211,32 @@ def _callee_name(call_node: Node, source: bytes) -> str | None:
         prop = fn.child_by_field_name("property")
         return _text(prop, source) if prop is not None else None
     return None
+
+
+# Registered here, not inferred generically — each entry is a call whose
+# *last* argument names a class the entry's runtime instantiates on its
+# own. Expand this list as more real framework conventions are found
+# (dogfooding is how the first one, customElements.define, was found);
+# don't try to guess every framework's convention up front.
+_FRAMEWORK_REGISTRATION_CALLS = {"customElements.define"}
+
+
+def _check_framework_root(call_node: Node, source: bytes, out: ExtractResult) -> None:
+    fn = call_node.child_by_field_name("function")
+    if fn is None or fn.type != "member_expression":
+        return
+    full_callee = _text(fn, source)
+    if full_callee not in _FRAMEWORK_REGISTRATION_CALLS:
+        return
+    args = call_node.child_by_field_name("arguments")
+    if args is None:
+        return
+    arg_nodes = [c for c in args.children if c.type not in ("(", ")", ",")]
+    if not arg_nodes:
+        return
+    last_arg = arg_nodes[-1]
+    if last_arg.type == "identifier":
+        out.framework_roots.append(_text(last_arg, source))
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:

@@ -58,6 +58,7 @@ class FileOutcome:
     symbols: tuple[tuple[str, str, int, int, bool, str | None], ...]
     imports: tuple[tuple[str, tuple[str, ...], bool, int], ...]
     calls: tuple[tuple[str | None, str, int], ...]
+    framework_roots: tuple[str, ...] = ()
 
 
 @dataclass
@@ -86,6 +87,22 @@ def _hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# Hand-written source, even dense source, essentially never averages this
+# many characters per line — a real newline follows most statements.
+# Minifiers/bundlers deliberately strip newlines to save bytes, which is
+# exactly the signal this reads. 300 is conservative on purpose: a false
+# "not generated" (a genuinely dense file slips through) just means one
+# more file gets indexed normally, not a wrongly-skipped real file.
+_GENERATED_AVG_LINE_LENGTH = 300
+
+
+def _looks_generated(data: bytes) -> bool:
+    if not data:
+        return False
+    line_count = data.count(b"\n") + 1
+    return (len(data) / line_count) > _GENERATED_AVG_LINE_LENGTH
+
+
 def _parse_one(path: str) -> FileOutcome:
     """Runs inside a worker process. Must never raise past this point —
     every failure mode (unreadable file, unsupported grammar edge case,
@@ -104,6 +121,16 @@ def _parse_one(path: str) -> FileOutcome:
     if spec is None:
         return FileOutcome(path, "unknown", content_hash, "failed", "no grammar for this extension", 0, (), (), ())
 
+    if _looks_generated(data):
+        # A checked-in bundler output file (found live: a real esbuild
+        # bundle under examples/demo-app/public/) parses without error but
+        # produces meaningless single/double-letter symbol names that both
+        # pollute search results and badly skew reachability — a
+        # minified-away name can't collide-match anything real, so
+        # everything downstream of it reads as falsely dead. Skipped
+        # before parsing, not silently indexed as garbage.
+        return FileOutcome(path, spec.id, content_hash, "skipped_generated", "looks minified/generated", 0, (), (), ())
+
     try:
         parser = parser_for(spec)
         tree = parser.parse(data)
@@ -121,6 +148,7 @@ def _parse_one(path: str) -> FileOutcome:
         symbols=tuple((s.kind, s.name, s.start_line, s.end_line, s.exported, s.parent) for s in result.symbols),
         imports=tuple((i.source, i.names, i.is_relative, i.line) for i in result.imports),
         calls=tuple((c.caller, c.callee, c.line) for c in result.calls),
+        framework_roots=tuple(result.framework_roots),
     )
 
 
@@ -131,6 +159,7 @@ def _outcome_to_extract_result(outcome: FileOutcome):
         symbols=[Symbol(kind=k, name=n, start_line=sl, end_line=el, exported=exp, parent=p) for (k, n, sl, el, exp, p) in outcome.symbols],
         imports=[ImportRecord(source=s, names=n, is_relative=r, line=l) for (s, n, r, l) in outcome.imports],
         calls=[CallEdge(caller=c, callee=cal, line=l) for (c, cal, l) in outcome.calls],
+        framework_roots=list(outcome.framework_roots),
     )
 
 

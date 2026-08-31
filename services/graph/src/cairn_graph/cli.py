@@ -32,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     stats_p = sub.add_parser("stats", help="print index size / health")
     stats_p.add_argument("--db", default=".cairn-graph.db")
 
+    dead_p = sub.add_parser("dead", help="list unexported symbols unreachable from any export")
+    dead_p.add_argument("--db", default=".cairn-graph.db")
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -40,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_query(args.term, args.db)
     if args.command == "stats":
         return _run_stats(args.db)
+    if args.command == "dead":
+        return _run_dead(args.db)
     return 1
 
 
@@ -84,6 +89,20 @@ def _run_stats(db: str) -> int:
     conn = sqlite3.connect(db)
     for key, value in stats(conn).items():
         print(f"{key}: {value}")
+    return 0
+
+
+def _run_dead(db: str) -> int:
+    from cairn_graph.reachability import compute_dead_symbols
+
+    conn = sqlite3.connect(db)
+    result = compute_dead_symbols(conn)
+    if not result.dead:
+        print(f"no dead symbols found ({result.reachable_count} reachable)")
+        return 0
+    print(f"{len(result.dead)} unreachable, unexported symbol(s) ({result.reachable_count} reachable):")
+    for sym in result.dead:
+        print(f"  {sym.kind:10s} {sym.name}  —  {sym.file_path}")
     return 0
 
 

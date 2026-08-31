@@ -56,6 +56,7 @@ unparseable file never crashes the run or hides the rest of the index.
 python -m cairn_graph.cli build <dir> --db .cairn-graph.db
 python -m cairn_graph.cli query <term> --db .cairn-graph.db
 python -m cairn_graph.cli stats --db .cairn-graph.db
+python -m cairn_graph.cli dead --db .cairn-graph.db
 ```
 
 Live-verified against this actual repo, not a synthetic fixture: `python
@@ -68,8 +69,55 @@ skips all 76 files and finishes in ~0.02s — the incremental-sync lever
 that's supposed to make a lakhs-of-files repo's *second* index fast
 actually does, measured, not assumed.
 
+## Dead code detection
+
+`reachability.py` walks the graph from every exported symbol (plus a
+small, explicit, growable list of known framework-invocation conventions
+— currently just `customElements.define`, found live) and flags anything
+never reached. Iterated against this repo's own `dead` output until every
+remaining flag was a genuinely understood gap, not noise — three real
+bugs found and fixed along the way, each with a regression test:
+
+1. `new X()` wasn't captured as a call edge at all, so a class only ever
+   *instantiated* (never called as a bare function) — and everything its
+   methods call — read as entirely dead.
+2. A class registered via `customElements.define()` and never explicitly
+   `new`'d anywhere (the browser instantiates it) needed its own root
+   category, plus its own methods needed to inherit reachability from the
+   class itself — a lifecycle method like `connectedCallback` is never
+   the target of any literal call in source.
+3. A call made from an anonymous callback — the `describe()`/`it()`
+   pattern every `*.test.ts` file here uses — has no named enclosing
+   symbol to traverse from; without treating `caller IS NULL` calls as
+   unconditionally-executed roots, every local test fixture class used
+   only inside a `describe()` block read as dead.
+
+Net effect on this repo's own `dead` output while fixing these, in
+order: **234 → 47 → 29 → 15** false positives (the 47→29 step also
+included excluding a checked-in minified bundle file that was polluting
+results with meaningless single-letter symbol names — see `_looks_generated`
+in `build.py`). The remaining 15 are honestly all one of two *known*,
+not-yet-built gaps, not unexplained noise:
+
+- **Type-position references** — a type/interface used only in an
+  annotation (`function f(): Status`, `const x: ConnectionDeps`) isn't
+  tracked; only value-position calls and imports are.
+- **Values passed by reference, not called** — `<CairnMark />` as JSX,
+  `onClick={handleArchive}` as a prop, a function passed to `.map()` —
+  anything that's a bare identifier *reference* rather than a
+  `call_expression` or `new_expression` isn't captured yet.
+
+Both are the same underlying fix: extend `extract.py` to record a general
+"identifier referenced here" signal alongside the existing call-edge
+tracking, not just calls specifically. Worth doing before trusting this
+pass to actually delete anything — for now it's accurate enough to
+*suggest*, not accurate enough to *act on unsupervised*.
+
 ## What's not built yet
 
+- **General identifier-reference tracking** — see directly above; the
+  concrete next fix now that call/instantiation/framework-root/anonymous-
+  caller reachability all have real test coverage.
 - **Python-language extraction** — the module is structured to add a
   language by registering one more `LanguageSpec` in `languages.py` plus
   its extraction branch in `extract.py`; Python itself isn't wired up

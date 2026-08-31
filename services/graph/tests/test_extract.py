@@ -140,3 +140,18 @@ def test_tsx_file_parses_jsx_without_crashing():
 
 def test_unsupported_extension_returns_none_language():
     assert language_for_path("readme.md") is None
+
+
+def test_custom_elements_define_marks_its_class_as_a_framework_root():
+    result = parse(
+        """
+        class Widget extends HTMLElement {}
+        customElements.define("my-widget", Widget);
+        """
+    )
+    assert "Widget" in result.framework_roots
+
+
+def test_unrelated_member_call_is_not_treated_as_a_framework_root():
+    result = parse('console.log("Widget");')
+    assert result.framework_roots == []

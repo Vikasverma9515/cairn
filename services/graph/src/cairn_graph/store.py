@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee);
 CREATE INDEX IF NOT EXISTS idx_calls_file ON calls(file_id);
+
+CREATE TABLE IF NOT EXISTS framework_roots (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_framework_roots_name ON framework_roots(name);
 """
 
 
@@ -139,6 +146,10 @@ def upsert_file(
         "INSERT INTO calls (file_id, caller, callee, line) VALUES (?, ?, ?, ?)",
         [(file_id, c.caller, c.callee, c.line) for c in result.calls],
     )
+    conn.executemany(
+        "INSERT INTO framework_roots (file_id, name) VALUES (?, ?)",
+        [(file_id, name) for name in result.framework_roots],
+    )
 
 
 def remove_file(conn: sqlite3.Connection, path: str) -> None:
@@ -154,5 +165,6 @@ def stats(conn: sqlite3.Connection) -> dict[str, int]:
         "symbols": count("symbols"),
         "imports": count("imports"),
         "calls": count("calls"),
-        "failed_files": conn.execute("SELECT COUNT(*) FROM files WHERE parse_status != 'ok'").fetchone()[0],
+        "failed_files": conn.execute("SELECT COUNT(*) FROM files WHERE parse_status = 'failed'").fetchone()[0],
+        "generated_files_skipped": conn.execute("SELECT COUNT(*) FROM files WHERE parse_status = 'skipped_generated'").fetchone()[0],
     }
