@@ -3,11 +3,11 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "predev": "bash -c 'set -a; [ -f .env ] && . .env; set +a; [ -f ui-manifest.json ] || npx cairn build . --provider groq || true'",
+    "predev": "bash -c 'set -a; [ -f .env ] && . .env; set +a; [ -f ui-manifest.json ] || node ../../packages/indexer/dist/cli.js build . --provider groq || true'",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "realtime": "bash -c 'set -a; [ -f .env ] && . .env; set +a; cairn-realtime --port 3010'",
+    "realtime": "bash -c 'set -a; [ -f .env ] && . .env; set +a; node ../../packages/sdk/dist/realtime-cli.js --port 3010'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

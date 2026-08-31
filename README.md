@@ -73,8 +73,9 @@ produce an unregistered action — see `packages/sdk/src/server.test.ts`.
 
 ```bash
 npm install
-npm run build -w @cairn/indexer   # compiles the cairn CLI (packages/indexer/dist) — needed once
-cp .env.example .env              # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
+npm run build -w @cairn/indexer -w @cairn/sdk   # compiles the cairn CLI + sdk's server/CLI entry points — needed once
+npm install                                     # re-run once so npm links the `cairn`/`cairn-realtime` bins now that dist/ exists
+cp .env.example .env                            # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
 
 npx cairn build ./examples/demo-app             # writes examples/demo-app/ui-manifest.json
 npx cairn build ./examples/demo-app --provider groq   # or use Groq instead
@@ -82,6 +83,14 @@ npx cairn build ./examples/demo-app --provider groq   # or use Groq instead
 npm run dev -w demo-app                         # or: cd examples/demo-app && npm run dev
 # (npm run dev also auto-builds the manifest via predev if it's missing)
 ```
+
+The second `npm install` isn't a typo: npm only links a workspace package's
+`bin` entry (here, `cairn` and `cairn-realtime`) into `node_modules/.bin`
+if that package's `dist/` already exists *when `npm install` runs* — and
+on a fresh clone it doesn't yet. Running it again after the build picks
+the bins up. (CI and any script that calls the CLI internally instead
+invoke `packages/indexer/dist/cli.js` directly, sidestepping this
+entirely — see `scripts/check-determinism.sh`.)
 
 `@cairn/core` and `@cairn/sdk` ship raw TypeScript (bundlers like Next.js
 transpile them fine via `transpilePackages`), but the `cairn` CLI runs

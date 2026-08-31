@@ -21,6 +21,12 @@ explicit step for the same reason.
 `npx playwright install chromium` once, if you're touching crawl mode
 (`packages/indexer/src/crawl.ts`) — it launches a real headless browser.
 
+If you want to run `npx cairn ...`/`npx cairn-realtime` yourself (not just
+`typecheck`/`test`, which don't need it), run `npm install` a second time
+after the build above — npm only links a workspace's `bin` entry once its
+`dist/` exists, which it doesn't yet on the first install. See the Quick
+start section of the README for the full explanation.
+
 ## Before opening a PR
 
 ```bash
