@@ -44,6 +44,7 @@ export async function describeCrawled(
 
   await mapWithConcurrency(toDescribe, concurrency, async ({ page, cachePath }) => {
     let description: PageDescription;
+    let succeeded = true;
     try {
       description = await withRetry(() =>
         client.describePage({
@@ -62,9 +63,12 @@ export async function describeCrawled(
         confidence: 0,
         elements: page.elements.map((el) => ({ id: el.id, does: "Unknown — description generation failed.", confidence: 0 })),
       };
+      succeeded = false;
     }
 
-    fs.writeFileSync(cachePath, JSON.stringify(description, null, 2));
+    // Not cached when degraded — a re-crawl should naturally retry this
+    // page instead of being permanently pinned to a failure placeholder.
+    if (succeeded) fs.writeFileSync(cachePath, JSON.stringify(description, null, 2));
     descriptions.set(page.route, description);
     cacheMisses += 1;
   });

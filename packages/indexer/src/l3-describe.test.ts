@@ -136,4 +136,34 @@ describe("describeAll", () => {
       expect(result.descriptions.get(page.route)?.confidence).toBe(0.9); // every other page still described normally
     }
   });
+
+  it("a degraded page is never cached — a later run retries it instead of staying permanently stuck", async () => {
+    const facts = scanL1(tmpDir);
+    const failingRoute = facts.pages[0].route;
+    let attempts = 0;
+
+    class FlakyOnceClient implements DescribeClient {
+      async describePage(input: DescribeInput): Promise<PageDescription> {
+        if (input.route === failingRoute) {
+          attempts += 1;
+          if (attempts === 1) throw new Error("simulated failure, first attempt only");
+        }
+        return {
+          title: input.route,
+          purpose: `Fake purpose for ${input.route}`,
+          whenToUse: "Fake whenToUse",
+          confidence: 0.9,
+          elements: input.elements.map((e) => ({ id: e.id, does: `Fake does for ${e.id}`, confidence: 0.9 })),
+        };
+      }
+    }
+
+    const client = new FlakyOnceClient();
+    const firstRun = await describeAll(tmpDir, facts, client);
+    expect(firstRun.descriptions.get(failingRoute)?.confidence).toBe(0); // degraded — not cached
+
+    const secondRun = await describeAll(tmpDir, facts, client); // same client, same tmpDir/cache — nothing about the source changed
+    expect(secondRun.descriptions.get(failingRoute)?.confidence).toBe(0.9); // retried for real and succeeded, not stuck replaying the old failure
+    expect(attempts).toBe(2); // called again on the second run — proves no cache file was written for the failed attempt
+  });
 });

@@ -60,6 +60,7 @@ export async function describeAll(
   await mapWithConcurrency(toDescribe, concurrency, async ({ page, cachePath }) => {
     const source = fs.readFileSync(path.join(absRoot, page.file), "utf8");
     let description: PageDescription;
+    let succeeded = true;
     try {
       description = await withRetry(() =>
         client.describePage({
@@ -77,9 +78,17 @@ export async function describeAll(
       // bad page. Degrade that page only, log it loudly, keep going.
       console.error(`[cairn] describing ${page.route} failed after retries — degrading this page only:`, err);
       description = degradedDescription(page.elements);
+      succeeded = false;
     }
 
-    fs.writeFileSync(cachePath, JSON.stringify(description, null, 2));
+    // Deliberately NOT cached when degraded — found live, not theoretical:
+    // a real 40-page run had exactly one page exhaust retries under a
+    // tight rate limit. Caching that placeholder would have silently
+    // pinned it there forever on every future build (same source = same
+    // hash = permanent cache hit), even once the rate limit had long since
+    // cleared. Leaving no cache file means the next build's cache-miss
+    // pass naturally retries it like a fresh page.
+    if (succeeded) fs.writeFileSync(cachePath, JSON.stringify(description, null, 2));
     descriptions.set(page.route, description);
     cacheMisses += 1;
   });
@@ -96,6 +105,7 @@ export async function describeAll(
       const files = uniqueSortedFiles(facts.frameworkElements);
       const source = files.map((f) => fs.readFileSync(path.join(absRoot, f), "utf8")).join("\n\n");
       let description: PageDescription;
+      let succeeded = true;
       try {
         description = await withRetry(() =>
           client.describePage({
@@ -108,9 +118,12 @@ export async function describeAll(
       } catch (err) {
         console.error(`[cairn] describing framework elements failed after retries — degrading:`, err);
         description = degradedDescription(facts.frameworkElements);
+        succeeded = false;
       }
       globalElements = description.elements;
-      fs.writeFileSync(cachePath, JSON.stringify(globalElements, null, 2));
+      // Not cached when degraded — see the matching comment on the
+      // per-page path above; same reasoning.
+      if (succeeded) fs.writeFileSync(cachePath, JSON.stringify(globalElements, null, 2));
       cacheMisses += 1;
     }
   }
