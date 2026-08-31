@@ -121,8 +121,31 @@ in `packages/indexer/src/concurrency.ts`:
   (honoring a `Retry-After` header when the provider sends one), and if a
   single page still fails after retries, that page alone degrades to an
   honest `confidence: 0` placeholder instead of taking the whole build
-  down with it — verified via a real Groq run that hit the actual rate
-  limit and recovered without the build failing.
+  down with it.
+- **The degraded placeholder is deliberately never cached** — found by
+  inspecting the actual output of the live 40-page run below, not
+  theorized: 1 of 40 pages exhausted retries under the test account's
+  rate limit and degraded. The first version of this fix cached that
+  placeholder like any real description, which would have pinned that
+  page to "Unknown, could not describe" on every future build forever
+  (same source → same hash → permanent cache hit), even seconds after
+  the rate limit cleared. Fixed so a degraded page is simply never
+  written to `.cairn-cache/` — the next build's cache-miss pass retries
+  it fresh, same as a page that's never been described at all.
+
+**Full live proof, the exact failure end to end:** ran the real
+40-page synthetic app against the real Groq API with the fix in place.
+Hit the actual rate limit **seven separate times** over the run (visible
+in the raw output — real 429s, real `Retry-After` values, waits up to
+45s), and the build still completed successfully: `40 page(s), 0 dead
+file(s), 0 conflict(s)` — no crash, every other page's work preserved
+while the limited ones waited their turn. Total wall time: 8m40s, almost
+entirely rate-limit backoff, not compute — this specific test account's
+free-tier limit (8,000 tokens/minute) is unusually tight; a production
+account would clear this same 40-page app in a fraction of the time.
+1 of the 40 pages did exhaust its retries and degrade — confirmed *not*
+cached, confirmed a second `describeAll()` call against the same pages
+retried and correctly described it (see the "never cached" test).
 
 Concurrency defaults are deliberately modest (not maximal) — the ceiling
 is always whatever the provider account's real rate limit is; this just
