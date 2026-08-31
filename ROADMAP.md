@@ -86,12 +86,25 @@ automated test suite for this yet either (no headless-browser fixture in
 CI) — covered only by the live run above, not a repeatable `npm test`
 case.
 
-## Phase 3 — `npx cairn init` (not started)
+## Phase 3 — `cairn init` ✅
 
-Detect the framework from `package.json`, scaffold the API route + env
-template + widget mount automatically for frameworks with a scaffolder,
-fall back to crawl-mode + a copy-paste snippet for anything without one
-yet.
+`packages/indexer/src/init.ts`. Detects the framework from `package.json`
+(`next` present → App Router or Pages Router scaffold; anything else →
+standalone Express server, since `createCopilotHandler` is plain Node and
+Express is just the simplest thing to scaffold, not a requirement). Only
+ever writes files that don't already exist — never touches something you
+already have. Prints the remaining manual steps (env vars, where to mount
+the widget) rather than guessing at files it shouldn't edit blind (a
+layout file, an app entry point).
+
+**Live-verified, both paths, not just typechecked:** ran `cairn init`
+against a fake Next.js App Router project and a fake plain project,
+confirmed the right files got scaffolded for each. For the non-Next path,
+actually `npm install`ed the generated `cairn-server.cjs`'s real
+dependencies (Express, `@cairn/sdk`/`@cairn/core` via `file:`), ran it for
+real, and `curl`ed `/api/copilot` — got back a correct (degraded-to-
+explain, since the manifest was empty) response from a real Groq call
+through the actual generated file, not a hand-written stand-in.
 
 ## Phase 4 — open-source polish (not started)
 

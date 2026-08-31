@@ -205,11 +205,23 @@ markdown, never say an internal element id out loud — see
 ## CLI
 
 ```bash
+cairn init <dir>                          # scaffolds the backend + .env.example — detects your framework
 cairn scan <dir>                          # L1 only, deterministic, no LLM call
-cairn build <dir> [--provider anthropic|groq]
+cairn build <dir> [--provider anthropic|groq]           # Next.js source scan
+cairn build <url> [--provider anthropic|groq] [--out <dir>]   # any framework — crawls a running app
 cairn diff <old-manifest.json> <new-manifest.json>   # what changed between two builds
 cairn docs <dir>                          # reads <dir>/ui-manifest.json, writes CAIRN_DOCS.md
 ```
+
+`cairn init` only ever writes files that don't already exist — it never
+touches something you already have (e.g. an existing layout). Next.js
+projects get a real `app/api/copilot/route.ts` (or `pages/api/copilot.ts`
+for Pages Router) wired up to `createCopilotHandler`; anything else gets a
+standalone Express server (`cairn-server.cjs`) exercising the exact same
+handler — `createCopilotHandler` is plain Node either way, Express is just
+the simplest thing to scaffold, not a requirement. Both paths print the
+remaining manual steps (env vars, where to mount the widget) rather than
+guessing at files it shouldn't touch on its own.
 
 ## Data & persistence
 

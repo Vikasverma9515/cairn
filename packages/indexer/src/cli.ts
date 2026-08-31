@@ -11,6 +11,7 @@ import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { diffManifests, formatDiffAsText } from "./diff";
 import { generateDocsMarkdown } from "./docs";
+import { runInit } from "./init";
 
 function parseArgs(rest: string[]): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = [];
@@ -99,6 +100,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "init") {
+    const result = runInit(dir);
+    console.error(`cairn init: detected ${result.framework}.`);
+    for (const f of result.filesWritten) console.error(`  wrote   ${path.relative(process.cwd(), f) || f}`);
+    for (const f of result.filesSkipped) console.error(`  skipped ${path.relative(process.cwd(), f) || f} (already exists)`);
+    console.error("");
+    console.error("Next steps:");
+    for (const step of result.nextSteps) console.error(`  ${step}`);
+    return;
+  }
+
   if (command === "diff") {
     const [oldPath, newPath] = positional;
     if (!oldPath || !newPath) {
@@ -125,6 +137,7 @@ async function main(): Promise<void> {
   }
 
   console.error("usage:");
+  console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework)");
   console.error("  cairn scan <dir>");
   console.error("  cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)");
   console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>]   (any framework — crawls a running app)");
