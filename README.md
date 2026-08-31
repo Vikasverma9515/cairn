@@ -1,16 +1,52 @@
-# Cairn
+<div align="center">
+  <img src="docs/images/logo.svg" width="84" height="84" alt="Cairn logo" />
 
-Your app explains itself to your users — and talks them through it, in
-real time, by voice. Generated from your code, in your CI.
+  <h1>Cairn</h1>
 
-Status: working end-to-end, including live LLM calls (Anthropic or Groq)
-and live voice (Deepgram STT/TTS). **Next.js is the only framework Cairn's
-analyzer understands today** — the runtime (voice, verb execution, element
-finding) is already framework-agnostic under the hood, but there's no
-installer for anything else yet. See [ROADMAP.md](./ROADMAP.md) for the
-plan to fix that, and [LATER.md](./LATER.md) for smaller gaps within the
-current Next.js scope. See [BUILD_PLAN.md](./BUILD_PLAN.md) for the
-original design.
+  <p><strong>Your app explains itself — out loud, in real time, generated straight from your code.</strong></p>
+
+  <p>
+    <a href="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml"><img src="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-6366f1.svg" alt="MIT License"></a>
+    <a href="./ROADMAP.md"><img src="https://img.shields.io/badge/framework%20support-Next.js%20today%2C%20any%20framework%20on%20the%20roadmap-6366f1.svg" alt="Framework support"></a>
+    <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-6366f1.svg" alt="PRs welcome"></a>
+  </p>
+</div>
+
+## What this is
+
+Point Cairn at your app and it reads your own source — every route, every
+button, every handler — the same way a new hire would. An LLM turns that
+into plain-English descriptions of what each part of your UI *does*, not
+just what it's called. That output ships as a small JSON file in your
+build. At runtime, a drop-in widget uses it to answer real questions from
+real users — "where do I archive an invoice?", "what does this page do?"
+— by highlighting the actual element, walking them through a multi-step
+tour, or (if you let it) just doing the action itself. Ask it out loud and
+it answers out loud, with low-latency streaming speech you can talk over
+mid-sentence.
+
+The part that makes this safe to ship, not just a cute demo: the model
+never gets to run arbitrary code or pick a CSS selector. Every response is
+constrained to one of five verbs — `explain`, `highlight`, `open`,
+`navigate`, `do` — validated server-side against a fixed schema regardless
+of what the client sends. A lookup miss degrades to a plain explanation.
+It never guesses and clicks the wrong thing.
+
+<div align="center">
+  <img src="docs/images/demo.gif" width="720" alt="Cairn widget answering a question, then walking through a two-step tour with a live highlighted button" />
+  <p><sub>A real, unscripted capture against the example app: ask a question → get a live tour, one highlighted element at a time.</sub></p>
+</div>
+
+Status: working end-to-end today, including live LLM calls (Anthropic or
+Groq) and live voice (Deepgram STT/TTS). **Next.js is the only framework
+Cairn's analyzer understands today** — the runtime (voice, verb execution,
+element finding) is already framework-agnostic under the hood, and
+`cairn build <url>` can point at *any* framework's running app via a
+headless-browser crawl instead of reading source. See
+[ROADMAP.md](./ROADMAP.md) for what's left, [LATER.md](./LATER.md) for
+smaller gaps within the current scope, and
+[BUILD_PLAN.md](./BUILD_PLAN.md) for the original design.
 
 Not published to npm yet — install via a `file:` path pointing at this repo
 (see Quick start) until that changes.

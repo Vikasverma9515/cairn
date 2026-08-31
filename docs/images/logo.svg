@@ -1,0 +1,21 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cairn logo">
+  <defs>
+    <linearGradient id="bg" x1="8%" y1="0%" x2="92%" y2="100%">
+      <stop offset="0%" stop-color="#4f5bd5"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="124" height="124" rx="30" fill="url(#bg)"/>
+  <rect x="2" y="2" width="124" height="124" rx="30" fill="url(#sheen)"/>
+  <rect x="2.5" y="2.5" width="123" height="123" rx="29.5" stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <!-- three stacked stones, same proportions as the in-product mark -->
+  <rect x="45" y="80" width="38" height="16.5" rx="4" fill="#ffffff"/>
+  <rect x="29" y="54.5" width="70" height="16.5" rx="4" fill="#ffffff" fill-opacity="0.82"/>
+  <rect x="52.5" y="29" width="23" height="16.5" rx="4" fill="#ffffff" fill-opacity="0.6"/>
+</svg>
