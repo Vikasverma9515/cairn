@@ -44,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     semantic_p.add_argument("--vectors", default=".cairn-graph-vectors")
     semantic_p.add_argument("--limit", type=int, default=10)
 
+    route_p = sub.add_parser("route", help="show which specialist agent would handle a request, and its scoped toolset")
+    route_p.add_argument("request")
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -58,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_vectorize(args.db, args.vectors)
     if args.command == "semantic":
         return _run_semantic(args.query, args.vectors, args.limit)
+    if args.command == "route":
+        return _run_route(args.request)
     return 1
 
 
@@ -140,6 +145,17 @@ def _run_semantic(query: str, vectors: str, limit: int) -> int:
     for r in results:
         parent_note = f" (in {r['parent']})" if r.get("parent") else ""
         print(f"{r['score']:.3f}  {r['kind']:10s} {r['name']}{parent_note}  —  {r['file']}:{r['start_line']}")
+    return 0
+
+
+def _run_route(request: str) -> int:
+    from cairn_graph.orchestrator import route_request
+
+    result = route_request(request)
+    print(f"specialist: {result['specialist']}")
+    print("scoped tools:")
+    for tool in result["available_tools"]:
+        print(f"  {tool}")
     return 0
 
 

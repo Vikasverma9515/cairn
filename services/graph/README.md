@@ -309,6 +309,48 @@ mode, proceeds once approved, CRITICAL blocked even in auto mode, audit
 log records both blocked and applied outcomes) — all against real files,
 real subprocesses, and a real SQLite db, not mocked I/O. 93 tests total.
 
+## Multi-agent orchestration (Month 3, first slice)
+
+`orchestrator.py` is pillar 2 of the plan — "best multi-agent systems
+coordination" — built on a real `langgraph.graph.StateGraph`
+(`langgraph` 1.2.11, API verified live: `StateGraph`/`add_node`/
+`add_conditional_edges`/`compile`/`invoke` smoke-tested against the
+installed package before writing this module, same discipline that
+caught the `FastMCP` rename).
+
+The actual design bet: the coordination failure mode that matters for
+this product isn't "the model wasn't smart enough to route correctly" —
+it's *scope*. One agent holding every tool eventually runs
+`run_command_tool` on a request that was really just "where is X
+defined?" So this module's job is routing **and** tool-scoping together:
+a `planner_node` picks one of three specialists (`read`, `edit`, `exec`),
+and each specialist hands back only the MCP tool names its role owns —
+a `read` request never has `delete_file_tool` in its available toolset
+at all, not merely an instruction not to call it.
+
+```bash
+python -m cairn_graph.cli route "delete the old scratch.ts file"
+# specialist: exec
+# scoped tools: delete_file_tool, run_command_tool
+```
+
+The routing decision is behind an injectable `Planner`
+(`(request, specialists) -> name`) so a real LLM call can replace it
+later (pillar 5 — configurable providers) without retesting the graph
+wiring. `keyword_planner` is the zero-dependency default and is
+deliberately asymmetric: an ambiguous request always falls back to
+`read`, never to `exec` — routing a `read` request to the wrong
+read-only specialist just costs a round-trip; routing an innocuous
+request toward the CRITICAL-tier specialist is the actual failure mode
+worth avoiding before the permission gate even gets a look.
+
+11 tests (`test_orchestrator.py`), including a custom-planner injection
+test and a duplicate-specialist-name rejection test. Dogfooded with three
+real requests against the actual tool names this service exposes: a
+"where is X" question, a "replace this string" edit, and a "delete this
+file and run npm build" request — each correctly scoped to exactly the
+right specialist's tools, nothing more.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
