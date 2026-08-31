@@ -477,6 +477,42 @@ through the real server — `analytics_tool` correctly reported 2 actions
 (1 applied, 1 needs_approval), a 0.5 approval rate, and per-tool counts;
 `customer_overview_tool` correctly listed the customer.
 
+## Packaging (Month 5, second slice)
+
+Pillar 9: "everything should install in their system... good for their
+data, they can connect their own db... or use local repo only." One
+`Dockerfile` builds the whole engine — indexer, MCP server, semantic
+search, orchestrator, memory, analytics — into a single image:
+
+```bash
+docker build -t cairn-graph .
+docker run --rm -it \
+  -v /path/to/customer/repo:/workspace \
+  -v cairn-data:/data \
+  cairn-graph
+```
+
+Two choices worth calling out:
+
+- **The embedding model is baked into the image at build time**
+  (`RUN python -c "from fastembed import TextEmbedding; ..."`), not
+  fetched on first `vectorize` call. The one network request this whole
+  service ever needs happens once, at image-build time — a fresh
+  container on an air-gapped customer machine never has to reach the
+  internet to index their code.
+- **The customer's code is mounted, never copied in.** `/workspace` (the
+  repo) and `/data` (this service's own state — graph db, vector index,
+  per-customer memory) are both volumes; nothing about a customer's
+  codebase ever becomes part of the image itself.
+
+Build-verified live in this environment, not just written and assumed
+correct: a real `docker build` (36.7s for the pip install layer + 23.2s
+to bake in the embedding model), then a real `docker run` against a
+mounted two-symbol test file — `cairn_graph.cli build` indexed it,
+`stats` reported the right counts, and `dead` correctly flagged the one
+genuinely unused function. `cairn-graph-mcp --help` confirmed the default
+entrypoint launches.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
