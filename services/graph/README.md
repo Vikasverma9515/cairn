@@ -513,6 +513,48 @@ mounted two-symbol test file — `cairn_graph.cli build` indexed it,
 genuinely unused function. `cairn-graph-mcp --help` confirmed the default
 entrypoint launches.
 
+## Hardening (Month 6, first slice)
+
+`cairn-graph doctor` checks that an install actually works before a
+customer (or a CI job, or a support engineer three months from now)
+finds out the hard way that one piece silently isn't wired up right:
+tree-sitter parsers load, the SQLite store opens with WAL + foreign keys
+active, the MCP SDK is importable and constructible, embedded Qdrant
+opens a local collection, and the LangGraph orchestrator compiles and
+routes a real request correctly. The embedding-model check is a warning,
+never a hard failure, and never triggers the download itself — it
+reports whether the model is *already* cached (via
+`huggingface_hub.scan_cache_dir()`), so `doctor` stays fast and safe to
+run repeatedly, including on a machine that hasn't run `vectorize` yet.
+
+```bash
+python -m cairn_graph.cli doctor
+```
+
+Every check is a plain function returning a `CheckResult`, so `run_checks`
+is testable by injecting broken check functions directly rather than
+needing an actually-broken environment to prove the aggregation and
+failure-reporting logic works.
+
+**Caught immediately, dogfooding this exact feature**: the first version
+of `check_tree_sitter_parsers` called `parser_for("typescript")` — a bare
+string — when `parser_for` actually takes a `LanguageSpec` object.
+Running `doctor` for real crashed with `AttributeError: 'str' object has
+no attribute 'id'` on the very first run. Fixed by routing the check
+through `language_for_path()` first, the same extension → `LanguageSpec`
+→ `Parser` path a real `build()` call takes — a better check besides
+being the fix, since it now exercises the real code path instead of a
+hand-built shortcut.
+
+Also added a `services/graph` job to the repo's existing
+`.github/workflows/ci.yml` (previously Node/TS-only) — its own job, not a
+step bolted onto the existing one, since the two share no dependencies
+and a failure in one shouldn't block or be attributed to the other.
+
+7 new tests (`test_doctor.py`, including two that inject a broken/
+exploding check function to prove the runner's failure handling — not
+just that the happy path prints something). 154 tests total, all passing.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same

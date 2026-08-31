@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     route_p = sub.add_parser("route", help="show which specialist agent would handle a request, and its scoped toolset")
     route_p.add_argument("request")
 
+    sub.add_parser("doctor", help="check that this install actually works before relying on it")
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -63,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_semantic(args.query, args.vectors, args.limit)
     if args.command == "route":
         return _run_route(args.request)
+    if args.command == "doctor":
+        return _run_doctor()
     return 1
 
 
@@ -156,6 +160,27 @@ def _run_route(request: str) -> int:
     print("scoped tools:")
     for tool in result["available_tools"]:
         print(f"  {tool}")
+    return 0
+
+
+def _run_doctor() -> int:
+    from cairn_graph.doctor import run_checks
+
+    results = run_checks()
+    any_failed = False
+    for r in results:
+        if not r.ok:
+            any_failed = True
+            marker = "FAIL"
+        elif r.warning:
+            marker = "WARN"
+        else:
+            marker = " OK "
+        print(f"[{marker}] {r.name}: {r.detail}")
+    if any_failed:
+        print("\ncairn-graph doctor: one or more checks failed — see FAIL lines above", file=sys.stderr)
+        return 1
+    print("\ncairn-graph doctor: all checks passed")
     return 0
 
 

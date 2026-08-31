@@ -52,3 +52,27 @@ jobs:
 
       - name: Determinism check (L1 scan is a pure function — no API key needed)
         run: npm run determinism
+
+  # The Python agentic backend (services/graph) is a separate, unrelated
+  # package — its own venv, its own dependency graph (tree-sitter,
+  # langgraph, qdrant-client, fastembed, mcp), nothing shared with the
+  # Node workspaces above. A separate job, not a step bolted onto `test`,
+  # so a failure here is attributed to the right half of the monorepo and
+  # the two don't block each other's caching.
+  graph-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/graph
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/graph/pyproject.toml
+
+      - run: pip install -e ".[dev]"
+
+      - run: python -m pytest tests/ -v
