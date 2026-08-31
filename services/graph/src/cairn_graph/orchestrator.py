@@ -33,6 +33,7 @@ tree-sitter-language-pack download issue earlier in this project.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable, Sequence, TypedDict
 
@@ -124,6 +125,34 @@ def build_orchestrator(specialists: Sequence[Specialist] = DEFAULT_SPECIALISTS, 
     for spec in specialists:
         graph.add_edge(spec.name, END)
     return graph.compile()
+
+
+def llm_planner(provider, specialists: Sequence[Specialist] = DEFAULT_SPECIALISTS) -> Planner:
+    """Wraps any `providers.LLMProvider` into a `Planner` — the real
+    routing logic once a hosted LLM is registered (pillar 5), replacing
+    `keyword_planner` without touching `build_orchestrator` or anything
+    that calls `route_request`. Takes `provider` unannotated to avoid a
+    hard import dependency from this module onto providers.py; anything
+    with a matching `.complete(prompt, *, system=...)` works, structurally
+    (see `providers.LLMProvider`)."""
+
+    def planner(request: str, avail: Sequence[Specialist]) -> str:
+        options = "\n".join(f"- {s.name}: {s.description}" for s in avail)
+        prompt = f"Specialists:\n{options}\n\nRequest: {request}"
+        reply = provider.complete(prompt, system="Route this request to exactly one specialist. Reply with only its name.")
+        normalized = reply.strip().lower()
+        # Word-boundary match, not bare substring: a chatty real LLM reply
+        # ("I'd route this to edit") or a naive echo of the prompt (which
+        # necessarily contains every candidate name in its options list)
+        # can both contain more than one specialist name as a substring —
+        # \b keeps "read" from matching inside some future specialist
+        # named e.g. "readonly".
+        for spec in avail:
+            if re.search(rf"\b{re.escape(spec.name)}\b", normalized):
+                return spec.name
+        raise ValueError(f"LLM planner reply {reply!r} didn't match any specialist name in {[s.name for s in avail]}")
+
+    return planner
 
 
 def route_request(

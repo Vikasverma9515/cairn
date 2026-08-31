@@ -393,6 +393,53 @@ server (the same real-`call_tool()` pattern that caught the threading
 bug above). Dogfooded live end to end: stored a fact and two turns
 through the real threaded server, read them both back correctly.
 
+## Provider abstraction (Month 4, second slice)
+
+`providers.py` is pillar 5 — "publish this as a package and everyone can
+configure the LLM models, voice models... customize according to their
+needs." Three `Protocol`s (`LLMProvider`, `STTProvider`, `TTSProvider` —
+structural typing, no base class required) plus a name-keyed `Registry`
+per kind, selected via `load_provider(registry, env_var, default,
+provider_name=None)`: explicit name wins, then the env var, then a safe
+local default — never a silent surprise about which provider is live.
+
+Deliberately **not** included: real Cartesia/Deepgram/Groq (or any hosted
+voice/LLM) SDK calls. This project's standing rule is "verify every SDK
+call against the real, installed package before writing it, never guess
+a vendor's method signature from training data" — the exact discipline
+that caught the `FastMCP` rename and the `tree-sitter-language-pack`
+download issue. There's no credentialed account in this environment to
+verify a hosted voice/LLM SDK against, and writing unverified vendor
+integration code would break that discipline just to look more finished.
+Wiring a real provider in later means implementing one Protocol against
+that vendor's verified SDK — the registry and everything that calls
+through it (see below) doesn't change.
+
+Each Protocol ships exactly one real, local, zero-network implementation:
+`EchoLLMProvider` (echoes the prompt — a stand-in, not a real model, but
+real enough to prove a pipeline end to end for free) and
+`UnconfiguredSTTProvider`/`UnconfiguredTTSProvider` (raise a clear
+`NotImplementedError` naming the env var to set — honest about the
+capability gap instead of silently returning fake empty audio/text).
+
+The concrete integration point: `orchestrator.llm_planner(provider)`
+wraps any `LLMProvider` into a routing `Planner`, replacing
+`keyword_planner` without touching `build_orchestrator` or
+`route_request`. Matches specialist names in the reply by word boundary
+(`\bname\b`), not bare substring — needed because even `EchoLLMProvider`
+trivially contains every candidate name in what it echoes back (they're
+listed in the routing prompt itself), so a naive substring check could
+match the wrong one for a request whose earlier options happen to share
+a prefix.
+
+14 tests (`test_providers.py`) plus 5 more in `test_orchestrator.py`
+(a deterministic fake-provider planner test for both the success and
+failure paths, plus an end-to-end run against the real `EchoLLMProvider`
+proving the provider → planner → `route_request` plumbing runs without
+crashing). Dogfooded live: loaded the `echo` provider via
+`load_provider`, fed it into `llm_planner`, routed a real request through
+`route_request` end to end.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same

@@ -7,8 +7,10 @@ from cairn_graph.orchestrator import (
     Specialist,
     build_orchestrator,
     keyword_planner,
+    llm_planner,
     route_request,
 )
+from cairn_graph.providers import EchoLLMProvider
 
 
 def test_keyword_planner_routes_a_search_request_to_read():
@@ -76,6 +78,51 @@ def test_build_orchestrator_raises_on_a_planner_returning_an_unknown_specialist(
     compiled = build_orchestrator(planner=broken_planner)
     with pytest.raises(ValueError):
         compiled.invoke({"request": "x", "specialist": "", "available_tools": []})
+
+
+class _FakeLLMProvider:
+    """Deterministic stand-in — returns a canned reply regardless of the
+    prompt, so the test exercises llm_planner's parsing/validation logic
+    without depending on any real model's actual judgment."""
+
+    def __init__(self, reply: str):
+        self._reply = reply
+
+    def complete(self, prompt: str, *, system: str | None = None) -> str:
+        return self._reply
+
+
+def test_llm_planner_routes_using_the_providers_reply():
+    planner = llm_planner(_FakeLLMProvider("edit"))
+    assert planner("anything", DEFAULT_SPECIALISTS) == "edit"
+
+
+def test_llm_planner_normalizes_case_and_surrounding_text():
+    planner = llm_planner(_FakeLLMProvider("  I'd pick EXEC for this one.  "))
+    assert planner("anything", DEFAULT_SPECIALISTS) == "exec"
+
+
+def test_llm_planner_raises_a_clear_error_when_the_reply_matches_nothing():
+    planner = llm_planner(_FakeLLMProvider("banana"))
+    with pytest.raises(ValueError, match="banana"):
+        planner("anything", DEFAULT_SPECIALISTS)
+
+
+def test_llm_planner_runs_end_to_end_against_the_real_echo_provider_without_crashing():
+    # EchoLLMProvider echoes the whole prompt back — which necessarily
+    # contains every specialist name, since they're listed in the prompt
+    # itself — so this can't prove llm_planner picks the *right*
+    # specialist (that needs a real model's judgment, not a stand-in).
+    # It does prove the provider -> planner -> route_request plumbing
+    # runs end to end without a type error or an unhandled exception,
+    # which is the actual thing worth verifying without a live LLM.
+    result = route_request("anything", planner=llm_planner(EchoLLMProvider()))
+    assert result["specialist"] in {s.name for s in DEFAULT_SPECIALISTS}
+
+
+def test_route_request_accepts_an_llm_planner_via_build_orchestrator():
+    result = route_request("anything", planner=llm_planner(_FakeLLMProvider("read")))
+    assert result["specialist"] == "read"
 
 
 def test_custom_specialist_set_is_honored():
