@@ -18,16 +18,22 @@ jobs:
 
       - run: npm ci
 
-      # Explicit, dependency-ordered build — found live, not theoretical:
-      # npm's workspace "prepare" lifecycle fires for every workspace on
-      # `npm ci`/`npm install`, but does NOT reliably order sibling
-      # workspaces by their actual dependency graph (@cairn/sdk depends on
-      # @cairn/core; a fresh `npm install` after deleting both dist/
-      # folders had sdk's prepare build run before core's had finished,
-      # failing with "Cannot find module '@cairn/core'"). Building
-      # explicitly, in order, sidesteps that entirely — same reasoning as
-      # the pre-existing @cairn/indexer build step below.
-      - run: npm run build -w @cairn/core
+      # Explicit, dependency-ordered build for @cairn/sdk — found live,
+      # not theoretical: npm's workspace "prepare" lifecycle fires for
+      # every workspace during `npm ci`/`npm install`, but does NOT
+      # reliably order *sibling* workspaces by their actual dependency
+      # graph. @cairn/sdk depends on @cairn/core; when sdk also had its
+      # own "prepare" script, a plain `npm ci` genuinely failed here with
+      # sdk's prepare build racing ahead of core's ("Cannot find module
+      # '@cairn/core'") — not just in a local repro, a real CI failure.
+      # Fixed two ways together: @cairn/sdk's "prepare" script was
+      # removed (nothing currently depends on it firing — cairn-dashboard,
+      # the one real file:-based external consumer tested this session,
+      # shares this same physical dist/ via the file: symlink, already
+      # built by the step below) and @cairn/core keeps its own "prepare"
+      # safely, since core has zero workspace-sibling dependencies of its
+      # own to race against. This explicit step is what actually builds
+      # @cairn/sdk's dist now.
       - run: npm run build -w @cairn/sdk
 
       # crawl.test.ts (packages/indexer) launches a real headless Chromium

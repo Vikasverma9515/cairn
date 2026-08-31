@@ -28,7 +28,6 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json && npm run build:widget",
     "build:widget": "esbuild src/web-component.ts --bundle --minify --format=iife --outfile=dist/cairn-widget.js",
-    "prepare": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
