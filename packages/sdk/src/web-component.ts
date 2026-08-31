@@ -43,162 +43,261 @@ const MAX_HISTORY_TURNS = 8; // 4 exchanges — matches the realtime relay's own
 const STYLES = `
 :host {
   all: initial;
-  font: 13.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #0b0d12;
+  font: 13.5px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.92);
 }
 * { box-sizing: border-box; }
 @keyframes cairn-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45); }
-  70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+  70% { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
 }
 @keyframes cairn-pulse-green {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45); }
-  70% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  70% { box-shadow: 0 0 0 12px rgba(52, 211, 153, 0); }
 }
 @keyframes cairn-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes cairn-rt-dot {
   0%, 100% { opacity: 0.5; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.15); }
 }
+@keyframes cairn-fab-breathe {
+  0%, 100% { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
+    0 0 22px 2px rgba(99, 102, 241, 0.35), 0 0 40px 8px rgba(139, 92, 246, 0.18); }
+  50% { box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
+    0 0 26px 4px rgba(99, 102, 241, 0.5), 0 0 52px 12px rgba(139, 92, 246, 0.28); }
+}
+@keyframes cairn-panel-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes cairn-bubble-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes cairn-word-sweep {
+  0% { opacity: 0.4; text-shadow: none; }
+  35% { opacity: 1; color: #c7d2fe; text-shadow: 0 0 14px rgba(129, 140, 248, 0.6); }
+  100% { opacity: 1; color: inherit; text-shadow: none; }
+}
+@keyframes cairn-thinking-bounce {
+  0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-3px); }
+}
 .cairn-glow {
   animation: cairn-pulse 1.1s ease-out 2;
   outline: 2px solid #6366f1;
   outline-offset: 3px;
   border-radius: 8px;
+  box-shadow: 0 0 0 5px rgba(99, 102, 241, 0.16), 0 0 24px 4px rgba(139, 92, 246, 0.35);
 }
 .cairn-spin { animation: cairn-spin 0.8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 .cairn-fab {
   position: fixed;
   right: 20px;
   bottom: 20px;
   z-index: 2147483000;
-  width: 52px;
-  height: 52px;
+  width: 54px;
+  height: 54px;
   border-radius: 999px;
   border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(155deg, #1f2430 0%, #0b0d12 100%);
+  background: linear-gradient(155deg, #2a2f45 0%, #0b0d16 100%);
   color: white;
   cursor: pointer;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
-  transition: transform 0.15s ease;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
+    0 0 22px 2px rgba(99, 102, 241, 0.35), 0 0 40px 8px rgba(139, 92, 246, 0.18);
+  animation: cairn-fab-breathe 3.2s ease-in-out infinite;
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.cairn-fab:hover { transform: translateY(-1px); }
+.cairn-fab:hover { transform: translateY(-2px) scale(1.04); }
 .cairn-fab-speaking {
-  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06) inset,
-    0 0 0 4px rgba(34, 197, 94, 0.22);
-  animation: cairn-pulse 1.2s ease-out infinite;
+  box-shadow: 0 8px 24px rgba(52, 211, 153, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08) inset,
+    0 0 0 5px rgba(52, 211, 153, 0.22);
+  animation: cairn-pulse-green 1.2s ease-out infinite;
 }
-.cairn-panel-title {
-  font-weight: 700;
-  font-size: 12.5px;
-  letter-spacing: 0.01em;
-  color: #0b0d12;
-  margin-bottom: 8px;
-}
+
 .cairn-panel {
   position: fixed;
   right: 20px;
-  bottom: 84px;
+  bottom: 86px;
   z-index: 2147483000;
-  width: 320px;
-  max-height: 440px;
+  width: 336px;
+  max-height: 460px;
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
-  color: #0b0d12;
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  box-shadow: 0 20px 60px rgba(15, 15, 25, 0.22), 0 0 0 1px rgba(15, 15, 25, 0.04);
-  padding: 14px;
+  overflow-x: hidden;
+  background: rgba(10, 10, 18, 0.32);
+  backdrop-filter: blur(34px) saturate(160%);
+  -webkit-backdrop-filter: blur(34px) saturate(160%);
+  color: rgba(255, 255, 255, 0.94);
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  padding: 16px;
   display: none;
 }
-.cairn-panel.cairn-open { display: block; }
-.cairn-caption {
-  margin-bottom: 10px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(99, 102, 241, 0.08);
-  color: #33384a;
+.cairn-panel.cairn-open { display: block; animation: cairn-panel-in 0.24s cubic-bezier(0.16, 1, 0.3, 1); }
+.cairn-panel::-webkit-scrollbar { width: 6px; }
+.cairn-panel::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 999px; }
+
+.cairn-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 650;
   font-size: 12.5px;
-  display: none;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.94);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  margin-bottom: 12px;
+}
+.cairn-panel-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #818cf8, #c084fc);
+  box-shadow: 0 0 8px 1px rgba(139, 92, 246, 0.7);
+  animation: cairn-rt-dot 2.4s ease-in-out infinite;
+}
+
+.cairn-stack { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.cairn-bubble {
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 16px;
+  font-size: 13px;
+  line-height: 1.48;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  animation: cairn-bubble-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+.cairn-bubble-user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.62), rgba(168, 85, 247, 0.5));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(199, 210, 254, 0.28);
+  color: #f8f7ff;
+  border-bottom-right-radius: 5px;
+}
+.cairn-bubble-agent {
+  align-self: flex-start;
+  background: rgba(20, 20, 30, 0.5);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.94);
+  border-bottom-left-radius: 5px;
+  display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 5px;
 }
-.cairn-caption.cairn-show { display: flex; }
-.cairn-caption-status {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+.cairn-bubble-text { white-space: pre-wrap; }
+.cairn-word { display: inline-block; animation: cairn-word-sweep 0.6s ease forwards; }
+.cairn-chip {
+  align-self: flex-start;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #6366f1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(129, 140, 248, 0.35), rgba(192, 132, 252, 0.3));
+  color: #e0e7ff;
 }
-.cairn-input-row { display: flex; gap: 6px; align-items: center; }
+.cairn-thinking { display: inline-flex; gap: 4px; padding: 2px 0; }
+.cairn-thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #c4b5fd;
+  animation: cairn-thinking-bounce 1.1s ease-in-out infinite;
+}
+.cairn-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
+.cairn-thinking-dot:nth-child(3) { animation-delay: 0.3s; }
+
+.cairn-input-row { display: flex; gap: 7px; align-items: center; }
 .cairn-input-row input {
   flex: 1;
   min-width: 0;
-  border: 1px solid rgba(11, 13, 18, 0.14);
-  border-radius: 9px;
-  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 10px 14px;
   font: inherit;
-  background: rgba(255, 255, 255, 0.7);
-  color: #0b0d12;
+  background: rgba(20, 20, 30, 0.4);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.cairn-input-row input:disabled { opacity: 0.6; }
+.cairn-input-row input::placeholder { color: rgba(255, 255, 255, 0.42); }
+.cairn-input-row input:disabled { opacity: 0.5; }
 .cairn-input-row input:focus {
   outline: none;
-  border-color: rgba(99, 102, 241, 0.55);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(165, 180, 252, 0.55);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
 }
 .cairn-icon-btn, .cairn-send {
   flex-shrink: 0;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
-  border: 1px solid rgba(11, 13, 18, 0.12);
-  background: rgba(255, 255, 255, 0.55);
-  color: #33384a;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(20, 20, 30, 0.4);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(255, 255, 255, 0.85);
   cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
 }
-.cairn-icon-btn:hover { background: rgba(255, 255, 255, 0.85); }
+.cairn-icon-btn:hover { background: rgba(255, 255, 255, 0.16); transform: translateY(-1px); }
 .cairn-send {
   border: none;
-  background: linear-gradient(155deg, #4f5bd5, #6366f1);
+  background: linear-gradient(135deg, #6366f1, #a855f7);
   color: white;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
 }
-.cairn-send:disabled, .cairn-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.cairn-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(99, 102, 241, 0.55); }
+.cairn-send:disabled, .cairn-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 .cairn-icon-btn-recording {
-  background: #fee2e2;
-  border-color: #fca5a5;
-  color: #b91c1c;
+  background: linear-gradient(135deg, #f87171, #ef4444);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: white;
   animation: cairn-pulse 1.4s ease-out infinite;
 }
 .cairn-icon-btn-speaking {
-  background: #dcfce7;
-  border-color: #86efac;
-  color: #15803d;
+  background: linear-gradient(135deg, #34d399, #10b981);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: white;
   animation: cairn-pulse-green 1.2s ease-out infinite;
 }
-.cairn-icon-btn-end { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
-.cairn-answer { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(11, 13, 18, 0.08); white-space: pre-wrap; }
+.cairn-icon-btn-end { background: linear-gradient(135deg, #f87171, #ef4444); border-color: rgba(255, 255, 255, 0.2); color: white; }
 .cairn-rt-bar { display: flex; align-items: center; gap: 8px; padding: 6px 4px; }
 .cairn-rt-dot {
   width: 9px;
   height: 9px;
   border-radius: 999px;
-  background: #6366f1;
+  background: #818cf8;
+  box-shadow: 0 0 8px 1px rgba(129, 140, 248, 0.7);
   animation: cairn-rt-dot 1.2s ease-in-out infinite;
   flex-shrink: 0;
 }
-.cairn-rt-dot-rt-speaking { background: #22c55e; }
-.cairn-rt-dot-rt-thinking { background: #f59e0b; }
-.cairn-rt-label { flex: 1; font-size: 12.5px; color: #33384a; }
+.cairn-rt-dot-rt-speaking { background: #34d399; box-shadow: 0 0 8px 1px rgba(52, 211, 153, 0.7); }
+.cairn-rt-dot-rt-thinking { background: #fbbf24; box-shadow: 0 0 8px 1px rgba(251, 191, 36, 0.7); }
+.cairn-rt-label { flex: 1; font-size: 12.5px; color: rgba(255, 255, 255, 0.85); text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55); }
 .cairn-rt-controls { display: flex; gap: 6px; }
 `;
 
@@ -224,15 +323,18 @@ export class CairnWidgetElement extends HTMLElement {
   private fab!: HTMLButtonElement;
   private panel!: HTMLDivElement;
   private titleEl!: HTMLDivElement;
-  private captionEl!: HTMLDivElement;
-  private captionStatusEl!: HTMLSpanElement;
-  private captionTextEl!: HTMLSpanElement;
+  private personaTextEl!: HTMLSpanElement;
+  private stackEl!: HTMLDivElement;
+  private userBubbleEl!: HTMLDivElement;
+  private agentBubbleEl!: HTMLDivElement;
+  private chipEl!: HTMLSpanElement;
+  private agentTextEl!: HTMLSpanElement;
+  private thinkingEl!: HTMLSpanElement;
   private formEl!: HTMLFormElement;
   private inputEl!: HTMLInputElement;
   private sendBtn!: HTMLButtonElement;
   private micBtn: HTMLButtonElement | null = null;
   private phoneBtn: HTMLButtonElement | null = null;
-  private answerEl!: HTMLDivElement;
   private rtBar!: HTMLDivElement;
   private rtDot!: HTMLSpanElement;
   private rtLabel!: HTMLSpanElement;
@@ -245,6 +347,12 @@ export class CairnWidgetElement extends HTMLElement {
   private recording = false;
   private touringActive = false;
   private caption = "";
+  private answer: string | null = null;
+  // The user's own last question, shown as its own floating caption bubble
+  // alongside the agent's — set once per ask() call, not cleared on
+  // completion, so the exchange stays paired on screen the way a caption
+  // track shows the current line, not a scrolling transcript.
+  private lastQuestion: string | null = null;
   private tourGeneration = 0;
   private mediaRecorder: MediaRecorder | null = null;
   private audioChunks: Blob[] = [];
@@ -279,7 +387,7 @@ export class CairnWidgetElement extends HTMLElement {
   }
 
   attributeChangedCallback(name: string) {
-    if (name === "persona" && this.titleEl) this.titleEl.textContent = this.persona;
+    if (name === "persona" && this.personaTextEl) this.personaTextEl.textContent = this.persona;
   }
 
   // --- attributes -----------------------------------------------------
@@ -324,17 +432,47 @@ export class CairnWidgetElement extends HTMLElement {
 
     this.titleEl = document.createElement("div");
     this.titleEl.className = "cairn-panel-title";
-    this.titleEl.textContent = this.persona;
+    const titleDot = document.createElement("span");
+    titleDot.className = "cairn-panel-dot";
+    titleDot.setAttribute("aria-hidden", "true");
+    this.titleEl.appendChild(titleDot);
+    this.personaTextEl = document.createElement("span");
+    this.personaTextEl.textContent = this.persona;
+    this.titleEl.appendChild(this.personaTextEl);
     this.panel.appendChild(this.titleEl);
 
-    this.captionEl = document.createElement("div");
-    this.captionEl.className = "cairn-caption";
-    this.captionStatusEl = document.createElement("span");
-    this.captionStatusEl.className = "cairn-caption-status";
-    this.captionTextEl = document.createElement("span");
-    this.captionEl.appendChild(this.captionStatusEl);
-    this.captionEl.appendChild(this.captionTextEl);
-    this.panel.appendChild(this.captionEl);
+    this.stackEl = document.createElement("div");
+    this.stackEl.className = "cairn-stack";
+    this.stackEl.style.display = "none";
+
+    this.userBubbleEl = document.createElement("div");
+    this.userBubbleEl.className = "cairn-bubble cairn-bubble-user";
+    this.userBubbleEl.style.display = "none";
+    this.stackEl.appendChild(this.userBubbleEl);
+
+    this.agentBubbleEl = document.createElement("div");
+    this.agentBubbleEl.className = "cairn-bubble cairn-bubble-agent";
+    this.agentBubbleEl.style.display = "none";
+
+    this.chipEl = document.createElement("span");
+    this.chipEl.className = "cairn-chip";
+    this.chipEl.style.display = "none";
+    this.agentBubbleEl.appendChild(this.chipEl);
+
+    this.agentTextEl = document.createElement("span");
+    this.agentTextEl.className = "cairn-bubble-text";
+    this.agentBubbleEl.appendChild(this.agentTextEl);
+
+    this.thinkingEl = document.createElement("span");
+    this.thinkingEl.className = "cairn-thinking";
+    this.thinkingEl.setAttribute("aria-label", "Thinking");
+    this.thinkingEl.style.display = "none";
+    this.thinkingEl.innerHTML =
+      '<span class="cairn-thinking-dot"></span><span class="cairn-thinking-dot"></span><span class="cairn-thinking-dot"></span>';
+    this.agentBubbleEl.appendChild(this.thinkingEl);
+
+    this.stackEl.appendChild(this.agentBubbleEl);
+    this.panel.appendChild(this.stackEl);
 
     // --- realtime control bar (shown instead of the form while a live call is active) ---
     this.rtBar = document.createElement("div");
@@ -429,10 +567,6 @@ export class CairnWidgetElement extends HTMLElement {
     });
     this.panel.appendChild(this.formEl);
 
-    this.answerEl = document.createElement("div");
-    this.answerEl.className = "cairn-answer";
-    this.panel.appendChild(this.answerEl);
-
     this.shadow.appendChild(this.panel);
     this.render();
   }
@@ -469,11 +603,36 @@ export class CairnWidgetElement extends HTMLElement {
     }
 
     const statusLabel = STATUS_LABEL[this.status];
-    this.captionStatusEl.style.display = realtimeActive && statusLabel ? "block" : "none";
-    this.captionStatusEl.textContent = statusLabel;
-    this.captionTextEl.style.display = this.caption ? "block" : "none";
-    this.captionTextEl.textContent = this.caption;
-    this.captionEl.classList.toggle("cairn-show", !!this.caption || (realtimeActive && !!statusLabel));
+
+    // `caption` is overloaded by design (see its setters elsewhere): during
+    // a tour it's a step-progress label ("Step 1 of 2"), not user speech,
+    // so it reads as a small chip over the agent's bubble instead. While
+    // actively recording or on a live realtime call it's the user's own
+    // live/last transcript, so it reads as the user's floating bubble;
+    // otherwise that slot falls back to the last typed question.
+    const tourChip = this.touringActive ? this.caption : "";
+    const userCaption = !this.touringActive && (this.recording || realtimeActive) ? this.caption : this.lastQuestion ?? "";
+    const showAgent = !!this.answer || this.busy;
+
+    this.stackEl.style.display = userCaption || showAgent ? "flex" : "none";
+
+    this.userBubbleEl.style.display = userCaption ? "block" : "none";
+    this.userBubbleEl.textContent = userCaption;
+
+    this.agentBubbleEl.style.display = showAgent ? "flex" : "none";
+    const chipText = tourChip || (realtimeActive && !tourChip ? statusLabel : "");
+    this.chipEl.style.display = chipText ? "inline-block" : "none";
+    this.chipEl.textContent = chipText;
+
+    if (this.answer) {
+      this.agentTextEl.style.display = "inline";
+      this.renderCaptionWords(this.agentTextEl, this.answer);
+      this.thinkingEl.style.display = "none";
+    } else {
+      this.agentTextEl.style.display = "none";
+      this.agentTextEl.textContent = "";
+      this.thinkingEl.style.display = this.busy ? "inline-flex" : "none";
+    }
 
     if (this.phoneBtn) this.phoneBtn.disabled = this.busy || this.recording;
     this.updateBusyState();
@@ -497,7 +656,30 @@ export class CairnWidgetElement extends HTMLElement {
   }
 
   private setAnswer(text: string | null) {
-    this.answerEl.textContent = text ?? "";
+    this.answer = text;
+    this.render();
+  }
+
+  /**
+   * Renders text as a sequence of spans that light up in order — a caption
+   * "sweep" that reads like the agent is speaking it, whether or not audio
+   * is actually playing right now. This is a pacing *estimate* (staggered
+   * by word position, capped so long answers don't take forever), not
+   * synced to real TTS word timestamps — Deepgram's streaming API doesn't
+   * hand those to the client today. Builds real DOM nodes with textContent
+   * (never innerHTML on the actual words) so LLM-produced text can never
+   * be interpreted as markup.
+   */
+  private renderCaptionWords(container: HTMLElement, text: string) {
+    container.innerHTML = "";
+    const words = text.split(" ");
+    words.forEach((word, i) => {
+      const span = document.createElement("span");
+      span.className = "cairn-word";
+      span.style.animationDelay = `${Math.min(i * 55, 2800)}ms`;
+      span.textContent = i < words.length - 1 ? word + " " : word;
+      container.appendChild(span);
+    });
   }
 
   private reportMiss(context: MissContext) {
@@ -512,6 +694,9 @@ export class CairnWidgetElement extends HTMLElement {
   private async ask(question: string) {
     this.setStatus("asking");
     this.setAnswer(null);
+    this.lastQuestion = question;
+    this.inputEl.value = "";
+    this.render();
     try {
       const res = await fetch(this.endpoint, {
         method: "POST",
@@ -520,7 +705,6 @@ export class CairnWidgetElement extends HTMLElement {
       });
       const data = await res.json().catch(() => null);
       this.handleVerb(data);
-      this.inputEl.value = "";
       // Unlike the realtime relay (one persistent connection, memory lives
       // server-side), each of these POSTs is stateless — the widget itself
       // is what remembers, and resends it above so the model has context
