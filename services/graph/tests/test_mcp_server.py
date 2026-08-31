@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+from cairn_graph.build import build_graph
+from cairn_graph.mcp_server import (
+    build_server,
+    find_dead_code,
+    get_index_stats,
+    get_symbol_usages,
+    reindex,
+    search_symbols,
+)
+from cairn_graph.store import open_store
+
+
+def write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def _built(tmp_path: Path):
+    write(tmp_path / "a.ts", 'import { helper } from "./b";\nexport function fromA() { return helper(); }')
+    write(tmp_path / "b.ts", "export function helper() { return 1; }\nfunction _unused() { return 2; }")
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+    return open_store(str(db)), db
+
+
+def test_search_symbols_finds_by_substring(tmp_path: Path):
+    conn, _ = _built(tmp_path)
+    results = search_symbols(conn, "help")
+    assert any(r["name"] == "helper" and r["kind"] == "function" for r in results)
+
+
+def test_search_symbols_respects_limit(tmp_path: Path):
+    conn, _ = _built(tmp_path)
+    results = search_symbols(conn, "", limit=1)
+    assert len(results) == 1
+
+
+def test_get_symbol_usages_finds_the_call_site(tmp_path: Path):
+    conn, _ = _built(tmp_path)
+    usages = get_symbol_usages(conn, "helper")
+    assert usages["name"] == "helper"
+    assert any(c["caller"] == "fromA" for c in usages["called_from"])
+
+
+def test_get_symbol_usages_for_unused_name_is_empty(tmp_path: Path):
+    conn, _ = _built(tmp_path)
+    usages = get_symbol_usages(conn, "totallyMadeUpNameNotInCode")
+    assert usages["called_from"] == []
+    assert usages["referenced_from"] == []
+
+
+def test_find_dead_code_flags_the_genuinely_unused_function(tmp_path: Path):
+    conn, _ = _built(tmp_path)
+    result = find_dead_code(conn)
+    dead_names = {s["name"] for s in result["dead_symbols"]}
+    assert "_unused" in dead_names
+    assert "helper" not in dead_names  # reachable via the cross-file import + call
+
+
+def test_find_dead_code_respects_limit_and_reports_truncation(tmp_path: Path):
+    write(tmp_path / "many.ts", "\n".join(f"function dead{i}() {{ return {i}; }}" for i in range(10)))
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+    conn = open_store(str(db))
+
+    result = find_dead_code(conn, limit=3)
+    assert len(result["dead_symbols"]) == 3
+    assert result["dead_count"] >= 10
+    assert result["truncated"] is True
+
+
+def test_get_index_stats_reports_real_counts(tmp_path: Path):
+    conn, _ = _built(tmp_path)
+    s = get_index_stats(conn)
+    assert s["files"] == 2
+    assert s["symbols"] >= 2
+
+
+def test_reindex_picks_up_a_new_file(tmp_path: Path):
+    conn, db = _built(tmp_path)
+    before = get_index_stats(conn)
+
+    write(tmp_path / "c.ts", "export function fromC() { return 1; }")
+    summary = reindex(str(db), str(tmp_path))
+    assert summary["parsed"] >= 1
+
+    conn2 = open_store(str(db))
+    after = get_index_stats(conn2)
+    assert after["files"] == before["files"] + 1
+
+
+def test_build_server_registers_all_expected_tools(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path))
+    tools = asyncio.run(server.list_tools())
+    tool_names = {t.name for t in tools}
+    assert {"search", "usages", "dead_code", "stats_tool", "reindex_tool"} <= tool_names

@@ -42,7 +42,7 @@ pip install -e ".[dev]"
 python -m pytest tests/ -v
 ```
 
-19 tests, all real assertions against actual parsed output — not
+50 tests, all real assertions against actual parsed output — not
 "does it run without throwing." Includes the guarantees that matter at
 scale: an unchanged file is never re-parsed, a deleted file's rows are
 actually removed (SQLite's `ON DELETE CASCADE` is a no-op unless
@@ -152,6 +152,43 @@ the file being indexed — the same category as a Web Component's
 all: `Widget()` is Python's actual instantiation syntax, already the
 same `call` node every plain function call produces.
 
+## MCP server
+
+`mcp_server.py` exposes the graph to an agent over MCP — the piece that
+turns "a queryable SQLite file" into something a planner/orchestrator
+agent can actually call mid-conversation, without shelling out to the CLI.
+
+```bash
+cairn-graph-mcp <root-dir> --db .cairn-graph.db --transport stdio
+```
+
+Five tools, each a thin wrapper over a plain, independently-testable
+function (`search_symbols`, `get_symbol_usages`, `find_dead_code`,
+`get_index_stats`, `reindex`) bound to one open connection by a
+`build_server(db_path, root)` factory:
+
+- **`search`** — find symbols by name substring.
+- **`usages`** — every call site and reference for a name, so an agent can
+  check "what happens if I change this" before touching it.
+- **`dead_code`** — the same reachability pass as the CLI's `dead`
+  command, paginated with a `truncated` flag.
+- **`stats_tool`** — index size (files/symbols/imports/calls/failures).
+- **`reindex_tool`** — re-scan after the agent (or the user) changes
+  files, so the graph doesn't silently drift stale over a long session;
+  only changed files are re-parsed.
+
+**API-drift note, found live, not assumed**: this targets `mcp` 2.x, where
+`FastMCP` was renamed to `MCPServer`. Importing the old `mcp.server.fastmcp`
+path against the installed 2.1.1 package doesn't just fail — it raises a
+`ModuleNotFoundError` with the migration built into the message, telling
+you to import `MCPServer` from `mcp.server.mcpserver` instead. Tool
+registration (`@server.tool()`) and listing (`await server.list_tools()`
+returning `list[Tool]`) were both verified against the real installed
+package via a live smoke test before being relied on in code or tests —
+same "verify against the running package, not training data" discipline
+that caught the `tree-sitter-language-pack` download issue and the
+`FastMCP` rename itself.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
@@ -161,8 +198,6 @@ same `call` node every plain function call produces.
 - **Vector index / hybrid retrieval** — this is the structure-graph third
   of the plan's three-index design; the embeddings layer (Qdrant, per the
   plan) is a separate, not-yet-started piece.
-- **MCP server** exposing this graph to an agent — the graph is real and
-  queryable via the CLI above, but nothing serves it over MCP yet.
 - **Stress test against a large *external* open-source monorepo** — this
   repo (76 files) proves the pipeline is correct; it doesn't prove
   "lakhs of files" doesn't hit some wall this size can't reveal. Worth
