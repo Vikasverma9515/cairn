@@ -21,6 +21,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from cairn_graph.actions import Decision, PermissionMode, apply_edit, build_apply_edit_action, decide
 from cairn_graph.build import build_graph
 from cairn_graph.reachability import compute_dead_symbols
 from cairn_graph.store import open_store, stats
@@ -87,6 +88,29 @@ def get_index_stats(conn: sqlite3.Connection) -> dict[str, int]:
     return stats(conn)
 
 
+def apply_edit_gated(
+    root: str,
+    file_path: str,
+    old_text: str,
+    new_text: str,
+    mode: PermissionMode,
+    approved: bool = False,
+) -> dict[str, Any]:
+    """The permission gate applied to one concrete action. `approved` is
+    how the orchestrator answers its own popup on a second call — the
+    same shape as this agent's own tool-permission flow: ask once, then
+    proceed once the human has said yes. A CRITICAL action would refuse
+    even with approved=True on this path (there isn't one wired up yet);
+    REVIEW actions proceed once either the mode allows it outright or the
+    caller has already gotten a yes."""
+    action = build_apply_edit_action(root, file_path, old_text, new_text)
+    decision = decide(action, mode)
+    if decision is Decision.NEEDS_APPROVAL and not approved:
+        return {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
+    result = apply_edit(root, file_path, old_text, new_text)
+    return {"status": "applied", **result}
+
+
 def semantic_search(vector_dir: str, query: str, limit: int = 10, embed_fn=None) -> dict[str, Any]:
     """Find code by what it does, not what it's named — the complement to
     `search_symbols`'s substring match. Returns an empty list, not an
@@ -114,10 +138,17 @@ def reindex(db_path: str, root: str, workers: int | None = None) -> dict[str, An
     }
 
 
-def build_server(db_path: str, root: str, vector_dir: str = ".cairn-graph-vectors"):
+def build_server(
+    db_path: str,
+    root: str,
+    vector_dir: str = ".cairn-graph-vectors",
+    permission_mode: PermissionMode = PermissionMode.REVIEW,
+):
     """Constructs the MCPServer with tools bound to one open connection —
     factored out from `main()` so tests can construct a server against a
-    temp db without going through argv/stdio."""
+    temp db without going through argv/stdio. Defaults to REVIEW mode
+    (everything mutating stops and asks) — AUTO mode is opt-in, not the
+    default a server silently starts in."""
     from mcp.server.mcpserver import MCPServer
 
     server = MCPServer(
@@ -128,7 +159,9 @@ def build_server(db_path: str, root: str, vector_dir: str = ".cairn-graph-vector
             "unreferenced dead code, or re-index after changes. Name-based "
             "results are exact but not type-resolved; semantic results are "
             "similarity ranked, not exact — treat both as strong hints, "
-            "not proof."
+            "not proof. apply_edit_tool is gated: a needs_approval response "
+            "means show the description to the human and call again with "
+            "approved=true only after they say yes — never on your own."
         ),
     )
     conn = open_store(db_path)
@@ -178,6 +211,15 @@ def build_server(db_path: str, root: str, vector_dir: str = ".cairn-graph-vector
         summary = build_vector_index(db_path, vector_dir)
         return {"symbols_embedded": summary.symbols_embedded, "batches": summary.batches}
 
+    @server.tool()
+    def apply_edit_tool(file_path: str, old_text: str, new_text: str, approved: bool = False) -> dict[str, Any]:
+        """Replace one exact, unique occurrence of old_text with new_text in
+        a file inside the indexed root. old_text must match exactly once —
+        this refuses rather than guessing which occurrence you meant. May
+        return status="needs_approval" instead of editing anything; see the
+        server instructions for how to handle that."""
+        return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved)
+
     return server
 
 
@@ -189,9 +231,10 @@ def main() -> None:
     parser.add_argument("--db", default=".cairn-graph.db")
     parser.add_argument("--vectors", default=".cairn-graph-vectors")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"])
+    parser.add_argument("--mode", default="review", choices=["review", "auto"], help="permission mode for mutating tools")
     args = parser.parse_args()
 
-    server = build_server(args.db, args.root, args.vectors)
+    server = build_server(args.db, args.root, args.vectors, PermissionMode(args.mode))
     server.run(transport=args.transport)
 
 

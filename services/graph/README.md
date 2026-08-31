@@ -180,6 +180,8 @@ function (`search_symbols`, `get_symbol_usages`, `find_dead_code`,
   below).
 - **`vectorize_tool`** — (re)build the semantic index after a `build` or
   `reindex_tool`.
+- **`apply_edit_tool`** — the first action tool, gated by the permission
+  layer below; everything else in this list is read-only.
 
 **API-drift note, found live, not assumed**: this targets `mcp` 2.x, where
 `FastMCP` was renamed to `MCPServer`. Importing the old `mcp.server.fastmcp`
@@ -232,6 +234,49 @@ tests in `test_vectors.py`, plus 2 more exercising the MCP `semantic`
 tool) runs against a deterministic hashing-trick fake embedder — real
 nearest-neighbor-by-shared-vocabulary behavior, asserted exactly, with no
 network call or model load in the hot path of `pytest`.
+
+## Permission gate (Month 2, first slice)
+
+`actions.py` is the start of the action layer the platform-operator plan
+calls for — an agent that doesn't just read the graph but can act on the
+codebase, with the exact behavior pillar 4 of the plan asked for: **auto
+mode** (safe/reversible actions proceed, critical ones still stop) vs.
+**review mode** (everything mutating stops and asks first).
+
+Three risk tiers, one rule each:
+
+- **SAFE** (read-only — `search`, `usages`, `dead_code`, `semantic`, …) —
+  always proceeds, in either mode.
+- **REVIEW** (mutating but scoped and reversible — right now, exactly one
+  action: a single-file text replace) — proceeds in auto mode, stops and
+  asks in review mode. This is the entire behavioral difference between
+  the two modes.
+- **CRITICAL** (destructive, or reaches outside the indexed root — nothing
+  wired up to this tier yet) — always stops, in *either* mode. Mirrors
+  this agent's own "Prohibited" / "Explicit permission required" action
+  categories: some things don't get an auto-mode bypass, ever.
+
+The one action live right now is `apply_edit` — a single-file text
+replace, same semantics as this agent's own Edit tool: the text to
+replace must match exactly once in the file, or the edit is refused
+rather than guessing which occurrence was meant. Scoped to the indexed
+root with a real path-escape check (`os.path.realpath` +
+`os.path.commonpath`, not string-prefix matching) — verified live with a
+`../` traversal attempt that gets rejected before touching disk, not just
+asserted in a unit test.
+
+Server default is **review mode** — a server doesn't silently start
+willing to auto-apply edits; that's an explicit `--mode auto` opt-in.
+`apply_edit_tool`'s gated response shape mirrors this agent's own
+tool-permission flow: a `needs_approval` response carries a human-readable
+`description`; the caller shows it to a person and calls again with
+`approved=true` only after they say yes — the tool never decides that for
+itself.
+
+8 new tests (`test_actions.py`) plus 3 more in `test_mcp_server.py`
+covering the MCP-bound gated flow (blocked in review mode, proceeds in
+auto mode, proceeds in review mode once approved) — all verified against
+a real file on disk, not mocked I/O.
 
 ## What's not built yet
 

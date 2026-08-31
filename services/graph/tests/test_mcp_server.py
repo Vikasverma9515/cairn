@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from cairn_graph.actions import PermissionMode
 from cairn_graph.build import build_graph
 from cairn_graph.mcp_server import (
+    apply_edit_gated,
     build_server,
     find_dead_code,
     get_index_stats,
@@ -144,4 +146,35 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "reindex_tool",
         "semantic",
         "vectorize_tool",
+        "apply_edit_tool",
     } <= tool_names
+
+
+def test_apply_edit_gated_needs_approval_in_review_mode_and_leaves_file_untouched(tmp_path: Path):
+    f = tmp_path / "a.ts"
+    f.write_text("const greeting = 'hi';")
+
+    result = apply_edit_gated(str(tmp_path), "a.ts", "'hi'", "'hello'", PermissionMode.REVIEW)
+
+    assert result["status"] == "needs_approval"
+    assert f.read_text() == "const greeting = 'hi';"
+
+
+def test_apply_edit_gated_proceeds_in_auto_mode(tmp_path: Path):
+    f = tmp_path / "a.ts"
+    f.write_text("const greeting = 'hi';")
+
+    result = apply_edit_gated(str(tmp_path), "a.ts", "'hi'", "'hello'", PermissionMode.AUTO)
+
+    assert result["status"] == "applied"
+    assert f.read_text() == "const greeting = 'hello';"
+
+
+def test_apply_edit_gated_proceeds_in_review_mode_once_approved(tmp_path: Path):
+    f = tmp_path / "a.ts"
+    f.write_text("const greeting = 'hi';")
+
+    result = apply_edit_gated(str(tmp_path), "a.ts", "'hi'", "'hello'", PermissionMode.REVIEW, approved=True)
+
+    assert result["status"] == "applied"
+    assert f.read_text() == "const greeting = 'hello';"
