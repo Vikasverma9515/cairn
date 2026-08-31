@@ -118,16 +118,14 @@
   font-size: 13.5px;
   line-height: 1.5;
   color: #0b0d12;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  border: 1px solid rgba(11, 13, 18, 0.06);
-  box-shadow: 0 6px 20px rgba(15, 15, 20, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
   animation: cairn-bubble-in 0.22s ease-out;
 }
 .cairn-bubble-user {
   align-self: flex-end;
-  border-color: rgba(99, 102, 241, 0.22);
   border-bottom-right-radius: 4px;
 }
 .cairn-bubble-agent {
@@ -165,23 +163,22 @@
 .cairn-input-row input {
   flex: 1;
   min-width: 0;
-  border: 1px solid rgba(11, 13, 18, 0.1);
+  border: none;
   border-radius: 999px;
   padding: 10px 14px;
   font: inherit;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
   color: #0b0d12;
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
+  transition: box-shadow 0.15s ease;
 }
 .cairn-input-row input::placeholder { color: rgba(11, 13, 18, 0.4); }
 .cairn-input-row input:disabled { opacity: 0.55; }
 .cairn-input-row input:focus {
   outline: none;
-  border-color: rgba(99, 102, 241, 0.5);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
 }
 .cairn-icon-btn, .cairn-send {
   flex-shrink: 0;
@@ -191,13 +188,13 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  border: 1px solid rgba(11, 13, 18, 0.1);
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: none;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
   color: #33384a;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
   transition: background 0.15s ease, transform 0.15s ease;
 }
 .cairn-icon-btn:hover { background: rgba(255, 255, 255, 0.96); transform: translateY(-1px); }
@@ -228,11 +225,10 @@
   gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  border: 1px solid rgba(11, 13, 18, 0.06);
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
 }
 .cairn-rt-dot {
   width: 8px;
