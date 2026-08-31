@@ -18,6 +18,18 @@ jobs:
 
       - run: npm ci
 
+      # Explicit, dependency-ordered build — found live, not theoretical:
+      # npm's workspace "prepare" lifecycle fires for every workspace on
+      # `npm ci`/`npm install`, but does NOT reliably order sibling
+      # workspaces by their actual dependency graph (@cairn/sdk depends on
+      # @cairn/core; a fresh `npm install` after deleting both dist/
+      # folders had sdk's prepare build run before core's had finished,
+      # failing with "Cannot find module '@cairn/core'"). Building
+      # explicitly, in order, sidesteps that entirely — same reasoning as
+      # the pre-existing @cairn/indexer build step below.
+      - run: npm run build -w @cairn/core
+      - run: npm run build -w @cairn/sdk
+
       # crawl.test.ts (packages/indexer) launches a real headless Chromium
       # to crawl a local test server — needs the browser binary installed,
       # it doesn't ship with the playwright npm package itself.

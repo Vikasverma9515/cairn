@@ -3,9 +3,19 @@
 ## Setup
 
 ```bash
-npm install    # also builds @cairn/core (its "prepare" script) — needed before anything else typechecks
-npm run build --workspaces --if-present   # builds @cairn/sdk and @cairn/indexer too (CLIs, dist/cairn-widget.js)
+npm install
+npm run build --workspaces --if-present   # @cairn/core, @cairn/sdk, @cairn/indexer — in that order, needed before anything else typechecks
 ```
+
+Run the explicit build, don't rely on `npm install` alone — `@cairn/core`
+and `@cairn/sdk` each have a `prepare` script for the common case of
+installing just one of them as a real dependency elsewhere, but npm's
+workspace `prepare` fan-out doesn't reliably order *sibling* workspaces by
+their actual dependency graph. Found live: a fresh `npm install` in this
+repo occasionally ran `@cairn/sdk`'s prepare before `@cairn/core`'s had
+finished, failing with "Cannot find module '@cairn/core'". CI runs the
+packages explicitly in order for exactly this reason — see
+`.github/workflows/ci.yml`.
 
 `npx playwright install chromium` once, if you're touching crawl mode
 (`packages/indexer/src/crawl.ts`) — it launches a real headless browser.
