@@ -67,9 +67,18 @@ class ExtractResult:
     framework_roots: list[str] = field(default_factory=list)
 
 
-def extract(root: Node, source: bytes) -> ExtractResult:
+def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractResult:
     result = ExtractResult()
-    _walk(root, source, result, enclosing=None)
+    # Split by grammar family rather than one dispatcher branching on every
+    # node type: Python and JS/TS share some node *type names* ("call",
+    # "import_statement") with completely different internal structure —
+    # a single shared walker either has to disambiguate every such node by
+    # language anyway (no real savings) or silently mishandles one
+    # language's version of a name it wasn't written for.
+    if language == "python":
+        _walk_python(root, source, result, enclosing=None)
+    else:
+        _walk(root, source, result, enclosing=None)
     return result
 
 
@@ -237,6 +246,96 @@ def _check_framework_root(call_node: Node, source: bytes, out: ExtractResult) ->
     last_arg = arg_nodes[-1]
     if last_arg.type == "identifier":
         out.framework_roots.append(_text(last_arg, source))
+
+
+def _py_is_public(name: str) -> bool:
+    # The actual Python convention for "this is exported" — there's no
+    # `export` keyword, a single leading underscore is the idiomatic
+    # signal for "module-private". Dunder methods (__init__, __str__, ...)
+    # are the interpreter's own object protocol calling them, not this
+    # codebase's code — same category as a Web Component's
+    # connectedCallback, so they're always reachable too, not just
+    # "public" in the module-boundary sense.
+    return not name.startswith("_") or (name.startswith("__") and name.endswith("__"))
+
+
+def _walk_python(node: Node, source: bytes, out: ExtractResult, enclosing: str | None) -> None:
+    next_enclosing = enclosing
+
+    if node.type in ("import_statement", "import_from_statement"):
+        _extract_python_import(node, source, out)
+    elif node.type == "function_definition":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            out.symbols.append(
+                Symbol(
+                    kind="method" if enclosing is not None else "function",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_py_is_public(name),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "class_definition":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            out.symbols.append(
+                Symbol(
+                    kind="class",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_py_is_public(name),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "call":
+        callee = _py_callee_name(node, source)
+        if callee is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_python(child, source, out, next_enclosing)
+
+
+def _py_callee_name(call_node: Node, source: bytes) -> str | None:
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return None
+    if fn.type == "identifier":
+        return _text(fn, source)  # covers both a plain call and `Widget()` instantiation — Python has no separate `new`
+    if fn.type == "attribute":
+        attr = fn.child_by_field_name("attribute")
+        return _text(attr, source) if attr is not None else None
+    return None
+
+
+def _extract_python_import(node: Node, source: bytes, out: ExtractResult) -> None:
+    module_name_node = node.child_by_field_name("module_name")  # only set on import_from_statement
+    module_text = _text(module_name_node, source) if module_name_node is not None else None
+    is_relative = module_text is not None and module_text.startswith(".")
+    line = node.start_point[0] + 1
+
+    for child in node.children:
+        if child is module_name_node:
+            continue  # the module itself, not a bound name — only present on import_from_statement
+        if child.type == "dotted_name":
+            # Plain `import foo.bar` binds the top-level segment (`foo`)
+            # into scope, not the full dotted path.
+            local_name = _text(child, source).split(".")[0]
+            out.imports.append(ImportRecord(source=module_text or _text(child, source), names=(local_name,), is_relative=is_relative, line=line))
+        elif child.type == "aliased_import":
+            dotted = child.child_by_field_name("name")
+            alias = child.child_by_field_name("alias")
+            local_name = _text(alias, source) if alias is not None else (_text(dotted, source).split(".")[0] if dotted is not None else None)
+            if local_name is not None:
+                source_text = module_text or (_text(dotted, source) if dotted is not None else local_name)
+                out.imports.append(ImportRecord(source=source_text, names=(local_name,), is_relative=is_relative, line=line))
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:

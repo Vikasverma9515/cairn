@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import tree_sitter_javascript as tsjs
+import tree_sitter_python as tspy
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
 
@@ -33,6 +34,7 @@ class LanguageSpec:
 _TYPESCRIPT = LanguageSpec("typescript", Language(tsts.language_typescript()))
 _TSX = LanguageSpec("tsx", Language(tsts.language_tsx()))
 _JAVASCRIPT = LanguageSpec("javascript", Language(tsjs.language()))
+_PYTHON = LanguageSpec("python", Language(tspy.language()))
 
 # Extension -> language, longest/most-specific match first where it matters
 # (.tsx must not fall through to plain typescript, which can't parse JSX).
@@ -45,6 +47,8 @@ _EXTENSION_MAP: dict[str, LanguageSpec] = {
     ".mjs": _JAVASCRIPT,
     ".cjs": _JAVASCRIPT,
     ".jsx": _JAVASCRIPT,
+    ".py": _PYTHON,
+    ".pyi": _PYTHON,
 }
 
 _PARSER_CACHE: dict[LanguageId, Parser] = {}

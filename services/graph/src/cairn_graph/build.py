@@ -134,7 +134,7 @@ def _parse_one(path: str) -> FileOutcome:
     try:
         parser = parser_for(spec)
         tree = parser.parse(data)
-        result = extract(tree.root_node, data)
+        result = extract(tree.root_node, data, language=spec.id)
     except Exception as e:  # noqa: BLE001 — deliberately broad: any parser/extractor bug must degrade this one file, never the run
         return FileOutcome(path, spec.id, content_hash, "failed", f"{type(e).__name__}: {e}", 0, (), (), ())
 

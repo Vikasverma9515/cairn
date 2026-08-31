@@ -113,16 +113,42 @@ tracking, not just calls specifically. Worth doing before trusting this
 pass to actually delete anything — for now it's accurate enough to
 *suggest*, not accurate enough to *act on unsupervised*.
 
+Confirmed the same gap shows up identically in Python, not just JS/TS:
+running `dead` against `cairn_graph`'s own source (real dogfood — the
+Python parser parsing itself) flagged `_parse_one`, which is only ever
+referenced as `pool.submit(_parse_one, path)` — passed as a value, never
+directly called. Same category as the JS/TS cases above, not a
+language-specific bug; reassuring that the gap is well-understood rather
+than a pile of unrelated edge cases.
+
+## Language support
+
+TypeScript, TSX, JavaScript, and Python — one `LanguageSpec` in
+`languages.py` plus a language-specific extraction branch in
+`extract.py` per language (`_walk` for the JS/TS grammar family,
+`_walk_python` separately: several node *type names* are shared between
+the two grammars — `call`/`call_expression` aside, `import_statement`
+means something structurally different in each — sharing one walker
+would mean disambiguating every such node by language anyway, so each
+grammar family gets its own walker instead). Python's "exported" is the
+real Python convention, not a copy of JS's `export` keyword: a
+module-level name not prefixed with `_` is public; dunder methods
+(`__init__`, `__str__`, ...) are always treated as reachable regardless,
+since the interpreter's own object protocol calls them, not any code in
+the file being indexed — the same category as a Web Component's
+`connectedCallback`. Python also needs no `new_expression` handling at
+all: `Widget()` is Python's actual instantiation syntax, already the
+same `call` node every plain function call produces.
+
 ## What's not built yet
 
 - **General identifier-reference tracking** — see directly above; the
   concrete next fix now that call/instantiation/framework-root/anonymous-
   caller reachability all have real test coverage.
-- **Python-language extraction** — the module is structured to add a
-  language by registering one more `LanguageSpec` in `languages.py` plus
-  its extraction branch in `extract.py`; Python itself isn't wired up
-  yet, JS/TS was the higher-value first target since it's what this repo
-  and most realistic pilot targets are actually written in.
+- **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
+  shape of work as adding Python was: one `LanguageSpec` plus a
+  language-specific extraction branch (a new grammar family likely needs
+  its own walker, same reasoning as `_walk_python`'s docstring).
 - **Vector index / hybrid retrieval** — this is the structure-graph third
   of the plan's three-index design; the embeddings layer (Qdrant, per the
   plan) is a separate, not-yet-started piece.

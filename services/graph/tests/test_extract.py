@@ -9,7 +9,7 @@ def parse(source: str, path: str = "sample.ts"):
     assert spec is not None, f"no grammar registered for {path}"
     parser = parser_for(spec)
     tree = parser.parse(source.encode("utf-8"))
-    return extract(tree.root_node, source.encode("utf-8"))
+    return extract(tree.root_node, source.encode("utf-8"), language=spec.id)
 
 
 def test_finds_exported_function_declaration():
