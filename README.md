@@ -162,6 +162,16 @@ real manifest, asked "how do I get support?" through the normal
 `createCopilotHandler` flow, got back a correct `highlight` verb pointing
 at the right button.
 
+For an app that requires being logged in, add `--storage-state <file>`
+with a Playwright storage-state JSON from a real session (e.g.
+`npx playwright open <url> --save-storage=state.json`, log in once in the
+window it opens). This tool never automates a login form itself — bring
+an already-authenticated session instead.
+
+Not handled: routes reachable only via client-side `router.push()`-style
+navigation with no real `<a href>` link — see ROADMAP.md's Phase 2 section
+for why that's a deliberate limitation, not just an unaddressed one.
+
 ## Voice & conversation
 
 Beyond typed questions, `<Copilot/>` can hold a real spoken conversation —
@@ -211,7 +221,7 @@ markdown, never say an internal element id out loud — see
 cairn init <dir>                          # scaffolds the backend + .env.example — detects your framework
 cairn scan <dir>                          # L1 only, deterministic, no LLM call
 cairn build <dir> [--provider anthropic|groq]           # Next.js source scan
-cairn build <url> [--provider anthropic|groq] [--out <dir>]   # any framework — crawls a running app
+cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   # any framework — crawls a running app
 cairn diff <old-manifest.json> <new-manifest.json>   # what changed between two builds
 cairn docs <dir>                          # reads <dir>/ui-manifest.json, writes CAIRN_DOCS.md
 ```

@@ -7,8 +7,11 @@
 // session proved the mechanism works; this is what makes that repeatable
 // in CI instead of only ever having been a manual live check.
 
+import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { crawlSite } from "./crawl";
 
@@ -124,6 +127,75 @@ describe("crawlSite", () => {
       await expect(crawlSite({ startUrl: `${baseUrl}/does-not-exist.html`, maxPages: 5 })).resolves.toEqual(
         expect.objectContaining({ pages: [] }),
       );
+    },
+    30_000,
+  );
+});
+
+describe("crawlSite with storageStatePath (auth-gated apps)", () => {
+  let server: http.Server;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      const cookies = req.headers.cookie ?? "";
+      const authed = cookies.includes("session=authed");
+      res.setHeader("content-type", "text/html");
+      res.end(
+        authed
+          ? `<!doctype html><html><body><h1>Dashboard</h1><button aria-label="Sign out">Sign out</button></body></html>`
+          : `<!doctype html><html><body><h1>Please log in</h1></body></html>`,
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${port}`;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cairn-crawl-auth-"));
+    const storageState = {
+      cookies: [
+        {
+          name: "session",
+          value: "authed",
+          domain: "127.0.0.1",
+          path: "/",
+          expires: -1,
+          httpOnly: false,
+          secure: false,
+          sameSite: "Lax" as const,
+        },
+      ],
+      origins: [],
+    };
+    fs.writeFileSync(path.join(tmpDir, "state.json"), JSON.stringify(storageState));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it(
+    "without storageStatePath, sees the logged-out page",
+    async () => {
+      const facts = await crawlSite({ startUrl: baseUrl, maxPages: 1, maxDepth: 0 });
+      expect(facts.pages[0].renderedText).toContain("Please log in");
+    },
+    30_000,
+  );
+
+  it(
+    "with storageStatePath, the crawl replays the saved session and sees the authenticated page",
+    async () => {
+      const facts = await crawlSite({
+        startUrl: baseUrl,
+        maxPages: 1,
+        maxDepth: 0,
+        storageStatePath: path.join(tmpDir, "state.json"),
+      });
+      expect(facts.pages[0].renderedText).toContain("Dashboard");
+      expect(facts.pages[0].elements.map((e) => e.id)).toContain("Sign out");
     },
     30_000,
   );

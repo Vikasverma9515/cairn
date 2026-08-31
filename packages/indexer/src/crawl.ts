@@ -25,6 +25,19 @@ export interface CrawlOptions {
   pageTimeoutMs?: number;
   /** How many pages to visit at once. A handful, not maximal — a small dev server shouldn't get hammered. */
   concurrency?: number;
+  /**
+   * Path to a Playwright storage-state JSON file (cookies + localStorage)
+   * for crawling an app that requires being logged in. Not something this
+   * tool logs in for you — Playwright's own `npx playwright open <url>
+   * --save-storage=state.json` (or a short script calling
+   * `context.storageState({ path })` after a real login) produces one;
+   * this just replays it. Deliberately doesn't take a
+   * username/password/2FA flow itself — a generic crawler automating a
+   * login form is exactly the kind of thing that breaks on the first
+   * real 2FA prompt and is a bigger trust boundary than this tool should
+   * own; bring your own already-authenticated session instead.
+   */
+  storageStatePath?: string;
 }
 
 const DEFAULT_MAX_PAGES = 30;
@@ -62,7 +75,9 @@ export async function crawlSite(opts: CrawlOptions): Promise<RawFacts> {
   const visited = new Set<string>([normalizeForDedup(startUrl.toString())]);
 
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext(
+      opts.storageStatePath ? { storageState: opts.storageStatePath } : {},
+    );
     let currentLevel: string[] = [startUrl.toString()];
     let depth = 0;
 

@@ -62,8 +62,11 @@ async function main(): Promise<void> {
     const isCrawl = flags.mode === "crawl" || /^https?:\/\//.test(dir);
     if (isCrawl) {
       const outDir = flags.out ?? ".";
+      if (flags["storage-state"]) {
+        console.error(`cairn build --mode=crawl: replaying saved session from ${flags["storage-state"]}`);
+      }
       console.error(`cairn build --mode=crawl: launching a headless browser against ${dir} ...`);
-      const facts = await crawlSite({ startUrl: dir });
+      const facts = await crawlSite({ startUrl: dir, storageStatePath: flags["storage-state"] });
       if (facts.pages.length === 0) {
         console.error(`cairn build --mode=crawl: found no reachable pages at ${dir} — is it actually running?`);
         process.exit(1);
@@ -140,7 +143,7 @@ async function main(): Promise<void> {
   console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework)");
   console.error("  cairn scan <dir>");
   console.error("  cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)");
-  console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>]   (any framework — crawls a running app)");
+  console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   (any framework — crawls a running app; --storage-state replays a saved logged-in session for auth-gated apps)");
   console.error("  cairn diff <old-manifest.json> <new-manifest.json>");
   console.error("  cairn docs <dir>   (reads <dir>/ui-manifest.json, writes <dir>/CAIRN_DOCS.md)");
   process.exit(command ? 1 : 0);

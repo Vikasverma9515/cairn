@@ -82,22 +82,44 @@ manifest into `createCopilotHandler` and asked "how do I get support?" —
 got back a correct `highlight` verb pointing at the right button. Auto-
 detected via the `http(s)://` prefix — no flag needed for the common case.
 
-Known limitations, honest and unresolved: no handling yet for auth-gated
-apps (crawls whatever's reachable unauthenticated), no SPA client-side-only
-routing detection (relies on real `<a href>` links, won't discover routes
-reachable only via `router.push()`-style navigation), no crawl-time
-caching keyed on a hash of the deployed build the way the source-reader's
-git-commit-scoped cache is — a repeat crawl re-visits every page.
+**Auth-gated apps: handled.** `cairn build <url> --storage-state <file>`
+replays a Playwright storage-state JSON (cookies + localStorage) captured
+from a real logged-in session — deliberately *not* a built-in login flow
+(username/password/2FA automation is a much bigger trust boundary than a
+generic crawler should own, and breaks on the first real 2FA prompt
+anyway); bring your own already-authenticated session instead, the same
+way Playwright's own tooling (`npx playwright open --save-storage`)
+produces one. Live-verified: a page that only shows its real content when
+a specific session cookie is present shows "please log in" without
+`--storage-state` and the real (authenticated) content with it.
 
-**Automated test coverage added** (`packages/indexer/src/crawl.test.ts`) —
-spins up a real local HTTP server (two plain HTML pages) and runs the real
-`crawlSite()` against it with a real headless Chromium: same-origin
-crawling, external links extracted as elements but never followed for
-further crawling, `maxPages`/`maxDepth` caps, a 404 start URL degrading to
-zero pages instead of throwing, and the raw-not-slugified id behavior —
-6 tests, ~6s, no LLM key needed (element extraction only, no describe
-step). CI installs Chromium via `playwright install --with-deps` to run
-this. `cairn init` has its own coverage too
+**SPA client-side-only routing: a known limitation, left alone on
+purpose, not just unaddressed.** Crawl mode only follows real `<a href>`
+links — it won't discover a route reachable only via a client-side
+`router.push()`-style navigation with no real link. The fix would be
+clicking every interactive element during the crawl and watching for a
+URL change, but that means the *analyzer* — which has no business taking
+real actions, ever, matching the exact invariant `resolveVerb` enforces at
+runtime for the agent itself — would be clicking real buttons on someone's
+real app: "Delete", "Archive", "Confirm Purchase", whatever's on the page,
+with no `registeredActions` allowlist to stop it. That's a correctness
+trade a generic tool shouldn't make silently. Left as a real, open gap.
+
+No crawl-time caching keyed on a hash of the deployed build the way the
+source-reader's git-commit-scoped cache is — a repeat crawl re-visits
+every page (the LLM description step's own cache still applies per-page
+within that, so it's not re-*describing* unchanged pages, just
+re-*visiting* them).
+
+**Automated test coverage** (`packages/indexer/src/crawl.test.ts`, 8
+tests, ~8s, no LLM key needed — element extraction only, no describe
+step) — a real local HTTP server (two plain HTML pages) and a real
+headless Chromium: same-origin crawling, external links extracted as
+elements but never followed for further crawling, `maxPages`/`maxDepth`
+caps, a 404 start URL degrading to zero pages instead of throwing, the
+raw-not-slugified id behavior, and the storage-state auth replay above.
+CI installs Chromium via `playwright install --with-deps` to run this.
+`cairn init` has its own coverage too
 (`packages/indexer/src/init.test.ts`, 10 tests, pure filesystem — no
 browser needed): framework detection, the write-only-if-absent guarantee,
 and that the generated scaffolds are actually syntactically valid.
