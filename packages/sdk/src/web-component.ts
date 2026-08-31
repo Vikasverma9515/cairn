@@ -68,6 +68,10 @@ const STYLES = `
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+@keyframes cairn-panel-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 @keyframes cairn-word-sweep {
   from { opacity: 0.32; }
   to { opacity: 1; }
@@ -84,7 +88,7 @@ const STYLES = `
 }
 .cairn-spin { animation: cairn-spin 0.8s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
     animation: none !important;
     transition: none !important;
   }
@@ -118,32 +122,44 @@ const STYLES = `
    below (title, bubbles, input, buttons) floats independently on its own
    minimal glass, directly over the host page, the way a caption track
    floats over a video rather than sitting in a drawn box. */
+/* One unified card — title, conversation, and input all live inside the
+   same bounded, padded container instead of floating as independent
+   fixed-position pieces. That "everything floats separately" approach
+   kept producing new collisions (title vs input, send button vs the
+   close FAB) every time one piece's position changed; grouping them
+   under one panel with real internal spacing removes that whole class
+   of bug at the source. */
 .cairn-panel {
   position: fixed;
   right: 20px;
-  bottom: 96px;
+  bottom: 92px;
   z-index: 2147483000;
-  width: min(320px, calc(100vw - 40px));
-  max-height: 460px;
+  width: min(340px, calc(100vw - 40px));
+  max-height: 480px;
   overflow-y: auto;
   overflow-x: hidden;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border-radius: 20px;
+  box-shadow: 0 20px 50px rgba(15, 15, 25, 0.16), 0 2px 8px rgba(15, 15, 25, 0.06);
   display: none;
 }
-.cairn-panel.cairn-open { display: flex; }
+.cairn-panel.cairn-open { display: flex; animation: cairn-panel-in 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
 .cairn-panel::-webkit-scrollbar { width: 0; }
 
 .cairn-panel-title {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 11.5px;
-  letter-spacing: 0.06em;
+  gap: 7px;
+  font-weight: 650;
+  font-size: 12px;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #0b0d12;
-  text-shadow: 0 0 1px #fff, 0 0 6px rgba(255, 255, 255, 0.9), 0 1px 2px rgba(255, 255, 255, 0.9);
 }
 .cairn-panel-dot {
   width: 6px;
@@ -152,26 +168,18 @@ const STYLES = `
   background: #6366f1;
 }
 
-.cairn-stack { display: flex; flex-direction: column; gap: 8px; }
-/* No card, no background, no blur — the message itself is just text,
-   held legible over any host page by a soft light halo behind the
-   letters instead of a drawn surface. The same technique real burned-in
-   captions use over unpredictable video. */
+.cairn-stack { display: flex; flex-direction: column; gap: 10px; }
 .cairn-bubble {
-  max-width: 90%;
-  font-size: 14px;
-  line-height: 1.55;
-  font-weight: 500;
+  max-width: 92%;
+  font-size: 13.5px;
+  line-height: 1.5;
   color: #0b0d12;
-  text-shadow:
-    0 0 2px rgba(255, 255, 255, 0.95),
-    0 0 6px rgba(255, 255, 255, 0.85),
-    0 0 14px rgba(255, 255, 255, 0.6);
-  animation: cairn-bubble-in 0.22s ease-out;
+  animation: cairn-bubble-in 0.2s ease-out;
 }
 .cairn-bubble-user {
   align-self: flex-end;
   text-align: right;
+  color: #33384a;
 }
 .cairn-bubble-agent {
   align-self: flex-start;
@@ -187,18 +195,14 @@ const STYLES = `
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(11, 13, 18, 0.55);
-  text-shadow:
-    0 0 2px rgba(255, 255, 255, 0.95),
-    0 0 6px rgba(255, 255, 255, 0.85);
+  color: rgba(11, 13, 18, 0.48);
 }
 .cairn-thinking { display: inline-flex; gap: 4px; padding: 2px 0; }
 .cairn-thinking-dot {
   width: 5px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(11, 13, 18, 0.55);
-  box-shadow: 0 0 3px 1px rgba(255, 255, 255, 0.9);
+  background: rgba(11, 13, 18, 0.4);
   animation: cairn-thinking-bounce 1.1s ease-in-out infinite;
 }
 .cairn-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
@@ -212,18 +216,16 @@ const STYLES = `
   border-radius: 999px;
   padding: 10px 14px;
   font: inherit;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  background: rgba(11, 13, 18, 0.045);
   color: #0b0d12;
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
-  transition: box-shadow 0.15s ease;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 .cairn-input-row input::placeholder { color: rgba(11, 13, 18, 0.4); }
 .cairn-input-row input:disabled { opacity: 0.55; }
 .cairn-input-row input:focus {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  background: rgba(11, 13, 18, 0.06);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16);
 }
 .cairn-icon-btn, .cairn-send {
   flex-shrink: 0;
@@ -234,15 +236,12 @@ const STYLES = `
   justify-content: center;
   border-radius: 999px;
   border: none;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  background: rgba(11, 13, 18, 0.045);
   color: #33384a;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
   transition: background 0.15s ease, transform 0.15s ease;
 }
-.cairn-icon-btn:hover { background: rgba(255, 255, 255, 0.96); transform: translateY(-1px); }
+.cairn-icon-btn:hover { background: rgba(11, 13, 18, 0.09); transform: translateY(-1px); }
 .cairn-send {
   border: none;
   background: #14151b;
@@ -270,10 +269,7 @@ const STYLES = `
   gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
-  box-shadow: 0 4px 16px rgba(15, 15, 20, 0.07);
+  background: rgba(11, 13, 18, 0.045);
 }
 .cairn-rt-dot {
   width: 8px;
