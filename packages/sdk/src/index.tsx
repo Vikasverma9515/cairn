@@ -110,6 +110,13 @@ export function Copilot({
   const rtSpeakerMutedRef = useRef(false);
   const rtStartingRef = useRef(false); // closes the click-to-first-state-update gap so a rapid double-click can't open two sessions
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Watchdog for the "rt-thinking" state: started on every "final" transcript,
+  // cleared the moment the server responds with anything for that turn
+  // (verb/speaking_start/speaking_end/turn_complete/error). If it ever
+  // fires, the server went silent for this turn — force the mic back to
+  // listening instead of leaving the session stuck showing "Thinking…"
+  // forever with no way to speak again short of ending the call.
+  const rtThinkingWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Streamed TTS playback: each server audio_chunk is raw PCM16, scheduled
   // as its own AudioBufferSourceNode straight into this graph, gapless,
@@ -537,6 +544,24 @@ export function Copilot({
         setCaption("");
       }
 
+      function disarmThinkingWatchdog() {
+        if (rtThinkingWatchdogRef.current) {
+          clearTimeout(rtThinkingWatchdogRef.current);
+          rtThinkingWatchdogRef.current = null;
+        }
+      }
+
+      function armThinkingWatchdog() {
+        disarmThinkingWatchdog();
+        rtThinkingWatchdogRef.current = setTimeout(() => {
+          rtThinkingWatchdogRef.current = null;
+          console.warn("[cairn] realtime turn timed out waiting on the server — resuming listening");
+          rtAudioDoneArrivingRef.current = true;
+          setRtStatus("rt-listening");
+          setCaption("");
+        }, 20000);
+      }
+
       function stopScheduledRtAudio() {
         for (const node of rtScheduledSourcesRef.current) {
           try {
@@ -555,6 +580,7 @@ export function Copilot({
       // now-stale audio_chunk/speaking_end that was already in flight, so a
       // few straggling chunks can't sneak back in and resume playback.
       function triggerBargeIn() {
+        disarmThinkingWatchdog();
         stopScheduledRtAudio();
         rtAudioDoneArrivingRef.current = true;
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
@@ -576,9 +602,12 @@ export function Copilot({
         } else if (msg.type === "final") {
           setCaption(msg.text);
           setRtStatus("rt-thinking");
+          armThinkingWatchdog();
         } else if (msg.type === "verb") {
+          disarmThinkingWatchdog();
           handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
+          disarmThinkingWatchdog();
           rtAudioDoneArrivingRef.current = false;
           setRtStatus("rt-speaking");
         } else if (msg.type === "audio_chunk") {
@@ -620,10 +649,19 @@ export function Copilot({
           // highlight/navigate/do often has no text) — no audio_chunk ever
           // arrives for it, so rtScheduledSourcesRef is already empty and
           // maybeResumeListening() resumes immediately below.
+          disarmThinkingWatchdog();
           rtAudioDoneArrivingRef.current = true;
           maybeResumeListening();
         } else if (msg.type === "error") {
+          // Must actually unstick the turn, not just show the message —
+          // otherwise the mic never resumes and the session is stuck
+          // exactly the way a silently-dropped response used to leave it.
+          disarmThinkingWatchdog();
           setAnswer(msg.message ?? "Something went wrong.");
+          if (!touringRef.current) {
+            setRtStatus("rt-listening");
+            setCaption("");
+          }
         }
       };
 
@@ -642,6 +680,10 @@ export function Copilot({
   }
 
   function endRealtime() {
+    if (rtThinkingWatchdogRef.current) {
+      clearTimeout(rtThinkingWatchdogRef.current);
+      rtThinkingWatchdogRef.current = null;
+    }
     rtStartingRef.current = false;
     activeAudioRef.current?.pause();
     activeAudioRef.current = null;

@@ -275,28 +275,43 @@ async function handleDeepgramMessage(
 
   safeSend(client, { type: "final", text: transcript });
 
-  const { route, visible } = getContext();
-  const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.registeredActions, deps.capability, {
-    route,
-    question: transcript,
-    visible,
-    history,
-  });
-  // Sent immediately — before speech synthesis even starts — so
-  // highlight/navigate/do execute in the browser right away instead of
-  // waiting on audio. The agent visibly acts while it's still about to
-  // speak, not after.
-  safeSend(client, { type: "verb", verb });
+  // Everything from here on (the LLM call, TTS streaming) can fail in ways
+  // that have nothing to do with a malformed message — a flaky provider
+  // call, a rate limit, a dropped upstream connection. This whole function
+  // is invoked fire-and-forget (`void handleDeepgramMessage(...)`), so an
+  // uncaught throw here previously vanished into an unhandled rejection:
+  // the client had already been told "final" (entering its "thinking"
+  // state) and then simply never heard from the server again for this
+  // turn — stuck indefinitely with the mic never resuming. Every path out
+  // of this try block now sends the client something that ends the turn.
+  try {
+    const { route, visible } = getContext();
+    const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.registeredActions, deps.capability, {
+      route,
+      question: transcript,
+      visible,
+      history,
+    });
+    // Sent immediately — before speech synthesis even starts — so
+    // highlight/navigate/do execute in the browser right away instead of
+    // waiting on audio. The agent visibly acts while it's still about to
+    // speak, not after.
+    safeSend(client, { type: "verb", verb });
 
-  history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
-  history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+    history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
+    history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
 
-  // A verb with no spoken text (highlight/navigate/do often have none)
-  // still needs to unstick the client's "thinking" state and let the mic
-  // resume — turn_complete covers that with no audio path involved.
-  if ("text" in verb && verb.text) {
-    await speakStreamed(verb.text);
-  } else {
+    // A verb with no spoken text (highlight/navigate/do often have none)
+    // still needs to unstick the client's "thinking" state and let the mic
+    // resume — turn_complete covers that with no audio path involved.
+    if ("text" in verb && verb.text) {
+      await speakStreamed(verb.text);
+    } else {
+      safeSend(client, { type: "turn_complete" });
+    }
+  } catch (err) {
+    console.error("[cairn realtime] failed to resolve/speak this turn:", err);
+    safeSend(client, { type: "error", message: "Something went wrong answering that — try again." });
     safeSend(client, { type: "turn_complete" });
   }
 }

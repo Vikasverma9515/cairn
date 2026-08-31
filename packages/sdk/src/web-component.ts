@@ -337,6 +337,13 @@ export class CairnWidgetElement extends HTMLElement {
   private rtPlaybackGain: GainNode | null = null;
   private rtNextPlayTime = 0;
   private rtScheduledSources: AudioBufferSourceNode[] = [];
+  // Watchdog for the "rt-thinking" state: started on every "final"
+  // transcript, cleared the moment the server responds with anything for
+  // that turn (verb/speaking_start/speaking_end/turn_complete/error). If it
+  // ever fires, the server went silent for this turn — force the mic back
+  // to listening instead of leaving the session stuck showing "Thinking…"
+  // forever with no way to speak again short of ending the call.
+  private rtThinkingWatchdog: ReturnType<typeof setTimeout> | null = null;
   /** True once the server says no more audio_chunks are coming for the current turn — listening only resumes once this AND every scheduled chunk has actually finished playing. */
   private rtAudioDoneArriving = true;
   /** Resolver for "this tour step's audio has fully finished playing" when narrating over an already-open realtime session. */
@@ -960,6 +967,24 @@ export class CairnWidgetElement extends HTMLElement {
         this.setCaption("");
       };
 
+      const disarmThinkingWatchdog = () => {
+        if (this.rtThinkingWatchdog) {
+          clearTimeout(this.rtThinkingWatchdog);
+          this.rtThinkingWatchdog = null;
+        }
+      };
+
+      const armThinkingWatchdog = () => {
+        disarmThinkingWatchdog();
+        this.rtThinkingWatchdog = setTimeout(() => {
+          this.rtThinkingWatchdog = null;
+          console.warn("[cairn] realtime turn timed out waiting on the server — resuming listening");
+          this.rtAudioDoneArriving = true;
+          this.setStatus("rt-listening");
+          this.setCaption("");
+        }, 20000);
+      };
+
       const stopScheduledRtAudio = () => {
         for (const node of this.rtScheduledSources) {
           try {
@@ -977,6 +1002,7 @@ export class CairnWidgetElement extends HTMLElement {
       // the server tags every turn with a generation number and drops any
       // now-stale audio_chunk/speaking_end already in flight.
       const triggerBargeIn = () => {
+        disarmThinkingWatchdog();
         stopScheduledRtAudio();
         this.rtAudioDoneArriving = true;
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
@@ -1032,9 +1058,12 @@ export class CairnWidgetElement extends HTMLElement {
         } else if (msg.type === "final") {
           this.setCaption(msg.text);
           this.setStatus("rt-thinking");
+          armThinkingWatchdog();
         } else if (msg.type === "verb") {
+          disarmThinkingWatchdog();
           this.handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
+          disarmThinkingWatchdog();
           this.rtAudioDoneArriving = false;
           this.setStatus("rt-speaking");
         } else if (msg.type === "audio_chunk") {
@@ -1075,10 +1104,19 @@ export class CairnWidgetElement extends HTMLElement {
           // turn_complete covers a verb with nothing spoken — no audio_chunk
           // ever arrives for it, so rtScheduledSources is already empty and
           // maybeResumeListening() resumes immediately.
+          disarmThinkingWatchdog();
           this.rtAudioDoneArriving = true;
           maybeResumeListening();
         } else if (msg.type === "error") {
+          // Must actually unstick the turn, not just show the message —
+          // otherwise the mic never resumes and the session is stuck
+          // exactly the way a silently-dropped response used to leave it.
+          disarmThinkingWatchdog();
           this.setAnswer(msg.message ?? "Something went wrong.");
+          if (!this.touringActive) {
+            this.setStatus("rt-listening");
+            this.setCaption("");
+          }
         }
       };
 
@@ -1097,6 +1135,10 @@ export class CairnWidgetElement extends HTMLElement {
   }
 
   private endRealtime() {
+    if (this.rtThinkingWatchdog) {
+      clearTimeout(this.rtThinkingWatchdog);
+      this.rtThinkingWatchdog = null;
+    }
     this.rtStarting = false;
     this.activeAudio?.pause();
     this.activeAudio = null;
