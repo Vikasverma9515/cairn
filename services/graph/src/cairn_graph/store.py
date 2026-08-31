@@ -115,7 +115,14 @@ class FileRecord:
 
 
 def open_store(db_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
+    # check_same_thread=False: the MCP server runs each sync tool call on a
+    # worker thread (anyio.to_thread.run_sync), not the thread that opened
+    # this connection — found live when a real call_tool() invocation (not
+    # just calling the plain functions directly, which every earlier test
+    # did) crashed with sqlite3's default same-thread check. The MCP layer
+    # serializes access with a lock (see mcp_server.py's _lock), so this
+    # relaxation doesn't invite concurrent-write corruption.
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     # SQLite ignores every `ON DELETE CASCADE` in the schema unless this is

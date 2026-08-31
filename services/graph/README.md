@@ -185,7 +185,21 @@ function (`search_symbols`, `get_symbol_usages`, `find_dead_code`,
 - **`delete_file_tool`** / **`run_command_tool`** — CRITICAL-tier actions,
   always gated regardless of mode.
 - **`audit_log_tool`** — every gated decision so far, most recent first.
+- **`remember_tool`** / **`recall_tool`** / **`record_turn_tool`** /
+  **`recent_history_tool`** — per-customer memory (see "Memory" below).
   Everything else in this list is read-only.
+
+**Threading note, found live**: the SDK runs every sync tool function on
+a worker thread (`anyio.to_thread.run_sync`), not the thread that built
+the server. `sqlite3` connections default to same-thread-only access, so
+a real `await server.call_tool(...)` crashed the moment a tool actually
+touched the database — invisible until then, because every earlier test
+called the plain functions (`search_symbols(conn, ...)`) directly and
+never exercised the thread hop. Fixed by opening every connection with
+`check_same_thread=False` and serializing all tool bodies that touch a
+shared connection behind one `threading.Lock` in `build_server`. Two new
+regression tests call tools through the real compiled server via
+`call_tool()` specifically to keep this fixed.
 
 **API-drift note, found live, not assumed**: this targets `mcp` 2.x, where
 `FastMCP` was renamed to `MCPServer`. Importing the old `mcp.server.fastmcp`
@@ -350,6 +364,34 @@ real requests against the actual tool names this service exposes: a
 "where is X" question, a "replace this string" edit, and a "delete this
 file and run npm build" request — each correctly scoped to exactly the
 right specialist's tools, nothing more.
+
+## Memory (Month 4, first slice)
+
+`memory.py` is pillar 6 — "self-learning for individual customers, with
+memory." Same shape as the rest of this service: local SQLite, its own
+db file (`.cairn-graph-memory.db` by default), nothing that leaves the
+customer's machine.
+
+Two kinds, kept deliberately separate:
+
+- **Facts** (`remember`/`recall`/`forget`) — durable, keyed preferences
+  ("permission mode is auto", "primary framework is Next.js").
+  `remember()` is an upsert on `(customer_id, key)`, not an append-only
+  log — a customer has one current value per key, not a history of every
+  value it's ever held.
+- **Conversation turns** (`record_turn`/`recent_history`) — an
+  append-only per-customer history, kept separate from facts so session
+  continuity doesn't require re-summarizing a long conversation just to
+  answer "what's this customer's permission-mode preference."
+
+Everything is scoped by `customer_id` — there is no "get everyone's
+memory" path, the same multi-tenant discipline as the path-escape check
+in `actions.py`. 9 tests (`test_memory.py`), plus 2 more in
+`test_mcp_server.py` that round-trip `remember_tool`/`recall_tool`/
+`record_turn_tool`/`recent_history_tool` through the real compiled
+server (the same real-`call_tool()` pattern that caught the threading
+bug above). Dogfooded live end to end: stored a fact and two turns
+through the real threaded server, read them both back correctly.
 
 ## What's not built yet
 

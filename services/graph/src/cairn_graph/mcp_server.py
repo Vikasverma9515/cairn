@@ -14,11 +14,22 @@ API note: this targets `mcp` 2.x, where `FastMCP` was renamed to
 directly against the installed package rather than assumed, since the
 package's own v1 import path now raises a ModuleNotFoundError with the
 migration note built in.
+
+Threading note, found live: the SDK runs each sync tool function on a
+worker thread (`anyio.to_thread.run_sync`), not the thread that built
+this server — a plain `search_symbols(conn, ...)` call in a test never
+exercises this, only a real `await server.call_tool(...)` does. Every
+tool closure below that touches `conn` or `memory_conn` holds `_lock`
+for the duration of the call, both to satisfy sqlite3's same-connection
+access rules safely (the connections are opened with
+`check_same_thread=False`) and to keep two concurrent tool calls from
+touching one connection at once.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from typing import Any, Callable
 
 from cairn_graph.actions import (
@@ -36,6 +47,7 @@ from cairn_graph.actions import (
     run_command,
 )
 from cairn_graph.build import build_graph
+from cairn_graph.memory import open_memory_store, recall, recent_history, record_turn, remember
 from cairn_graph.reachability import compute_dead_symbols
 from cairn_graph.store import list_action_log, log_action, open_store, stats
 from cairn_graph.vectors import build_vector_index, search_semantic
@@ -228,6 +240,7 @@ def build_server(
     root: str,
     vector_dir: str = ".cairn-graph-vectors",
     permission_mode: PermissionMode = PermissionMode.REVIEW,
+    memory_db: str = ".cairn-graph-memory.db",
 ):
     """Constructs the MCPServer with tools bound to one open connection —
     factored out from `main()` so tests can construct a server against a
@@ -254,34 +267,41 @@ def build_server(
         ),
     )
     conn = open_store(db_path)
+    memory_conn = open_memory_store(memory_db)
+    _lock = threading.Lock()
 
     @server.tool()
     def search(query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Find symbols (functions, classes, methods, types) by name substring."""
-        return search_symbols(conn, query, limit)
+        with _lock:
+            return search_symbols(conn, query, limit)
 
     @server.tool()
     def usages(name: str, limit: int = 50) -> dict[str, Any]:
         """Find every place a symbol is called or referenced, by exact name."""
-        return get_symbol_usages(conn, name, limit)
+        with _lock:
+            return get_symbol_usages(conn, name, limit)
 
     @server.tool()
     def dead_code(limit: int = 50) -> dict[str, Any]:
         """List unexported symbols unreachable from any export or known entry point."""
-        return find_dead_code(conn, limit)
+        with _lock:
+            return find_dead_code(conn, limit)
 
     @server.tool()
     def stats_tool() -> dict[str, int]:
         """Report index size: file/symbol/import/call counts, parse failures."""
-        return get_index_stats(conn)
+        with _lock:
+            return get_index_stats(conn)
 
     @server.tool()
     def reindex_tool(workers: int | None = None) -> dict[str, Any]:
         """Re-scan the codebase and update the index — only changed files are re-parsed."""
         nonlocal conn
-        result = reindex(db_path, root, workers)
-        conn.close()
-        conn = open_store(db_path)
+        with _lock:
+            result = reindex(db_path, root, workers)
+            conn.close()
+            conn = open_store(db_path)
         return result
 
     @server.tool()
@@ -307,21 +327,24 @@ def build_server(
         this refuses rather than guessing which occurrence you meant. May
         return status="needs_approval" instead of editing anything; see the
         server instructions for how to handle that."""
-        return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved, conn)
+        with _lock:
+            return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved, conn)
 
     @server.tool()
     def create_file_tool(file_path: str, content: str, approved: bool = False) -> dict[str, Any]:
         """Create a new file inside the indexed root. Refuses if the file
         already exists — use apply_edit_tool to modify one. May return
         status="needs_approval"; same approval flow as apply_edit_tool."""
-        return create_file_gated(root, file_path, content, permission_mode, approved, conn)
+        with _lock:
+            return create_file_gated(root, file_path, content, permission_mode, approved, conn)
 
     @server.tool()
     def delete_file_tool(file_path: str, approved: bool = False) -> dict[str, Any]:
         """Delete a file inside the indexed root. CRITICAL risk — always
         returns status="needs_approval" on the first call, in either
         permission mode."""
-        return delete_file_gated(root, file_path, permission_mode, approved, conn)
+        with _lock:
+            return delete_file_gated(root, file_path, permission_mode, approved, conn)
 
     @server.tool()
     def run_command_tool(command: list[str], approved: bool = False) -> dict[str, Any]:
@@ -329,14 +352,54 @@ def build_server(
         pinned to the indexed root. CRITICAL risk — always returns
         status="needs_approval" on the first call, in either permission
         mode; see the server instructions for the approval flow."""
-        return run_command_gated(root, command, permission_mode, approved, conn)
+        # Held for the whole subprocess duration, so a long-running command
+        # blocks other tool calls until it (or its timeout) finishes — an
+        # accepted tradeoff for a rare, always-gated action, not something
+        # worth a real work queue over yet.
+        with _lock:
+            return run_command_gated(root, command, permission_mode, approved, conn)
 
     @server.tool()
     def audit_log_tool(limit: int = 50) -> dict[str, Any]:
         """Every gated-action decision so far, most recent first: what was
         attempted, its risk tier, and whether it was applied or is still
         waiting on approval."""
-        return audit_log(conn, limit)
+        with _lock:
+            return audit_log(conn, limit)
+
+    @server.tool()
+    def remember_tool(customer_id: str, key: str, value: str) -> dict[str, Any]:
+        """Store a durable, keyed fact about one customer — a preference or
+        observation that should overwrite any previous value for that key,
+        not accumulate (e.g. remember_tool("acme", "framework", "nextjs"))."""
+        with _lock:
+            remember(memory_conn, customer_id, key, value)
+        return {"status": "stored", "customer_id": customer_id, "key": key}
+
+    @server.tool()
+    def recall_tool(customer_id: str, key: str | None = None) -> dict[str, str]:
+        """Every remembered fact for one customer, or just one key's value
+        if given. Empty dict if nothing's been remembered yet — not an
+        error."""
+        with _lock:
+            return recall(memory_conn, customer_id, key)
+
+    @server.tool()
+    def record_turn_tool(customer_id: str, role: str, content: str) -> dict[str, Any]:
+        """Append one turn to a customer's conversation history — call this
+        for both sides of the conversation (role="user" / role="assistant")
+        so recent_history_tool can reconstruct real session continuity."""
+        with _lock:
+            record_turn(memory_conn, customer_id, role, content)
+        return {"status": "recorded"}
+
+    @server.tool()
+    def recent_history_tool(customer_id: str, limit: int = 20) -> dict[str, Any]:
+        """The last `limit` conversation turns for one customer, oldest
+        first — ready to drop straight into a prompt."""
+        with _lock:
+            turns = recent_history(memory_conn, customer_id, limit)
+        return {"turns": [{"role": t.role, "content": t.content, "created_at": t.created_at} for t in turns]}
 
     return server
 
@@ -348,11 +411,12 @@ def main() -> None:
     parser.add_argument("root", help="directory the graph indexes")
     parser.add_argument("--db", default=".cairn-graph.db")
     parser.add_argument("--vectors", default=".cairn-graph-vectors")
+    parser.add_argument("--memory-db", default=".cairn-graph-memory.db")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"])
     parser.add_argument("--mode", default="review", choices=["review", "auto"], help="permission mode for mutating tools")
     args = parser.parse_args()
 
-    server = build_server(args.db, args.root, args.vectors, PermissionMode(args.mode))
+    server = build_server(args.db, args.root, args.vectors, PermissionMode(args.mode), args.memory_db)
     server.run(transport=args.transport)
 
 

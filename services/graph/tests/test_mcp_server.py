@@ -139,7 +139,7 @@ def test_semantic_search_finds_a_match_after_vectorize(tmp_path: Path):
 
 def test_build_server_registers_all_expected_tools(tmp_path: Path):
     _, db = _built(tmp_path)
-    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"))
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
     tools = asyncio.run(server.list_tools())
     tool_names = {t.name for t in tools}
     assert {
@@ -155,6 +155,10 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "delete_file_tool",
         "run_command_tool",
         "audit_log_tool",
+        "remember_tool",
+        "recall_tool",
+        "record_turn_tool",
+        "recent_history_tool",
     } <= tool_names
 
 
@@ -220,6 +224,42 @@ def test_delete_file_gated_runs_once_approved(tmp_path: Path):
     result = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.REVIEW, approved=True)
     assert result["status"] == "applied"
     assert not f.exists()
+
+
+def _call(server, name: str, arguments: dict):
+    # structured_content holds the real typed return value; a list-returning
+    # tool gets wrapped as {"result": [...]} by the SDK, a dict-returning
+    # tool comes back as that dict directly.
+    result = asyncio.run(server.call_tool(name, arguments))
+    return result.structured_content
+
+
+def test_search_tool_works_through_the_real_compiled_server_not_just_the_plain_function(tmp_path: Path):
+    # Regression guard: the SDK runs sync tool functions on a worker
+    # thread (anyio.to_thread.run_sync), not the thread that opened the
+    # sqlite connection. Calling search_symbols(conn, ...) directly never
+    # exercises that thread hop; only a real call_tool() does — this is
+    # exactly how the cross-thread sqlite3 crash was first found.
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    results = _call(server, "search", {"query": "help", "limit": 20})
+
+    assert any(r["name"] == "helper" for r in results["result"])
+
+
+def test_memory_tools_round_trip_through_the_real_compiled_server(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    _call(server, "remember_tool", {"customer_id": "acme", "key": "framework", "value": "nextjs"})
+    facts = _call(server, "recall_tool", {"customer_id": "acme"})
+    assert facts == {"framework": "nextjs"}
+
+    _call(server, "record_turn_tool", {"customer_id": "acme", "role": "user", "content": "hello"})
+    history = _call(server, "recent_history_tool", {"customer_id": "acme"})
+    assert history["turns"][0]["content"] == "hello"
+    assert history["turns"][0]["role"] == "user"
 
 
 def test_gated_actions_are_recorded_in_the_audit_log_when_a_conn_is_given(tmp_path: Path):
