@@ -88,7 +88,7 @@ const STYLES = `
 }
 .cairn-spin { animation: cairn-spin 0.8s linear infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot {
     animation: none !important;
     transition: none !important;
   }
@@ -150,23 +150,6 @@ const STYLES = `
 }
 .cairn-panel.cairn-open { display: flex; animation: cairn-panel-in 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
 .cairn-panel::-webkit-scrollbar { width: 0; }
-
-.cairn-panel-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-weight: 650;
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: #0b0d12;
-}
-.cairn-panel-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #6366f1;
-}
 
 .cairn-stack { display: flex; flex-direction: column; gap: 10px; }
 .cairn-bubble {
@@ -306,8 +289,6 @@ export class CairnWidgetElement extends HTMLElement {
   private shadow!: ShadowRoot;
   private fab!: HTMLButtonElement;
   private panel!: HTMLDivElement;
-  private titleEl!: HTMLDivElement;
-  private personaTextEl!: HTMLSpanElement;
   private stackEl!: HTMLDivElement;
   private userBubbleEl!: HTMLDivElement;
   private agentBubbleEl!: HTMLDivElement;
@@ -371,7 +352,7 @@ export class CairnWidgetElement extends HTMLElement {
   }
 
   attributeChangedCallback(name: string) {
-    if (name === "persona" && this.personaTextEl) this.personaTextEl.textContent = this.persona;
+    if (name === "persona" && this.panel) this.panel.setAttribute("aria-label", `${this.persona} help panel`);
   }
 
   // --- attributes -----------------------------------------------------
@@ -413,17 +394,7 @@ export class CairnWidgetElement extends HTMLElement {
     this.panel = document.createElement("div");
     this.panel.className = "cairn-panel";
     this.panel.setAttribute("role", "dialog");
-
-    this.titleEl = document.createElement("div");
-    this.titleEl.className = "cairn-panel-title";
-    const titleDot = document.createElement("span");
-    titleDot.className = "cairn-panel-dot";
-    titleDot.setAttribute("aria-hidden", "true");
-    this.titleEl.appendChild(titleDot);
-    this.personaTextEl = document.createElement("span");
-    this.personaTextEl.textContent = this.persona;
-    this.titleEl.appendChild(this.personaTextEl);
-    this.panel.appendChild(this.titleEl);
+    this.panel.setAttribute("aria-label", `${this.persona} help panel`);
 
     this.stackEl = document.createElement("div");
     this.stackEl.className = "cairn-stack";

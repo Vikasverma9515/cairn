@@ -687,10 +687,6 @@ export function Copilot({
       </button>
       {open && (
         <div className="cairn-panel" role="dialog" aria-label={`${persona} help panel`}>
-          <div className="cairn-panel-title">
-            <span className="cairn-panel-dot" aria-hidden="true" />
-            {persona}
-          </div>
 
           {(userCaption || answer || busy) && (
             <div className="cairn-stack">
@@ -955,7 +951,7 @@ const COPILOT_STYLES = `
   animation: cairn-spin 0.8s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-panel-dot {
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot {
     animation: none !important;
     transition: none !important;
   }
@@ -1022,23 +1018,6 @@ const COPILOT_STYLES = `
 }
 .cairn-panel::-webkit-scrollbar {
   width: 0;
-}
-
-.cairn-panel-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-weight: 650;
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: #0b0d12;
-}
-.cairn-panel-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #6366f1;
 }
 
 .cairn-stack {
