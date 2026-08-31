@@ -13,6 +13,7 @@
 
 import { chromium, type Browser, type Page } from "playwright";
 import type { InteractiveTag, RawElement, RawFacts, RawPage } from "./types";
+import { mapWithConcurrency } from "./concurrency";
 
 export interface CrawlOptions {
   startUrl: string;
@@ -22,11 +23,14 @@ export interface CrawlOptions {
   maxDepth?: number;
   /** Max seconds to wait for each page to settle before extracting it. */
   pageTimeoutMs?: number;
+  /** How many pages to visit at once. A handful, not maximal — a small dev server shouldn't get hammered. */
+  concurrency?: number;
 }
 
 const DEFAULT_MAX_PAGES = 30;
 const DEFAULT_MAX_DEPTH = 3;
 const DEFAULT_PAGE_TIMEOUT_MS = 15_000;
+const DEFAULT_CRAWL_CONCURRENCY = 4;
 
 interface ExtractedPageData {
   elements: RawElement[];
@@ -34,68 +38,90 @@ interface ExtractedPageData {
   bodyText: string;
 }
 
+/**
+ * Visits every page reachable within maxDepth hops of startUrl, one BFS
+ * "level" at a time — same-depth pages are visited concurrently (bounded
+ * pool, real parallel tabs in the same browser context), then their
+ * discovered links become the next level. Processing depth-by-depth rather
+ * than a single shared work queue sidesteps the coordination problem of
+ * "is a concurrent worker really done, or about to discover more work" —
+ * simpler to reason about correctly, at the minor cost of a slightly
+ * bursty (not perfectly smoothed) request pattern.
+ */
 export async function crawlSite(opts: CrawlOptions): Promise<RawFacts> {
   const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   const pageTimeoutMs = opts.pageTimeoutMs ?? DEFAULT_PAGE_TIMEOUT_MS;
+  const concurrency = opts.concurrency ?? DEFAULT_CRAWL_CONCURRENCY;
 
   const startUrl = new URL(opts.startUrl);
   const origin = startUrl.origin;
 
   const browser: Browser = await chromium.launch();
   const pages: RawPage[] = [];
+  const visited = new Set<string>([normalizeForDedup(startUrl.toString())]);
 
   try {
     const context = await browser.newContext();
-    const visited = new Set<string>();
-    const queue: { url: string; depth: number }[] = [{ url: startUrl.toString(), depth: 0 }];
+    let currentLevel: string[] = [startUrl.toString()];
+    let depth = 0;
 
-    while (queue.length > 0 && pages.length < maxPages) {
-      const next = queue.shift()!;
-      const key = normalizeForDedup(next.url);
-      if (visited.has(key)) continue;
-      visited.add(key);
+    while (currentLevel.length > 0 && depth <= maxDepth && pages.length < maxPages) {
+      const budget = Math.max(0, maxPages - pages.length);
+      const levelUrls = currentLevel.slice(0, budget);
 
-      const page = await context.newPage();
-      let extracted: ExtractedPageData | null = null;
-      let finalUrl = next.url;
-      try {
-        const response = await page.goto(next.url, { waitUntil: "networkidle", timeout: pageTimeoutMs });
-        if (!response || !response.ok()) {
-          console.error(`[cairn crawl] skipping ${next.url} — HTTP ${response?.status() ?? "no response"}`);
-          continue;
+      const linkBatches = await mapWithConcurrency(levelUrls, concurrency, async (url) => {
+        const page = await context.newPage();
+        try {
+          const response = await page.goto(url, { waitUntil: "networkidle", timeout: pageTimeoutMs });
+          if (!response || !response.ok()) {
+            console.error(`[cairn crawl] skipping ${url} — HTTP ${response?.status() ?? "no response"}`);
+            return [] as string[];
+          }
+          const finalUrl = page.url();
+          const extracted = await extractPageData(page);
+          const route = new URL(finalUrl).pathname || "/";
+          pages.push({
+            route,
+            file: finalUrl,
+            reachableFiles: [],
+            elements: extracted.elements,
+            renderedText: extracted.bodyText,
+          });
+
+          if (depth >= maxDepth) return [] as string[];
+          const nextLinks: string[] = [];
+          for (const href of extracted.links) {
+            let abs: URL;
+            try {
+              abs = new URL(href, finalUrl);
+            } catch {
+              continue;
+            }
+            if (abs.origin !== origin) continue;
+            nextLinks.push(abs.toString());
+          }
+          return nextLinks;
+        } catch (err) {
+          console.error(`[cairn crawl] skipping ${url} — ${err instanceof Error ? err.message : String(err)}`);
+          return [] as string[];
+        } finally {
+          await page.close();
         }
-        finalUrl = page.url();
-        extracted = await extractPageData(page);
-      } catch (err) {
-        console.error(`[cairn crawl] skipping ${next.url} — ${err instanceof Error ? err.message : String(err)}`);
-        continue;
-      } finally {
-        await page.close();
-      }
-
-      const route = new URL(finalUrl).pathname || "/";
-      pages.push({
-        route,
-        file: finalUrl,
-        reachableFiles: [],
-        elements: extracted.elements,
-        renderedText: extracted.bodyText,
       });
 
-      if (next.depth < maxDepth) {
-        for (const href of extracted.links) {
-          let abs: URL;
-          try {
-            abs = new URL(href, finalUrl);
-          } catch {
-            continue;
-          }
-          if (abs.origin !== origin) continue;
-          const linkKey = normalizeForDedup(abs.toString());
-          if (!visited.has(linkKey)) queue.push({ url: abs.toString(), depth: next.depth + 1 });
+      const nextLevel: string[] = [];
+      for (const links of linkBatches) {
+        for (const url of links) {
+          const key = normalizeForDedup(url);
+          if (visited.has(key)) continue;
+          visited.add(key);
+          nextLevel.push(url);
         }
       }
+
+      currentLevel = nextLevel;
+      depth += 1;
     }
 
     await context.close();

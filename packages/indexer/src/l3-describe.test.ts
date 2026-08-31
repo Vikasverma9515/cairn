@@ -104,4 +104,36 @@ describe("describeAll", () => {
     expect(warmResult.globalElements).toEqual(coldResult.globalElements);
     expect(coldCalls).toBe(facts.pages.length + 1); // +1 for the one global-elements call
   });
+
+  it("one page's description failing degrades only that page — the whole build still completes", async () => {
+    const facts = scanL1(tmpDir);
+    expect(facts.pages.length).toBeGreaterThan(1); // otherwise this test doesn't prove anything about "other pages unaffected"
+    const failingRoute = facts.pages[0].route;
+
+    class PartiallyFailingClient implements DescribeClient {
+      async describePage(input: DescribeInput): Promise<PageDescription> {
+        if (input.route === failingRoute) {
+          throw new Error("simulated non-retryable failure"); // no .status -> withRetry gives up immediately, keeps this test fast
+        }
+        return {
+          title: input.route,
+          purpose: `Fake purpose for ${input.route}`,
+          whenToUse: "Fake whenToUse",
+          confidence: 0.9,
+          elements: input.elements.map((e) => ({ id: e.id, does: `Fake does for ${e.id}`, confidence: 0.9 })),
+        };
+      }
+    }
+
+    const result = await describeAll(tmpDir, facts, new PartiallyFailingClient());
+
+    const failed = result.descriptions.get(failingRoute)!;
+    expect(failed.confidence).toBe(0);
+    expect(failed.title).toBe("(description unavailable)");
+
+    for (const page of facts.pages) {
+      if (page.route === failingRoute) continue;
+      expect(result.descriptions.get(page.route)?.confidence).toBe(0.9); // every other page still described normally
+    }
+  });
 });

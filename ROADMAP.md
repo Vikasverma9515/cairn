@@ -86,6 +86,50 @@ automated test suite for this yet either (no headless-browser fixture in
 CI) — covered only by the live run above, not a repeatable `npm test`
 case.
 
+## Scaling to large codebases
+
+Not one of the four numbered phases — a real question asked directly
+("thousands of files, nothing breaks"), answered by actually measuring it
+rather than assuming, and fixing what the measurement found.
+
+**L1 static scan is not the bottleneck.** Generated a synthetic Next.js
+app and ran the real `cairn scan` against it: 640 files (40 pages × 15
+components each) in **1.2s**; 4,750 files (250 pages × 18 components) in
+**3.1s**, peak 808MB memory. Sub-linear scaling, no crash, no blowup —
+`ts-morph` handles thousands of files fine, and L1 only ever globs `app/`,
+`components/`, `lib/`, `pages/` (never `node_modules`, never the rest of a
+large monorepo), so "lakhs of code" in a big repo mostly doesn't get
+touched at all unless it's actually in the UI source tree.
+
+**L3 (the LLM description step) was the real bottleneck, and it broke
+live.** It described one page at a time, sequentially — for an app with
+hundreds of pages, at 1-3s/call that's minutes on a cold build, and
+`GroqDescribeClient`'s `KeyRotator` already round-robins multiple API keys
+specifically for throughput that a sequential loop never exercised. Fixed
+in `packages/indexer/src/concurrency.ts`:
+
+- `mapWithConcurrency` — a bounded worker pool (default 6 for describing,
+  4 for crawling), used by both `l3-describe.ts` and `crawl-describe.ts`
+  for the describe step, and by `crawl.ts` for visiting same-depth pages
+  concurrently instead of one browser tab at a time.
+- `withRetry` — **added after live-testing surfaced a real failure, not
+  written speculatively**: raising concurrency on a 40-page synthetic app
+  hit a genuine Groq 429 ("Rate limit reached... tokens per minute")
+  within seconds, which — before this — threw straight out of
+  `Promise.all` and **aborted the entire build**, discarding every other
+  page's already-completed work. Now retries 429/5xx with backoff
+  (honoring a `Retry-After` header when the provider sends one), and if a
+  single page still fails after retries, that page alone degrades to an
+  honest `confidence: 0` placeholder instead of taking the whole build
+  down with it — verified via a real Groq run that hit the actual rate
+  limit and recovered without the build failing.
+
+Concurrency defaults are deliberately modest (not maximal) — the ceiling
+is always whatever the provider account's real rate limit is; this just
+stops leaving most of a rotated key pool idle, and the retry logic is what
+actually makes a large cold build resilient rather than the concurrency
+number itself.
+
 ## Phase 3 — `cairn init` ✅
 
 `packages/indexer/src/init.ts`. Detects the framework from `package.json`

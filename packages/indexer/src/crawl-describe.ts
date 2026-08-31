@@ -7,13 +7,20 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { RawElement, RawFacts } from "./types";
-import type { DescribeClient } from "./llm";
+import type { RawElement, RawFacts, RawPage } from "./types";
+import type { DescribeClient, PageDescription } from "./llm";
 import type { L3Result } from "./l3-describe";
+import { mapWithConcurrency, withRetry } from "./concurrency";
 
 const CACHE_DIR = ".cairn-cache";
+const DEFAULT_DESCRIBE_CONCURRENCY = 6;
 
-export async function describeCrawled(outDir: string, facts: RawFacts, client: DescribeClient): Promise<L3Result> {
+export async function describeCrawled(
+  outDir: string,
+  facts: RawFacts,
+  client: DescribeClient,
+  concurrency = DEFAULT_DESCRIBE_CONCURRENCY,
+): Promise<L3Result> {
   const absOut = path.resolve(outDir);
   const cacheDir = path.join(absOut, CACHE_DIR);
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -22,6 +29,7 @@ export async function describeCrawled(outDir: string, facts: RawFacts, client: D
   let cacheHits = 0;
   let cacheMisses = 0;
 
+  const toDescribe: { page: RawPage; cachePath: string }[] = [];
   for (const page of facts.pages) {
     const hash = hashCrawledPage(page.route, page.renderedText ?? "", page.elements);
     const cachePath = path.join(cacheDir, `${hash}.json`);
@@ -31,18 +39,35 @@ export async function describeCrawled(outDir: string, facts: RawFacts, client: D
       cacheHits += 1;
       continue;
     }
+    toDescribe.push({ page, cachePath });
+  }
 
-    const description = await client.describePage({
-      route: page.route,
-      file: page.file, // a URL in crawl mode, not a filesystem path
-      source: page.renderedText ?? "",
-      elements: page.elements.map(toDescribeElementInput),
-    });
+  await mapWithConcurrency(toDescribe, concurrency, async ({ page, cachePath }) => {
+    let description: PageDescription;
+    try {
+      description = await withRetry(() =>
+        client.describePage({
+          route: page.route,
+          file: page.file, // a URL in crawl mode, not a filesystem path
+          source: page.renderedText ?? "",
+          elements: page.elements.map(toDescribeElementInput),
+        }),
+      );
+    } catch (err) {
+      console.error(`[cairn crawl] describing ${page.route} failed after retries — degrading this page only:`, err);
+      description = {
+        title: "(description unavailable)",
+        purpose: "Could not be described — the description service failed after retries.",
+        whenToUse: "Unknown.",
+        confidence: 0,
+        elements: page.elements.map((el) => ({ id: el.id, does: "Unknown — description generation failed.", confidence: 0 })),
+      };
+    }
 
     fs.writeFileSync(cachePath, JSON.stringify(description, null, 2));
     descriptions.set(page.route, description);
     cacheMisses += 1;
-  }
+  });
 
   // Crawl mode has no static concept of "present on every page" (that's a
   // component-import fact l1-scan.ts derives from source) — nav bars etc.
