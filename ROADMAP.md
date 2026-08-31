@@ -106,8 +106,16 @@ real, and `curl`ed `/api/copilot` — got back a correct (degraded-to-
 explain, since the manifest was empty) response from a real Groq call
 through the actual generated file, not a hand-written stand-in.
 
-## Phase 4 — open-source polish (not started)
+## Phase 4 — open-source polish (partial)
 
-CI, `CONTRIBUTING.md`, issue templates, a real docs site, and — the actual
-point of open-sourcing this — community-contributed scaffolders for
-frameworks beyond whatever's built in.
+Done: CI (`.github/workflows/ci.yml` — typecheck, test, determinism check,
+builds `@cairn/indexer`) and `CONTRIBUTING.md`.
+
+Still open: issue templates, a real docs site, and — the actual point of
+open-sourcing this — community-contributed scaffolders/crawlers for
+frameworks beyond whatever's built in. Also still open, called out
+honestly rather than left implicit: **no automated test coverage for
+crawl mode** (Phase 2) or `cairn init` (Phase 3) — both are covered only
+by the live manual runs described above, not a repeatable `npm test`
+case; a headless-browser fixture for CI is the concrete next step for
+either.
