@@ -19,20 +19,25 @@ migration note built in.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Any, Callable
 
 from cairn_graph.actions import (
+    ActionRequest,
     Decision,
     PermissionMode,
     apply_edit,
     build_apply_edit_action,
+    build_create_file_action,
+    build_delete_file_action,
     build_run_command_action,
+    create_file,
     decide,
+    delete_file,
     run_command,
 )
 from cairn_graph.build import build_graph
 from cairn_graph.reachability import compute_dead_symbols
-from cairn_graph.store import open_store, stats
+from cairn_graph.store import list_action_log, log_action, open_store, stats
 from cairn_graph.vectors import build_vector_index, search_semantic
 
 
@@ -96,6 +101,30 @@ def get_index_stats(conn: sqlite3.Connection) -> dict[str, int]:
     return stats(conn)
 
 
+def _gate(
+    action: ActionRequest,
+    mode: PermissionMode,
+    approved: bool,
+    execute: Callable[[], dict],
+    applied_status: str,
+    conn: sqlite3.Connection | None = None,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    """The one place every gated tool below funnels through: decide, log
+    the decision either way, then either stop or actually do the thing.
+    `conn` is optional so the plain action functions stay testable without
+    a graph db — production calls (from `build_server`) always pass one."""
+    decision = decide(action, mode)
+    if decision is Decision.NEEDS_APPROVAL and not approved:
+        if conn is not None:
+            log_action(conn, action.tool_name, action.description, action.risk.value, "needs_approval", customer_id)
+        return {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
+    result = execute()
+    if conn is not None:
+        log_action(conn, action.tool_name, action.description, action.risk.value, applied_status, customer_id)
+    return {"status": applied_status, **result}
+
+
 def apply_edit_gated(
     root: str,
     file_path: str,
@@ -103,33 +132,68 @@ def apply_edit_gated(
     new_text: str,
     mode: PermissionMode,
     approved: bool = False,
+    conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """The permission gate applied to one concrete action. `approved` is
-    how the orchestrator answers its own popup on a second call — the
-    same shape as this agent's own tool-permission flow: ask once, then
-    proceed once the human has said yes. A CRITICAL action would refuse
-    even with approved=True on this path (there isn't one wired up yet);
-    REVIEW actions proceed once either the mode allows it outright or the
-    caller has already gotten a yes."""
+    """`approved` is how the orchestrator answers its own popup on a
+    second call — the same shape as this agent's own tool-permission
+    flow: ask once, then proceed once the human has said yes."""
     action = build_apply_edit_action(root, file_path, old_text, new_text)
-    decision = decide(action, mode)
-    if decision is Decision.NEEDS_APPROVAL and not approved:
-        return {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
-    result = apply_edit(root, file_path, old_text, new_text)
-    return {"status": "applied", **result}
+    return _gate(action, mode, approved, lambda: apply_edit(root, file_path, old_text, new_text), "applied", conn)
 
 
-def run_command_gated(root: str, command: list[str], mode: PermissionMode, approved: bool = False) -> dict[str, Any]:
+def create_file_gated(
+    root: str,
+    file_path: str,
+    content: str,
+    mode: PermissionMode,
+    approved: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    action = build_create_file_action(root, file_path, content)
+    return _gate(action, mode, approved, lambda: create_file(root, file_path, content), "applied", conn)
+
+
+def delete_file_gated(
+    root: str,
+    file_path: str,
+    mode: PermissionMode,
+    approved: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    action = build_delete_file_action(root, file_path)
+    return _gate(action, mode, approved, lambda: delete_file(root, file_path), "applied", conn)
+
+
+def run_command_gated(
+    root: str,
+    command: list[str],
+    mode: PermissionMode,
+    approved: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
     """CRITICAL tier means `decide()` returns NEEDS_APPROVAL here in every
-    mode — this function's mode argument only exists to keep the same
-    shape as `apply_edit_gated`; it never changes the outcome for a
-    CRITICAL action, by design."""
+    mode — the `mode` argument only exists to keep the same shape as the
+    other gated functions; it never changes the outcome for a CRITICAL
+    action, by design."""
     action = build_run_command_action(command)
-    decision = decide(action, mode)
-    if decision is Decision.NEEDS_APPROVAL and not approved:
-        return {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
-    result = run_command(root, command)
-    return {"status": "ran", **result}
+    return _gate(action, mode, approved, lambda: run_command(root, command), "ran", conn)
+
+
+def audit_log(conn: sqlite3.Connection, limit: int = 50, customer_id: str | None = None) -> dict[str, Any]:
+    entries = list_action_log(conn, limit, customer_id)
+    return {
+        "entries": [
+            {
+                "tool_name": e.tool_name,
+                "description": e.description,
+                "risk": e.risk,
+                "outcome": e.outcome,
+                "customer_id": e.customer_id,
+                "created_at": e.created_at,
+            }
+            for e in entries
+        ]
+    }
 
 
 def semantic_search(vector_dir: str, query: str, limit: int = 10, embed_fn=None) -> dict[str, Any]:
@@ -180,11 +244,13 @@ def build_server(
             "unreferenced dead code, or re-index after changes. Name-based "
             "results are exact but not type-resolved; semantic results are "
             "similarity ranked, not exact — treat both as strong hints, "
-            "not proof. apply_edit_tool and run_command_tool are gated: a "
-            "needs_approval response means show the description to the "
-            "human and call again with approved=true only after they say "
-            "yes — never on your own. run_command_tool always needs "
-            "approval, in either permission mode."
+            "not proof. apply_edit_tool, create_file_tool, delete_file_tool, "
+            "and run_command_tool are gated: a needs_approval response "
+            "means show the description to the human and call again with "
+            "approved=true only after they say yes — never on your own. "
+            "delete_file_tool and run_command_tool always need approval, "
+            "in either permission mode. audit_log_tool lists what's been "
+            "attempted so far, applied or not."
         ),
     )
     conn = open_store(db_path)
@@ -241,7 +307,21 @@ def build_server(
         this refuses rather than guessing which occurrence you meant. May
         return status="needs_approval" instead of editing anything; see the
         server instructions for how to handle that."""
-        return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved)
+        return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved, conn)
+
+    @server.tool()
+    def create_file_tool(file_path: str, content: str, approved: bool = False) -> dict[str, Any]:
+        """Create a new file inside the indexed root. Refuses if the file
+        already exists — use apply_edit_tool to modify one. May return
+        status="needs_approval"; same approval flow as apply_edit_tool."""
+        return create_file_gated(root, file_path, content, permission_mode, approved, conn)
+
+    @server.tool()
+    def delete_file_tool(file_path: str, approved: bool = False) -> dict[str, Any]:
+        """Delete a file inside the indexed root. CRITICAL risk — always
+        returns status="needs_approval" on the first call, in either
+        permission mode."""
+        return delete_file_gated(root, file_path, permission_mode, approved, conn)
 
     @server.tool()
     def run_command_tool(command: list[str], approved: bool = False) -> dict[str, Any]:
@@ -249,7 +329,14 @@ def build_server(
         pinned to the indexed root. CRITICAL risk — always returns
         status="needs_approval" on the first call, in either permission
         mode; see the server instructions for the approval flow."""
-        return run_command_gated(root, command, permission_mode, approved)
+        return run_command_gated(root, command, permission_mode, approved, conn)
+
+    @server.tool()
+    def audit_log_tool(limit: int = 50) -> dict[str, Any]:
+        """Every gated-action decision so far, most recent first: what was
+        attempted, its risk tier, and whether it was applied or is still
+        waiting on approval."""
+        return audit_log(conn, limit)
 
     return server
 

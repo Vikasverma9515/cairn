@@ -7,7 +7,10 @@ from cairn_graph.actions import PermissionMode
 from cairn_graph.build import build_graph
 from cairn_graph.mcp_server import (
     apply_edit_gated,
+    audit_log,
     build_server,
+    create_file_gated,
+    delete_file_gated,
     find_dead_code,
     get_index_stats,
     get_symbol_usages,
@@ -148,7 +151,10 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "semantic",
         "vectorize_tool",
         "apply_edit_tool",
+        "create_file_tool",
+        "delete_file_tool",
         "run_command_tool",
+        "audit_log_tool",
     } <= tool_names
 
 
@@ -192,3 +198,39 @@ def test_run_command_gated_runs_once_approved(tmp_path: Path):
     result = run_command_gated(str(tmp_path), ["ls", "marker.txt"], PermissionMode.AUTO, approved=True)
     assert result["status"] == "ran"
     assert "marker.txt" in result["stdout"]
+
+
+def test_create_file_gated_proceeds_in_auto_mode(tmp_path: Path):
+    result = create_file_gated(str(tmp_path), "new.ts", "export const x = 1;", PermissionMode.AUTO)
+    assert result["status"] == "applied"
+    assert (tmp_path / "new.ts").read_text() == "export const x = 1;"
+
+
+def test_delete_file_gated_needs_approval_even_in_auto_mode(tmp_path: Path):
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+    result = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO)
+    assert result["status"] == "needs_approval"
+    assert f.exists()  # untouched
+
+
+def test_delete_file_gated_runs_once_approved(tmp_path: Path):
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+    result = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.REVIEW, approved=True)
+    assert result["status"] == "applied"
+    assert not f.exists()
+
+
+def test_gated_actions_are_recorded_in_the_audit_log_when_a_conn_is_given(tmp_path: Path):
+    conn = open_store(str(tmp_path / "g.db"))
+    f = tmp_path / "a.ts"
+    f.write_text("hi")
+
+    apply_edit_gated(str(tmp_path), "a.ts", "hi", "bye", PermissionMode.REVIEW, conn=conn)  # blocked -> logged
+    apply_edit_gated(str(tmp_path), "a.ts", "hi", "bye", PermissionMode.AUTO, conn=conn)  # applied -> logged
+
+    log = audit_log(conn)
+    outcomes = [e["outcome"] for e in log["entries"]]
+    assert "needs_approval" in outcomes
+    assert "applied" in outcomes

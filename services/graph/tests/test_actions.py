@@ -8,13 +8,19 @@ from cairn_graph.actions import (
     ActionRequest,
     Decision,
     EditNotUniqueError,
+    FileAlreadyExistsError,
+    FileNotFoundForDeleteError,
     PathEscapesRootError,
     PermissionMode,
     RiskTier,
     apply_edit,
     build_apply_edit_action,
+    build_create_file_action,
+    build_delete_file_action,
     build_run_command_action,
+    create_file,
     decide,
+    delete_file,
     run_command,
 )
 
@@ -82,6 +88,72 @@ def test_apply_edit_refuses_a_path_that_escapes_the_root(tmp_path: Path):
         apply_edit(str(root), "../outside.txt", "secret", "leaked")
 
     assert outside.read_text() == "secret"  # untouched
+
+
+def test_build_create_file_action_is_review_tier():
+    action = build_create_file_action(str(Path("/tmp")), "new.ts", "content")
+    assert action.risk is RiskTier.REVIEW
+
+
+def test_create_file_writes_new_content(tmp_path: Path):
+    result = create_file(str(tmp_path), "new.ts", "export const x = 1;")
+
+    assert (tmp_path / "new.ts").read_text() == "export const x = 1;"
+    assert result["bytes_written"] == len("export const x = 1;")
+
+
+def test_create_file_makes_intermediate_directories(tmp_path: Path):
+    create_file(str(tmp_path), "nested/dir/new.ts", "x")
+    assert (tmp_path / "nested" / "dir" / "new.ts").read_text() == "x"
+
+
+def test_create_file_refuses_to_overwrite_an_existing_file(tmp_path: Path):
+    (tmp_path / "existing.ts").write_text("original")
+
+    with pytest.raises(FileAlreadyExistsError):
+        create_file(str(tmp_path), "existing.ts", "clobbered")
+
+    assert (tmp_path / "existing.ts").read_text() == "original"  # untouched
+
+
+def test_create_file_refuses_a_path_that_escapes_the_root(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    with pytest.raises(PathEscapesRootError):
+        create_file(str(root), "../escaped.ts", "x")
+
+
+def test_build_delete_file_action_is_critical_tier(tmp_path: Path):
+    (tmp_path / "a.ts").write_text("x")
+    action = build_delete_file_action(str(tmp_path), "a.ts")
+    assert action.risk is RiskTier.CRITICAL
+
+
+def test_delete_file_removes_it(tmp_path: Path):
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+
+    result = delete_file(str(tmp_path), "a.ts")
+
+    assert not f.exists()
+    assert result["file_path"] == "a.ts"
+
+
+def test_delete_file_refuses_a_missing_file(tmp_path: Path):
+    with pytest.raises(FileNotFoundForDeleteError):
+        delete_file(str(tmp_path), "does-not-exist.ts")
+
+
+def test_delete_file_refuses_a_path_that_escapes_the_root(tmp_path: Path):
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("secret")
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    with pytest.raises(PathEscapesRootError):
+        delete_file(str(root), "../outside.txt")
+
+    assert outside.exists()  # untouched
 
 
 def test_build_run_command_action_is_always_critical_tier():

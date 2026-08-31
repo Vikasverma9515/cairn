@@ -86,6 +86,23 @@ CREATE TABLE IF NOT EXISTS references_ (
   line INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_references_name ON references_(name);
+
+-- Every gated-action decision, not just the ones that ran — the record an
+-- agentic product actually needs to be trustworthy to a company buying it:
+-- not just "what did the agent change" but "what did it *try* to change,
+-- and did a human have to approve it." Feeds both Month 5's analytics and
+-- an eventual audit trail.
+CREATE TABLE IF NOT EXISTS action_log (
+  id INTEGER PRIMARY KEY,
+  tool_name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  risk TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  customer_id TEXT,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_log_created ON action_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_action_log_customer ON action_log(customer_id);
 """
 
 
@@ -167,6 +184,51 @@ def upsert_file(
 
 def remove_file(conn: sqlite3.Connection, path: str) -> None:
     conn.execute("DELETE FROM files WHERE path = ?", (path,))
+
+
+def log_action(
+    conn: sqlite3.Connection,
+    tool_name: str,
+    description: str,
+    risk: str,
+    outcome: str,
+    customer_id: str | None = None,
+) -> None:
+    """Called for every gated-action decision, whether it ran or stopped
+    for approval — commits immediately (not batched) since actions happen
+    one at a time, unlike the bulk build/upsert path in this module."""
+    conn.execute(
+        "INSERT INTO action_log (tool_name, description, risk, outcome, customer_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (tool_name, description, risk, outcome, customer_id, time.time()),
+    )
+    conn.commit()
+
+
+@dataclass(frozen=True)
+class ActionLogEntry:
+    id: int
+    tool_name: str
+    description: str
+    risk: str
+    outcome: str
+    customer_id: str | None
+    created_at: float
+
+
+def list_action_log(conn: sqlite3.Connection, limit: int = 50, customer_id: str | None = None) -> list[ActionLogEntry]:
+    if customer_id is not None:
+        rows = conn.execute(
+            "SELECT id, tool_name, description, risk, outcome, customer_id, created_at FROM action_log "
+            "WHERE customer_id = ? ORDER BY created_at DESC LIMIT ?",
+            (customer_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, tool_name, description, risk, outcome, customer_id, created_at FROM action_log "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [ActionLogEntry(*row) for row in rows]
 
 
 def stats(conn: sqlite3.Connection) -> dict[str, int]:

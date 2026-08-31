@@ -180,10 +180,12 @@ function (`search_symbols`, `get_symbol_usages`, `find_dead_code`,
   below).
 - **`vectorize_tool`** — (re)build the semantic index after a `build` or
   `reindex_tool`.
-- **`apply_edit_tool`** — REVIEW-tier action, gated by the permission
-  layer below.
-- **`run_command_tool`** — CRITICAL-tier action, always gated regardless
-  of mode. Everything else in this list is read-only.
+- **`apply_edit_tool`** / **`create_file_tool`** — REVIEW-tier actions,
+  gated by the permission layer below.
+- **`delete_file_tool`** / **`run_command_tool`** — CRITICAL-tier actions,
+  always gated regardless of mode.
+- **`audit_log_tool`** — every gated decision so far, most recent first.
+  Everything else in this list is read-only.
 
 **API-drift note, found live, not assumed**: this targets `mcp` 2.x, where
 `FastMCP` was renamed to `MCPServer`. Importing the old `mcp.server.fastmcp`
@@ -283,10 +285,29 @@ response shape, mirroring this agent's own tool-permission flow: a
 caller shows it to a person and calls again with `approved=true` only
 after they say yes — the tool never decides that for itself.
 
-14 new tests (`test_actions.py`) plus 5 more in `test_mcp_server.py`
-covering both gated flows end to end (blocked in review mode, proceeds in
-auto mode, proceeds once approved, CRITICAL blocked even in auto mode) —
-all verified against real files and real subprocesses, not mocked I/O.
+Two more actions round out basic file CRUD:
+
+- **`create_file`** (REVIEW) — refuses to overwrite an existing file
+  (that's what `apply_edit` is for); makes intermediate directories.
+- **`delete_file`** (CRITICAL) — this service has no way to know whether
+  the indexed root is under version control, so it can't assume
+  "reversible via git" the way a human operator might. Same category as
+  this agent's own "permanently deleting data" rule: no auto-mode bypass,
+  ever.
+
+Every gated decision — whether it stopped for approval or actually ran —
+is written to a SQLite `action_log` table (`store.py`), queryable via the
+MCP `audit_log_tool` or `list_action_log()`. Not just "what did the agent
+change" but "what did it *try* to change, and did a human have to
+approve it" — the record a company evaluating this needs to trust it,
+and the seed of Month 5's usage analytics.
+
+24 new tests since the previous entry (`test_actions.py`,
+`test_mcp_server.py`, and a new `test_store_action_log.py`) covering
+every gated flow end to end (blocked in review mode, proceeds in auto
+mode, proceeds once approved, CRITICAL blocked even in auto mode, audit
+log records both blocked and applied outcomes) — all against real files,
+real subprocesses, and a real SQLite db, not mocked I/O. 93 tests total.
 
 ## What's not built yet
 

@@ -110,6 +110,59 @@ def apply_edit(root: str, file_path: str, old_text: str, new_text: str) -> dict:
     return {"file_path": file_path, "bytes_written": len(content) - len(old_text) + len(new_text)}
 
 
+class FileAlreadyExistsError(FileExistsError):
+    pass
+
+
+class FileNotFoundForDeleteError(FileNotFoundError):
+    pass
+
+
+def build_create_file_action(root: str, file_path: str, content: str) -> ActionRequest:
+    """A new file is REVIEW, not CRITICAL — unlike a destructive delete or
+    an unscoped shell command, its blast radius is exactly one new file,
+    and undoing it is a plain delete."""
+    _resolve_within_root(root, file_path)
+    return ActionRequest(
+        tool_name="create_file",
+        description=f"Create {file_path} ({len(content)} char(s))",
+        risk=RiskTier.REVIEW,
+        args={"file_path": file_path, "content": content},
+    )
+
+
+def create_file(root: str, file_path: str, content: str) -> dict:
+    target = _resolve_within_root(root, file_path)
+    if os.path.exists(target):
+        raise FileAlreadyExistsError(f"{file_path} already exists — use apply_edit to modify it")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"file_path": file_path, "bytes_written": len(content)}
+
+
+def build_delete_file_action(root: str, file_path: str) -> ActionRequest:
+    """Deletion is CRITICAL — this service has no way to know whether the
+    indexed root is under version control, so it can't assume "reversible
+    via git" the way a human operator might. Same category as this
+    agent's own "permanently deleting data" rule: no auto-mode bypass."""
+    _resolve_within_root(root, file_path)
+    return ActionRequest(
+        tool_name="delete_file",
+        description=f"Delete {file_path}",
+        risk=RiskTier.CRITICAL,
+        args={"file_path": file_path},
+    )
+
+
+def delete_file(root: str, file_path: str) -> dict:
+    target = _resolve_within_root(root, file_path)
+    if not os.path.exists(target):
+        raise FileNotFoundForDeleteError(f"{file_path} does not exist")
+    os.remove(target)
+    return {"file_path": file_path}
+
+
 def build_run_command_action(command: list[str]) -> ActionRequest:
     """Arbitrary command execution is the textbook CRITICAL action — no
     scoping check can make "run whatever this string says" reversible or
