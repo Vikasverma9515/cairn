@@ -135,11 +135,11 @@ positives, period."
 
 ## Language support
 
-TypeScript, TSX, JavaScript, Python, Go, Java, Rust, C#, and Ruby — one
-`LanguageSpec` in `languages.py` plus a language-specific extraction
+TypeScript, TSX, JavaScript, Python, Go, Java, Rust, C#, Ruby, and PHP —
+one `LanguageSpec` in `languages.py` plus a language-specific extraction
 branch in `extract.py` per language (`_walk` for the JS/TS grammar
 family, `_walk_python`, `_walk_go`, `_walk_java`, `_walk_rust`,
-`_walk_csharp`, and `_walk_ruby` separately: several node *type names* are
+`_walk_csharp`, `_walk_ruby`, and `_walk_php` separately: several node *type names* are
 shared across these grammars — `call`/`call_expression` aside,
 `import_statement` means something structurally different in each —
 sharing one walker would mean disambiguating every such node by language
@@ -292,6 +292,28 @@ Dogfooded against a realistic synthetic Ruby service (nested modules,
 `private`, `attr_accessor`, a `require_relative` that `dependencies.py`
 correctly resolved to the real file) — 15 symbols, 0 false positives on
 `dead`.
+
+**PHP**, the last of this batch: `name` is a real named field everywhere
+(class/method/function/interface declarations), so no workaround needed
+there, same as C#. `exported` follows PHP's actual visibility rules,
+checked live rather than assumed: an explicit `public` modifier is
+exported, `private`/`protected` is not, interface members are implicitly
+public (same as Java/C#), and — the one easy-to-miss real default — a
+method with **no visibility keyword at all** is public in PHP, not
+private, so the absence of a `visibility_modifier` child had to resolve
+to `True`, not `False`. Magic methods (`__construct`, `__toString`,
+`__get`, ...) are always exported regardless of their declared
+visibility, the same reasoning as Python's dunders — the engine invokes
+them, not any code in the file. Constructors are named `__construct`
+here, not after their class (unlike Java/C#), so `new Widget()` reaches
+the class symbol directly and `__construct` reaches separately through
+the magic-method rule, not through a name-matching trick. Static
+(`Widget::helper()`) and instance (`$this->render()`) method calls both
+expose the called name through the same `name` field on their respective
+node types, verified live before assuming they'd match Java's or C#'s
+member-call shape. Dogfooded against a realistic synthetic Laravel-style
+service (an interface, a namespaced `use`+alias, constructor-injected
+dependencies) — 12 symbols, 0 false positives on `dead`.
 
 ## MCP server
 
@@ -797,11 +819,13 @@ just that the happy path prints something). 154 tests total, all passing.
 
 ## What's not built yet
 
-- **More languages beyond TS/TSX/JS/Python/Go/Java/Rust** — C#, Ruby,
-  PHP, etc. Same shape of work as adding Rust was: one `LanguageSpec`
-  plus a language-specific extraction branch (a new grammar family
-  likely needs its own walker, same reasoning as `_walk_python`'s
-  docstring).
+- **More languages beyond TS/TSX/JS/Python/Go/Java/Rust/C#/Ruby/PHP** —
+  Kotlin, Swift, Scala, etc. Same shape of work as adding PHP was: one
+  `LanguageSpec` plus a language-specific extraction branch (a new
+  grammar family likely needs its own walker, same reasoning as
+  `_walk_python`'s docstring). Ten languages now cover the large
+  majority of real-world codebases; further additions are open-ended and
+  worth doing per a specific customer's actual stack, not speculatively.
 - **Real hosted TTS/voice providers** — `providers.py` has real
   `GroqLLMProvider`/`DeepgramSTTProvider` now; Cartesia/ElevenLabs remain
   unwired, no credentials for those were available in this environment

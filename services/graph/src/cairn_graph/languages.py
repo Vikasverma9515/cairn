@@ -18,6 +18,7 @@ import tree_sitter_c_sharp as tscs
 import tree_sitter_go as tsgo
 import tree_sitter_java as tsjava
 import tree_sitter_javascript as tsjs
+import tree_sitter_php as tsphp
 import tree_sitter_python as tspy
 import tree_sitter_ruby as tsruby
 import tree_sitter_rust as tsrust
@@ -45,6 +46,7 @@ _JAVA = LanguageSpec("java", Language(tsjava.language()))
 _RUST = LanguageSpec("rust", Language(tsrust.language()))
 _CSHARP = LanguageSpec("csharp", Language(tscs.language()))
 _RUBY = LanguageSpec("ruby", Language(tsruby.language()))
+_PHP = LanguageSpec("php", Language(tsphp.language_php()))
 
 # Extension -> language, longest/most-specific match first where it matters
 # (.tsx must not fall through to plain typescript, which can't parse JSX).
@@ -64,6 +66,7 @@ _EXTENSION_MAP: dict[str, LanguageSpec] = {
     ".rs": _RUST,
     ".cs": _CSHARP,
     ".rb": _RUBY,
+    ".php": _PHP,
 }
 
 _PARSER_CACHE: dict[LanguageId, Parser] = {}

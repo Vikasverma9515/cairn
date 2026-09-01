@@ -458,6 +458,44 @@ def test_ruby_reachability_end_to_end(tmp_path: Path):
     assert "unused_helper" in dead_names
 
 
+def test_php_reachability_end_to_end(tmp_path: Path):
+    write(
+        tmp_path / "widget.php",
+        """
+        <?php
+        class Widget {
+            public static function create() {
+                $w = new Widget();
+                $w->render();
+                return $w;
+            }
+
+            public function render() {
+                return $this->helper();
+            }
+
+            private function helper() {
+                return "hi";
+            }
+
+            private function unusedHelper() {
+                return "never called";
+            }
+        }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "helper" not in dead_names
+    assert "render" not in dead_names
+    assert "unusedHelper" in dead_names
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

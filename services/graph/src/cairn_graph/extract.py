@@ -113,6 +113,8 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
         _walk_rust(root, source, result, enclosing=None, skip=skip)
     elif language == "csharp":
         _walk_csharp(root, source, result, enclosing=None, skip=skip)
+    elif language == "php":
+        _walk_php(root, source, result, enclosing=None, skip=skip)
     elif language == "ruby":
         # Not _walk_ruby(root, ...) directly — the top-level `program` node
         # is itself a sequential statement list where a bare `private` can
@@ -990,6 +992,111 @@ def _extract_ruby_require(call_node: Node, source: bytes, out: ExtractResult, me
     out.imports.append(
         ImportRecord(source=path, names=(), is_relative=(method_name == "require_relative"), line=call_node.start_point[0] + 1)
     )
+
+
+_PHP_DUNDER_METHODS = {
+    "__construct", "__destruct", "__call", "__callStatic", "__get", "__set", "__isset", "__unset",
+    "__sleep", "__wakeup", "__serialize", "__unserialize", "__toString", "__invoke", "__set_state", "__clone",
+}
+
+
+def _php_is_public(node: Node, name: str) -> bool:
+    if name in _PHP_DUNDER_METHODS:
+        return True  # PHP's magic methods are called by the engine, not by name anywhere in source — same category as Python's dunders
+    if node.parent is not None and node.parent.parent is not None and node.parent.parent.type == "interface_declaration":
+        return True  # interface members are implicitly public, same as Java/C#
+    for child in node.children:
+        if child.type == "visibility_modifier":
+            return any(gc.type == "public" for gc in child.children)
+    return True  # PHP's real default for a method with no visibility keyword at all is public
+
+
+def _walk_php(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
+    next_enclosing = enclosing
+
+    if node.type == "namespace_use_clause":
+        _extract_php_use(node, source, out)
+    elif node.type in ("class_declaration", "interface_declaration", "trait_declaration", "enum_declaration"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="interface" if node.type == "interface_declaration" else "class",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    # No file-boundary export concept in PHP either — any
+                    # class is autoloadable/PSR-4-visible from anywhere.
+                    exported=True,
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type in ("method_declaration", "function_definition"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="method" if enclosing is not None else "function",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_php_is_public(node, name),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type in ("function_call_expression", "member_call_expression", "scoped_call_expression"):
+        callee = _php_callee_name(node, source)
+        if callee is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+    elif node.type == "object_creation_expression":
+        # `new Widget(...)` — PHP constructors are named __construct, not
+        # after their class (unlike Java/C#), so this is what actually
+        # reaches the class symbol itself; __construct reaches separately
+        # via the dunder-is-always-exported rule above, same split as
+        # Python's `Widget()` needing no separate new_expression at all,
+        # just for a language where `new` *is* real syntax.
+        name_node = next((c for c in node.children if c.type == "name"), None)
+        if name_node is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=_text(name_node, source), line=node.start_point[0] + 1))
+    elif node.type in ("name", "variable_name") and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the other walkers — see
+        # Reference's docstring.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_php(child, source, out, next_enclosing, skip)
+
+
+def _php_callee_name(call_node: Node, source: bytes) -> str | None:
+    if call_node.type == "function_call_expression":
+        fn = call_node.child_by_field_name("function")
+        return _text(fn, source) if fn is not None and fn.type == "name" else None
+    # member_call_expression ($obj->method()) and scoped_call_expression
+    # (Widget::method()) both expose the called method's own name via a
+    # "name" field, verified live — no need for two different code paths.
+    name_node = call_node.child_by_field_name("name")
+    return _text(name_node, source) if name_node is not None else None
+
+
+def _php_qualified_name_last_segment(node: Node, source: bytes) -> str:
+    name_children = [c for c in node.children if c.type == "name"]
+    return _text(name_children[-1], source) if name_children else _text(node, source)
+
+
+def _extract_php_use(node: Node, source: bytes, out: ExtractResult) -> None:
+    alias_node = node.child_by_field_name("alias")
+    target = next((c for c in node.children if c.type in ("qualified_name", "namespace_name", "name")), None)
+    if target is None:
+        return
+    source_text = _text(target, source)
+    local_name = _text(alias_node, source) if alias_node is not None else _php_qualified_name_last_segment(target, source)
+    out.imports.append(ImportRecord(source=source_text, names=(local_name,), is_relative=False, line=node.start_point[0] + 1))
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:
