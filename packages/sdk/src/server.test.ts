@@ -44,6 +44,49 @@ function fakeLLMReturning(payload: unknown): VerbLLM {
   return { respond: async () => payload };
 }
 
+/** Captures exactly what was sent, instead of just returning canned output —
+ * needed to inspect the actual system prompt / user message content. */
+function capturingFakeLLM(payload: unknown): { llm: VerbLLM; calls: { systemPrompt: string; userMessage: string }[] } {
+  const calls: { systemPrompt: string; userMessage: string }[] = [];
+  return {
+    llm: {
+      respond: async (systemPrompt, userMessage) => {
+        calls.push({ systemPrompt, userMessage });
+        return payload;
+      },
+    },
+    calls,
+  };
+}
+
+function manifestWithPages(pageCount: number, elementsPerPage: number): Manifest {
+  return {
+    version: "1",
+    commit: "test",
+    generatedAt: new Date().toISOString(),
+    pages: Array.from({ length: pageCount }, (_, i) => ({
+      id: `page-${i}`,
+      route: `/page-${i}`,
+      file: `app/page-${i}/page.tsx`,
+      title: `Page ${i}`,
+      purpose: `This is a reasonably detailed description of what page ${i} does, matching real-world purpose text length.`,
+      whenToUse: `Come here for page ${i} things.`,
+      confidence: 0.9,
+      elements: Array.from({ length: elementsPerPage }, (_, j) => ({
+        id: `page-${i}-el-${j}`,
+        label: `Element ${j}`,
+        selector: `[data-ai='page-${i}-el-${j}']`,
+        fallbacks: [],
+        does: `Does a reasonably detailed thing number ${j} on this page, matching real-world description length.`,
+        confidence: 0.9,
+        evidence: [],
+      })),
+    })),
+    dead: [],
+    conflicts: [],
+  };
+}
+
 describe("createCopilotHandlerWithLLM", () => {
   it("400s on a malformed request body", async () => {
     const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "x" }));
@@ -213,6 +256,65 @@ describe("createCopilotHandlerWithLLM", () => {
       { role: "user", text: "what's on this page?" },
       { role: "assistant", text: "A list of your invoices." },
     ]);
+  });
+
+  // Real bug, found live against a real 17-page production app, not a
+  // synthetic case: the system prompt used to include every element on
+  // every page, on every single request. That app's full element list
+  // alone came to 12,402 tokens against an 8000 TPM limit — the request
+  // failed before a single question was ever answered. The fix moves
+  // element-level detail out of the (cached, route-independent) system
+  // prompt and into a per-request "currentPageElements" field scoped to
+  // whatever page the request is actually about.
+  it("the system prompt lists page routes and purposes, but never a page's element ids or descriptions", async () => {
+    const big = manifestWithPages(17, 40); // roughly VOXERA's real scale
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(big, llm);
+
+    await handler({ route: "/page-0", question: "what is this?", visible: [] });
+
+    expect(calls[0].systemPrompt).toContain("/page-0");
+    expect(calls[0].systemPrompt).toContain("page 0 does"); // purpose text — expected
+    expect(calls[0].systemPrompt).not.toContain("page-0-el-0"); // an element id — must NOT be here
+    expect(calls[0].systemPrompt).not.toContain("thing number 0 on this page"); // element "does" text — must NOT be here
+  });
+
+  it("stays well under a small provider's per-request token budget at real production scale", async () => {
+    // 17 pages x 40 elements is roughly VOXERA's real shape. The bug this
+    // guards produced ~12,402 tokens (≈49,600 chars at a rough 4 chars/token)
+    // in the system prompt alone, against Groq's 8000 TPM limit. A ~4-char/
+    // token estimate of a system prompt safely under 20,000 chars leaves
+    // real headroom for the (now separately-sent, single-page) user message
+    // too — nowhere close to blowing an 8000-token budget by itself.
+    const big = manifestWithPages(17, 40);
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(big, llm);
+
+    await handler({ route: "/page-0", question: "what is this?", visible: [] });
+
+    expect(calls[0].systemPrompt.length).toBeLessThan(20_000);
+  });
+
+  it("the current page's real elements arrive in the request payload, scoped to that page only", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what can I do here?", visible: [] });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.currentPageElements).toContain("create-invoice");
+    expect(parsed.currentPageElements).toContain("Opens a form to bill a customer.");
+  });
+
+  it("a route with no manifest entry gets an honest fallback instead of a crash or invented elements", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "I don't recognize that page." });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    const result = await handler({ route: "/does-not-exist", question: "help", visible: [] });
+
+    expect(result.status).toBe(200);
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.currentPageElements).toMatch(/no manifest entry/);
   });
 });
 

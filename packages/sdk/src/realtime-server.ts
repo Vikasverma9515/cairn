@@ -83,7 +83,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, systemPrompt, registeredActions, capability }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, systemPrompt, manifest: options.manifest, registeredActions, capability }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -101,6 +101,7 @@ interface ConnectionDeps {
   ttsVoice: string;
   llm: ReturnType<typeof createVerbLLM>;
   systemPrompt: string;
+  manifest: Manifest;
   registeredActions: string[];
   capability: CapabilityTier;
 }
@@ -286,7 +287,7 @@ async function handleDeepgramMessage(
   // of this try block now sends the client something that ends the turn.
   try {
     const { route, visible } = getContext();
-    const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.registeredActions, deps.capability, {
+    const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
       route,
       question: transcript,
       visible,

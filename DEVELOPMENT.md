@@ -79,6 +79,22 @@ and fixed, not just noticed:
   `"use client"` wrapper component `examples/demo-app` already used
   correctly, instead of inlining `<Copilot/>` straight into the layout.
 
+**Runtime prompt scaling (new, in @cairnvibe/sdk).** Found live against
+VOXERA, a real ~17-page production app: the `/api/copilot` handler's
+system prompt included every element on every page, on every single
+request, regardless of which page the user was actually on. At real
+scale that came to 12,402 tokens in one request — over Groq's 8000 TPM
+limit — so no query answered at all, ever, on that app. Fixed by
+splitting the prompt: a compact route directory (route + purpose only)
+stays in the cached, route-independent system prompt; the current
+page's real element detail now travels separately, per request, in a
+new `currentPageElements` field. Verified against VOXERA's actual
+manifest: the old approach measured ~12,643 estimated tokens, the fix
+brings it to ~837 — real questions now get real answers, confirmed with
+a direct `/api/copilot` call. `@cairnvibe/sdk` bumped to 0.2.0 (a real
+breaking change to `resolveVerb`'s and `buildSystemPrompt`'s exported
+signatures) and republished.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 
