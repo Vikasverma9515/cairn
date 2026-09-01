@@ -71,17 +71,29 @@ npx @cairnvibe/indexer setup
 ```
 
 This installs the three packages, asks a couple of quick
-yes/skippable questions (which LLM provider and key — or skip and add
-one later; voice, on request), scaffolds the backend route, wires
-`<Copilot/>` into your real `app/layout.tsx` or `pages/_app.tsx`
-automatically (a real AST edit, not a blind string splice — it never
-touches a file it can't confidently parse, and falls back to printing
-the two-line manual instruction instead of guessing), builds the
-manifest once if a key was given, and adds a `prebuild` script so the
+yes/skippable questions from a real numbered menu (which LLM provider
+and key — or skip and add one later; voice, on request), scaffolds the
+backend route, generates a small `components/CairnCopilot.tsx` "use
+client" wrapper and wires it into your real `app/layout.tsx` or
+`pages/_app.tsx` automatically (a real AST edit, not a blind string
+splice — it never touches a file it can't confidently parse, and falls
+back to printing the manual instructions instead of guessing), adds
+`transpilePackages` to your `next.config.*` so bundlers actually
+transform the package's source instead of failing cold on it, builds
+the manifest once if a key was given (with a spinner, and a real
+retry/switch-provider recovery flow if the build hits a rate limit or a
+bad key instead of just dying), and adds a `prebuild` script so the
 manifest regenerates itself on every future `npm run build` — build
 and redeploy, and it stays current with no extra step. A build with no
 key configured yet (e.g. before you've set env vars on your hosting
 platform) skips that step cleanly instead of failing the whole build.
+
+(The wrapper component matters: `app/layout.tsx` is a Server Component
+by default, and passing `<Copilot/>`'s `onDo` function prop to it
+directly from a Server Component fails — "Event handlers cannot be
+passed to Client Component props." A real project surfaced this live;
+`setup` generates the same small client-wrapper shape
+`examples/demo-app` already uses to avoid it.)
 
 Prefer full manual control instead? `cairn init <dir>` does the
 non-interactive, no-installs, no-prompts version of the same
@@ -125,17 +137,37 @@ package's `bin` entry into `node_modules/.bin` if that package's `dist/`
 already exists *when `npm install` runs* — and on a fresh clone it
 doesn't yet.
 
+`app/layout.tsx` is a Server Component by default, and React Server
+Components reject a plain inline function passed as a prop to a Client
+Component — `<Copilot/>` needs `onDo`, so it needs a thin `"use client"`
+wrapper in between, not to be rendered in the layout file directly:
+
 ```jsx
-// app/layout.tsx
+// components/CairnCopilot.tsx
+"use client";
 import { Copilot } from "@cairnvibe/sdk";
 
-<Copilot
-  registeredActions={["archiveInvoice"]}
-  onDo={(action, target) => { /* run the write action through YOUR session auth */ }}
-  reportMissesEndpoint="/api/copilot/misses" // optional — aggregate lookup misses server-side
-  transcribeEndpoint="/api/copilot/transcribe" // optional — adds a mic button (needs Deepgram)
-/>;
+export function CairnCopilot() {
+  return (
+    <Copilot
+      registeredActions={["archiveInvoice"]}
+      onDo={(action, target) => { /* run the write action through YOUR session auth */ }}
+      reportMissesEndpoint="/api/copilot/misses" // optional — aggregate lookup misses server-side
+      transcribeEndpoint="/api/copilot/transcribe" // optional — adds a mic button (needs Deepgram)
+    />
+  );
+}
 ```
+
+```jsx
+// app/layout.tsx
+import { CairnCopilot } from "../components/CairnCopilot";
+
+<CairnCopilot />;
+```
+
+(`npx @cairnvibe/indexer setup` does exactly this for you automatically —
+see "Install into your own project" above.)
 
 ```ts
 // app/api/copilot/route.ts — your own route, your own API key, your own auth

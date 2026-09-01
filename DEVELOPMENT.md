@@ -62,6 +62,23 @@ highlight, navigate, and *act* inside it, live, driven by conversation.
     found by dogfooding (voice getting stuck, duplicate audio, a
     fire-and-forget handler that could strand a live call).
 
+**`cairn setup` (new).** A one-command onboarding wizard, added after
+`npm install @cairnvibe/core @cairnvibe/sdk @cairnvibe/indexer` plus
+manual layout edits turned out to be real friction. Two real bugs found
+by testing against an actual project (VOXERA, not a synthetic fixture)
+and fixed, not just noticed:
+- Turbopack failed cold ("Unknown module type") on `@cairnvibe/sdk`'s
+  raw `.tsx` entry with no `transpilePackages` configured — `setup` now
+  adds it to the consuming project's `next.config.*` automatically (a
+  real AST edit across the common config shapes, safe fallback on
+  anything it can't confidently parse).
+- Inserting `<Copilot onDo={...}/>` directly into `app/layout.tsx`
+  broke with "Event handlers cannot be passed to Client Component
+  props" — layout.tsx is a Server Component by default, and a function
+  prop can't cross that boundary. Fixed by generating the same small
+  `"use client"` wrapper component `examples/demo-app` already used
+  correctly, instead of inlining `<Copilot/>` straight into the layout.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 

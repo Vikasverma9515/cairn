@@ -1,10 +1,28 @@
 // `cairn setup`'s one departure from `init`'s "never touch an existing
-// file" rule — but only for this one, narrow, reversible edit (adding an
-// import + one JSX tag), and only ever via a real AST parse, never blind
-// string splicing. Any structure this doesn't recognize falls back to
-// printing the two-line manual instruction instead of guessing — the
-// same "don't corrupt what you don't understand" discipline `init` uses
-// for whole files, applied here at the node level.
+// file" rule — but only for this one, narrow, reversible edit (a new
+// wrapper component file, plus one import + one JSX tag in the real
+// layout), and only ever via a real AST parse, never blind string
+// splicing. Any structure this doesn't recognize falls back to printing
+// the two-line manual instruction instead of guessing — the same "don't
+// corrupt what you don't understand" discipline `init` uses for whole
+// files, applied here at the node level.
+//
+// Real bug this fixes, found by testing against an actual project, not
+// a synthetic fixture: an earlier version inserted `<Copilot
+// onDo={(action, target) => {...}} />` directly into app/layout.tsx.
+// layout.tsx is a Server Component by default (App Router) — React
+// Server Components cannot accept a plain inline function as a prop on
+// a Client Component, which <Copilot/> is ("Event handlers cannot be
+// passed to Client Component props"). The working example app
+// (examples/demo-app/components/CopilotWithActions.tsx) already solved
+// this the right way: a small "use client" wrapper component that
+// *defines* onDo itself, so no function ever crosses the server/client
+// boundary — layout.tsx only ever references the wrapper by name, with
+// zero function props. This module now generates that same wrapper
+// instead of inlining Copilot directly, for both App Router and Pages
+// Router (Pages Router doesn't strictly need it — no RSC boundary
+// there — but the same shape avoids a special case and matches the one
+// real, working example this project has).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -13,10 +31,32 @@ import { Project, SyntaxKind, ts } from "ts-morph";
 export interface InjectResult {
   injected: boolean;
   filePath?: string;
+  wrapperPath?: string;
   reason?: string; // why not, when injected is false
 }
 
-const WIDGET_JSX = `<Copilot registeredActions={[]} onDo={(action, target) => { /* run it through your own auth */ }} />`;
+const WRAPPER_COMPONENT_NAME = "CairnCopilot";
+
+function wrapperSource(): string {
+  return `"use client";
+
+import { Copilot } from "@cairnvibe/sdk";
+
+// A small client wrapper so the layout/app file (a server component, for
+// metadata etc.) never has to pass a function prop across the server/client
+// boundary — see the comment in inject-widget.ts for why that fails.
+export function ${WRAPPER_COMPONENT_NAME}() {
+  return (
+    <Copilot
+      registeredActions={[]}
+      onDo={(action, target) => {
+        // run it through your own auth
+      }}
+    />
+  );
+}
+`;
+}
 
 function findLayoutFile(absDir: string, framework: "next-app-router" | "next-pages-router"): string | null {
   const candidates =
@@ -30,18 +70,36 @@ function findLayoutFile(absDir: string, framework: "next-app-router" | "next-pag
   return null;
 }
 
+function toPosixRelativeImport(fromFile: string, toFileNoExt: string): string {
+  let rel = path.relative(path.dirname(fromFile), toFileNoExt).split(path.sep).join("/");
+  if (!rel.startsWith(".")) rel = `./${rel}`;
+  return rel;
+}
+
 export function injectWidget(dir: string, framework: "next-app-router" | "next-pages-router"): InjectResult {
   const absDir = path.resolve(dir);
   const target = findLayoutFile(absDir, framework);
   if (!target) {
-    return { injected: false, reason: "no app/layout.tsx or pages/_app.tsx found — add <Copilot/> manually" };
+    return { injected: false, reason: "no app/layout.tsx or pages/_app.tsx found — add the widget manually" };
   }
 
   const relTarget = path.relative(absDir, target) || target;
   const original = fs.readFileSync(target, "utf8");
-  if (original.includes("@cairnvibe/sdk") || original.includes("<Copilot")) {
-    return { injected: false, reason: `${relTarget} already references Copilot — leaving it alone` };
+  if (original.includes(WRAPPER_COMPONENT_NAME) || original.includes("@cairnvibe/sdk") || original.includes("<Copilot")) {
+    return { injected: false, reason: `${relTarget} already references the widget — leaving it alone` };
   }
+
+  // The wrapper always matches the layout file's own extension (.tsx stays
+  // .tsx, .jsx stays .jsx — a .tsx file dropped into a plain-JS project has
+  // no type checker configured for it and would just confuse tooling).
+  const ext = path.extname(target); // ".tsx" or ".jsx"
+  const wrapperPath = path.join(absDir, "components", `${WRAPPER_COMPONENT_NAME}${ext}`);
+  if (!fs.existsSync(wrapperPath)) {
+    fs.mkdirSync(path.dirname(wrapperPath), { recursive: true });
+    fs.writeFileSync(wrapperPath, wrapperSource());
+  }
+  const importPath = toPosixRelativeImport(target, wrapperPath.slice(0, -ext.length));
+  const widgetJsx = `<${WRAPPER_COMPONENT_NAME} />`;
 
   try {
     const project = new Project({
@@ -51,9 +109,9 @@ export function injectWidget(dir: string, framework: "next-app-router" | "next-p
     });
     const sf = project.addSourceFileAtPath(target);
 
-    const hasImport = sf.getImportDeclarations().some((d) => d.getModuleSpecifierValue() === "@cairnvibe/sdk");
+    const hasImport = sf.getImportDeclarations().some((d) => d.getModuleSpecifierValue() === importPath);
     if (!hasImport) {
-      sf.addImportDeclaration({ moduleSpecifier: "@cairnvibe/sdk", namedImports: ["Copilot"] });
+      sf.addImportDeclaration({ moduleSpecifier: importPath, namedImports: [WRAPPER_COMPONENT_NAME] });
     }
 
     // `insertText` at a position, not `replaceWithText` on a node — the latter
@@ -71,7 +129,7 @@ export function injectWidget(dir: string, framework: "next-app-router" | "next-p
     if (bodyOpening) {
       const closing = bodyOpening.getParentIfKind(SyntaxKind.JsxElement)?.getClosingElement();
       if (closing) {
-        sf.insertText(closing.getStart(), `${WIDGET_JSX}\n      `);
+        sf.insertText(closing.getStart(), `${widgetJsx}\n      `);
         inserted = true;
       }
     }
@@ -82,7 +140,7 @@ export function injectWidget(dir: string, framework: "next-app-router" | "next-p
         .getDescendantsOfKind(SyntaxKind.JsxExpression)
         .find((e) => e.getExpression()?.getText() === "children");
       if (childrenExpr) {
-        sf.insertText(childrenExpr.getEnd(), `\n      ${WIDGET_JSX}`);
+        sf.insertText(childrenExpr.getEnd(), `\n      ${widgetJsx}`);
         inserted = true;
       }
     }
@@ -100,21 +158,23 @@ export function injectWidget(dir: string, framework: "next-app-router" | "next-p
         // first insertion changes the source text underneath it.
         const start = componentTag.getStart();
         const end = componentTag.getEnd();
-        sf.insertText(end, `\n      ${WIDGET_JSX}\n    </>`);
+        sf.insertText(end, `\n      ${widgetJsx}\n    </>`);
         sf.insertText(start, `<>\n      `);
         inserted = true;
       }
     }
 
     if (!inserted) {
-      return { injected: false, reason: `couldn't find a safe spot in ${relTarget} — add <Copilot/> manually` };
+      return { injected: false, reason: `couldn't find a safe spot in ${relTarget} — add the widget manually` };
     }
 
     sf.saveSync();
-    return { injected: true, filePath: target };
+    return { injected: true, filePath: target, wrapperPath };
   } catch (err) {
     // Never leave a half-written file — ts-morph only writes on saveSync(),
     // so a thrown error here means the original file on disk is untouched.
-    return { injected: false, reason: `couldn't safely modify ${relTarget} (${(err as Error).message}) — add <Copilot/> manually` };
+    // The wrapper component file, if it was just created, is still valid
+    // and harmless on its own — it's just not referenced from anywhere yet.
+    return { injected: false, reason: `couldn't safely modify ${relTarget} (${(err as Error).message}) — add the widget manually` };
   }
 }

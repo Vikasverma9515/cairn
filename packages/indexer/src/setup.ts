@@ -17,6 +17,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { runInit } from "./init";
 import { injectWidget } from "./inject-widget";
+import { ensureTranspilePackages } from "./ensure-transpile";
 import { askOptional, closePrompts, selectFromList } from "./prompt";
 import { scanL1 } from "./l1-scan";
 import { computeL2 } from "./l2-reachability";
@@ -244,11 +245,28 @@ export async function runSetup(dir: string): Promise<void> {
   const framework = init.framework as "next-app-router" | "next-pages-router";
   const inject = injectWidget(dir, framework);
   if (inject.injected) {
-    console.log(green(`✓ wired <Copilot/> into ${path.relative(absDir, inject.filePath!)}`));
+    console.log(green(`✓ wired the widget into ${path.relative(absDir, inject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)`));
   } else {
-    console.log(`\n<Copilot/> not auto-wired (${inject.reason}). Add it yourself:`);
+    console.log(`\nWidget not auto-wired (${inject.reason}). Add it yourself:`);
     console.log('  import { Copilot } from "@cairnvibe/sdk";');
     console.log("  <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />");
+    console.log("  (in a \"use client\" component — see examples/demo-app/components/CopilotWithActions.tsx for why)");
+  }
+
+  // 5b. @cairnvibe/sdk and @cairnvibe/core ship raw TS/TSX as their main
+  // entry deliberately — bundlers need transpilePackages to know to
+  // transform it. Without this, real projects fail cold at `next dev`
+  // with "Unknown module type", not something a demo on a fresh project
+  // would ever surface (this repo's own next.config.js already has it).
+  const transpile = ensureTranspilePackages(dir);
+  if (transpile.ok) {
+    console.log(
+      green(
+        `✓ ${transpile.created ? "created" : "updated"} ${path.relative(absDir, transpile.filePath!)} with transpilePackages`,
+      ),
+    );
+  } else {
+    console.log(`\ntranspilePackages not auto-added (${transpile.reason})`);
   }
 
   // 6. Build the manifest once now, if we actually have a usable key — no
