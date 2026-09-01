@@ -60,6 +60,15 @@ def main(argv: list[str] | None = None) -> int:
     dash_p.add_argument("--llm-provider", default=None, help="LLM provider name (e.g. groq) for the narrative; omit to skip it")
     dash_p.add_argument("--out", default="cairn-dashboard.html")
 
+    voice_p = sub.add_parser("voice-turn", help="run one real audio-in/text-or-audio-out conversation turn through STT -> orchestrator -> LLM -> TTS")
+    voice_p.add_argument("audio_file", help="path to a WAV file with the user's speech")
+    voice_p.add_argument("--stt-provider", default="deepgram")
+    voice_p.add_argument("--llm-provider", default="groq")
+    voice_p.add_argument("--tts-provider", default=None, help="omit to skip audio synthesis and get text-only output")
+    voice_p.add_argument("--customer", default=None)
+    voice_p.add_argument("--memory-db", default=".cairn-graph-memory.db")
+    voice_p.add_argument("--out-audio", default=None, help="path to write the synthesized reply audio to, if --tts-provider is given")
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -82,6 +91,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_deps(args.db, args.top)
     if args.command == "dashboard":
         return _run_dashboard(args.db, args.memory_db, args.customer, args.llm_provider, args.out)
+    if args.command == "voice-turn":
+        return _run_voice_turn(
+            args.audio_file, args.stt_provider, args.llm_provider, args.tts_provider, args.customer, args.memory_db, args.out_audio
+        )
     return 1
 
 
@@ -241,6 +254,40 @@ def _run_dashboard(db: str, memory_db: str, customer_id: str | None, llm_provide
         f.write(html)
     print(f"wrote {out}")
     print(f"narrative: {narrative}")
+    return 0
+
+
+def _run_voice_turn(
+    audio_file: str,
+    stt_provider_name: str,
+    llm_provider_name: str,
+    tts_provider_name: str | None,
+    customer_id: str | None,
+    memory_db: str,
+    out_audio: str | None,
+) -> int:
+    from cairn_graph.memory import open_memory_store
+    from cairn_graph.providers import llm_registry, load_provider, stt_registry, tts_registry
+    from cairn_graph.voice_pipeline import run_voice_turn
+
+    stt = load_provider(stt_registry, "CAIRN_STT_PROVIDER", "unconfigured", provider_name=stt_provider_name)
+    llm = load_provider(llm_registry, "CAIRN_LLM_PROVIDER", "echo", provider_name=llm_provider_name)
+    tts = load_provider(tts_registry, "CAIRN_TTS_PROVIDER", "unconfigured", provider_name=tts_provider_name) if tts_provider_name else None
+    memory_conn = open_memory_store(memory_db) if customer_id else None
+
+    with open(audio_file, "rb") as f:
+        audio_in = f.read()
+
+    result = run_voice_turn(audio_in, stt=stt, llm=llm, tts=tts, customer_id=customer_id, memory_conn=memory_conn)
+
+    print(f"transcript: {result.transcript!r}")
+    print(f"routed to: {result.specialist} (tools: {', '.join(result.available_tools)})")
+    print(f"reply: {result.reply_text!r}")
+    print("timing (ms):", {k: round(v, 1) for k, v in result.timing_ms.items()})
+    if result.reply_audio is not None and out_audio is not None:
+        with open(out_audio, "wb") as f:
+            f.write(result.reply_audio)
+        print(f"wrote reply audio to {out_audio}")
     return 0
 
 

@@ -697,6 +697,65 @@ end-to-end against the real Groq and Deepgram providers as described
 above. Cartesia/ElevenLabs have no equivalent live dogfood yet — see the
 confidence-level note above.
 
+## Voice pipeline (Month 8, first slice) — the real loop, for the first time
+
+`voice_pipeline.py` connects four pieces that had each been real and
+independently verified since earlier in this project — Deepgram, Groq,
+`orchestrator.py`, Cartesia/ElevenLabs — but had never once run as an
+actual conversation turn before this. Pillar 3's opening line ("it's
+like talking to a friend") was the one piece of the original vision that
+had only ever existed as isolated provider demos; this closes that gap.
+
+```bash
+python -m cairn_graph.cli voice-turn recording.wav --stt-provider deepgram --llm-provider groq --customer acme
+```
+
+One turn: audio in → `STTProvider.transcribe` → recorded to memory →
+routed (`llm_planner` by default, reusing the same LLM this turn already
+has) → `LLMProvider.complete` for a reply, scoped to the routed
+specialist's toolset → recorded to memory → `TTSProvider.synthesize` if
+one's configured (skipped, not faked, if not). Every provider is
+injected — this module imports no vendor SDK directly, the same
+discipline `providers.py` established — so it's fully unit-tested (9
+tests, `test_voice_pipeline.py`) with fake providers, no network call in
+the automated suite.
+
+**Real, honest latency numbers from two live dogfood runs (real speech
+audio, real Deepgram, real Groq), not estimated**: 3.27s and 4.83s
+total, both well over the plan's "sub-1.5s mic-to-first-audio" target —
+*before TTS is even added*. Two real causes identified, not guessed:
+
+1. **STT alone is 2.4–3.3s of the total.** The current integration uses
+   Deepgram's prerecorded/batch endpoint
+   (`listen.v1.media.transcribe_file`) — upload the whole audio file,
+   wait for one response — not Deepgram's streaming endpoint, which
+   returns partial transcripts as the user speaks. A real-time voice
+   product needs the streaming API; this slice deliberately proves the
+   turn-taking *logic* is correct first, on the simpler synchronous API,
+   before building on the more complex streaming one.
+2. **Routing and reply are two separate sequential Groq calls** (~0.36–
+   0.79s and ~0.52–0.71s) — `llm_planner`'s routing decision, then the
+   actual reply, back to back. A latency-optimized version could combine
+   them into one call (structured output carrying both a routing
+   decision and a response) or route with a smaller/faster model tier
+   than the one generating the reply.
+
+**A real, honest scope boundary, also found live**: the reply the LLM
+gives is genuinely good — asked "where is the highlight function
+defined," it correctly explained it would need to actually search rather
+than hallucinate a file path — but this pipeline doesn't yet *execute*
+the tools it routes to. It scopes and replies conversationally; it
+doesn't call `search`/`usages`/etc. itself yet. Wiring that — giving the
+LLM the routed specialist's actual tools to call, not just its name — is
+squarely Month 9's real multi-agent orchestration, not something to
+half-build here.
+
+**Explicitly not built here**: a real-time streaming server, a
+WebSocket endpoint, or barge-in (interrupting mid-reply) — those need
+actual duplex audio infrastructure, a genuinely separate and larger
+build than "connect four providers into one function call," and are
+scoped out honestly rather than half-built alongside this.
+
 ## Dependency graph — the third index
 
 `dependencies.py` is the third of the plan's three-index design (parse
