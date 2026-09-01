@@ -178,13 +178,27 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(result.body).toEqual({ verb: "do", action: "start-call", target: "start-call" });
   });
 
-  it("a do-verb whose target has no real apiCall (and isn't registered) is refused, not guessed at", async () => {
+  it("a do-verb targeting a real element with NO apiCall (a click-only action, e.g. one that just opens a form) still passes through with no apiCall attached — click is the only execution path", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,
       fakeLLMReturning({ verb: "do", action: "create-invoice", target: "create-invoice" }),
     );
-    const result = await handler({ route: "/invoices", question: "make a new invoice" , visible: [] });
-    expect((result.body as { verb: string }).verb).toBe("explain");
+    const result = await handler({ route: "/invoices", question: "make a new invoice", visible: [] });
+    expect(result.body).toEqual({ verb: "do", action: "create-invoice", target: "create-invoice" });
+  });
+
+  it("a do-verb targeting a real liveElements entry (not in the static manifest at all) is accepted — click-only, no apiCall possible", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "open-session", target: "live-3" }),
+    );
+    const result = await handler({
+      route: "/invoices",
+      question: "open that session",
+      visible: [],
+      liveElements: [{ id: "live-3", role: "button", label: "tel-jBU07k_CX74V" }],
+    });
+    expect(result.body).toEqual({ verb: "do", action: "open-session", target: "live-3" });
   });
 
   it("a do-verb with an unknown/hallucinated target is refused even if the action label looks plausible", async () => {

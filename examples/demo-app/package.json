@@ -4,15 +4,14 @@
   "private": true,
   "scripts": {
     "predev": "bash -c 'set -a; [ -f .env ] && . .env; set +a; [ -f ui-manifest.json ] || node ../../packages/indexer/dist/cli.js build . --provider groq || true'",
-    "dev": "next dev",
+    "dev": "node ../../packages/sdk/dist/realtime-cli.js --port 3010 --with \"next dev\"",
     "build": "next build",
     "start": "next start",
-    "realtime": "bash -c 'set -a; [ -f .env ] && . .env; set +a; node ../../packages/sdk/dist/realtime-cli.js --port 3010'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cairnvibe/core": "^0.1.0",
-    "@cairnvibe/sdk": "^0.1.0",
+    "@cairnvibe/core": "^0.1.4",
+    "@cairnvibe/sdk": "^0.2.7",
     "better-sqlite3": "^13.0.3",
     "lucide-react": "^1.37.0",
     "next": "^14.2.5",

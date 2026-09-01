@@ -1,12 +1,19 @@
-// The 4-step Element Ladder (BUILD_PLAN.md invariant #3): a lookup failure
-// must degrade to explain-only, never guess and click the wrong thing.
+// The Element Ladder (BUILD_PLAN.md invariant #3): a lookup failure must
+// degrade to explain-only, never guess and click the wrong thing.
 //
+//   0. liveElements map  — a runtime-scan.ts snapshot, when the caller has
+//      one: the id came from real elements the browser itself found this
+//      turn (a dynamically-rendered row with no data-ai included), so an
+//      exact map lookup is both the fastest and the most trustworthy path.
 //   1. data-ai="..."     — exact, authoritative
 //   2. aria-label / role — accessible-name fallback
 //   3. visible text      — last resort, exact then substring match
 //   4. FAIL               — caller degrades to explain + logs the miss
 
-export function findElement(target: string): HTMLElement | null {
+export function findElement(target: string, liveElements?: Map<string, HTMLElement>): HTMLElement | null {
+  const live = liveElements?.get(target);
+  if (live) return live;
+
   if (typeof document === "undefined") return null;
 
   const byDataAi = document.querySelector<HTMLElement>(`[data-ai="${cssEscape(target)}"]`);

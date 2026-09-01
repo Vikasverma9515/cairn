@@ -114,6 +114,9 @@ const optionalString = () => z.preprocess((v) => (v === null ? undefined : v), z
  * than being a surprising exception. */
 const optionalApiCall = () => z.preprocess((v) => (v === null ? undefined : v), ApiCallSchema.optional());
 
+/** Same null-tolerance as optionalString, for tour steps' "click" field. */
+const optionalBoolean = () => z.preprocess((v) => (v === null ? undefined : v), z.boolean().optional());
+
 export const VerbResponseSchema = z.discriminatedUnion("verb", [
   z.object({ verb: z.literal("explain"), text: z.string().min(1) }).strict(),
   z
@@ -174,6 +177,13 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
               target: optionalString(),
               /** Navigate here before this step's target lookup — for a walkthrough that spans more than one page. */
               route: optionalString(),
+              /**
+               * Actually click the resolved target (not just highlight it) —
+               * for a step that means "open/select this" (e.g. "I'll open
+               * Sessions and click into one") rather than merely pointing
+               * something out. Defaults to false/highlight-only.
+               */
+              click: optionalBoolean(),
             })
             .strict(),
         )
@@ -193,12 +203,31 @@ export type HistoryTurn = z.infer<typeof HistoryTurnSchema>;
 
 // The request context the runtime SDK sends to the customer's /api/copilot
 // route, and that route forwards (trimmed) to the LLM.
+/**
+ * One interactive element the browser's own live DOM scan actually found
+ * right now (packages/sdk/src/runtime-scan.ts) — not from the build-time
+ * manifest. `label` is real, bounded (~80 char) visible text, which is new:
+ * every other piece of context Cairn sends is an id, never page content.
+ * This is what lets the agent address something a developer never manually
+ * tagged (a dynamically-rendered list row, a card) — bounded per-element
+ * length and total count (both enforced here as a hard backstop, not just
+ * client-side) so this can't become an unbounded page-content dump.
+ */
+export const LiveElementSchema = z.object({
+  id: z.string().max(200),
+  role: z.string().max(50),
+  label: z.string().max(120),
+});
+export type LiveElement = z.infer<typeof LiveElementSchema>;
+
 export const CopilotRequestSchema = z.object({
   route: z.string(),
   question: z.string().min(1),
   visible: z.array(z.string()),
   /** Prior turns of this same conversation, oldest first — untrusted data, same as `question`, never instructions. */
   history: z.array(HistoryTurnSchema).optional(),
+  /** What's actually on screen right now, from a live DOM scan — see LiveElementSchema. */
+  liveElements: z.array(LiveElementSchema).max(60).optional(),
 });
 export type CopilotRequest = z.infer<typeof CopilotRequestSchema>;
 

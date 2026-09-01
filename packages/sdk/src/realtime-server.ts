@@ -27,7 +27,7 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { HistoryTurn, Manifest, VerbResponse } from "@cairnvibe/core";
+import type { HistoryTurn, LiveElement, Manifest, VerbResponse } from "@cairnvibe/core";
 import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 
@@ -109,7 +109,10 @@ export interface ConnectionDeps {
 const MAX_HISTORY_TURNS = 8; // 4 exchanges — enough for "the first one"/"do that instead" without growing the prompt unbounded over a long call
 
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
-  let context = { route: "/", visible: [] as string[] };
+  // liveElements refreshes on every "context" resend (the client sends one
+  // on route changes and each time it's about to start listening again),
+  // so a live scan from several turns ago never lingers into a later one.
+  let context: { route: string; visible: string[]; liveElements: LiveElement[] } = { route: "/", visible: [], liveElements: [] };
   // Unlike the stateless HTTP path (which needs the client to resend
   // history every request), a realtime connection is already stateful —
   // one WebSocket per call — so this is accumulated here directly rather
@@ -226,7 +229,11 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
     try {
       const msg = JSON.parse(data.toString());
       if (msg.type === "context") {
-        context = { route: String(msg.route ?? "/"), visible: Array.isArray(msg.visible) ? msg.visible : [] };
+        context = {
+          route: String(msg.route ?? "/"),
+          visible: Array.isArray(msg.visible) ? msg.visible : [],
+          liveElements: parseLiveElements(msg.liveElements),
+        };
       } else if (msg.type === "end") {
         client.close();
       } else if (msg.type === "barge_in") {
@@ -272,7 +279,7 @@ export async function handleDeepgramMessage(
   raw: string,
   client: WebSocket,
   deps: ConnectionDeps,
-  getContext: () => { route: string; visible: string[] },
+  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[] },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
   turnState: { buffer: string },
@@ -343,7 +350,7 @@ async function finalizeTurn(
   turnState: { buffer: string },
   client: WebSocket,
   deps: ConnectionDeps,
-  getContext: () => { route: string; visible: string[] },
+  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[] },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
   getGeneration: () => number,
@@ -354,11 +361,12 @@ async function finalizeTurn(
   safeSend(client, { type: "final", text: transcript });
 
   try {
-    const { route, visible } = getContext();
+    const { route, visible, liveElements } = getContext();
     const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
       route,
       question: transcript,
       visible,
+      liveElements,
       history,
     });
 
@@ -393,6 +401,28 @@ async function finalizeTurn(
 function safeSend(client: WebSocket, message: ServerMessage): void {
   if (client.readyState !== WebSocket.OPEN) return;
   client.send(JSON.stringify(message));
+}
+
+/** Defensive parse for the client's self-reported live DOM scan — same
+ * untrusted-input treatment `visible` already gets on this control-message
+ * path (no CopilotRequestSchema here, unlike the HTTP handler), just
+ * shaped-checked so a malformed entry can't reach the LLM prompt oddly. */
+function parseLiveElements(raw: unknown): LiveElement[] {
+  if (!Array.isArray(raw)) return [];
+  const elements: LiveElement[] = [];
+  for (const entry of raw) {
+    if (
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as any).id === "string" &&
+      typeof (entry as any).role === "string" &&
+      typeof (entry as any).label === "string"
+    ) {
+      elements.push({ id: (entry as any).id, role: (entry as any).role, label: (entry as any).label });
+    }
+    if (elements.length >= 60) break;
+  }
+  return elements;
 }
 
 /** A short text form of any verb for the history log — not shown to the

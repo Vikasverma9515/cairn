@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Compass, FileText, TriangleAlert } from "lucide-react";
+import { Bot, Compass, FileText, MessageSquare, TriangleAlert } from "lucide-react";
 import { CopilotWithActions } from "../components/CopilotWithActions";
 import "./globals.css";
 
@@ -22,6 +22,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           </Link>
           <Link href="/dashboard" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
             <TriangleAlert size={16} /> Failures
+          </Link>
+          <Link href="/sessions" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
+            <MessageSquare size={16} /> Sessions
+          </Link>
+          <Link href="/agents" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
+            <Bot size={16} /> Agents
           </Link>
         </nav>
         {children}

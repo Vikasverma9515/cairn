@@ -1,6 +1,6 @@
 {
   "name": "@cairnvibe/sdk",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "In-app AI copilot — <Copilot/> for React/Next.js, <cairn-widget> for any framework — plus the server handlers and realtime voice relay behind them.",
   "license": "MIT",
   "publishConfig": { "access": "public" },

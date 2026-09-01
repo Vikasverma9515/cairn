@@ -35,7 +35,7 @@ function fakeDeps(respond: VerbLLM["respond"]): ConnectionDeps {
   };
 }
 
-const getContext = () => ({ route: "/", visible: [] as string[] });
+const getContext = () => ({ route: "/", visible: [] as string[], liveElements: [] });
 
 function resultsMessage(transcript: string, opts: { isFinal: boolean; speechFinal?: boolean }): string {
   return JSON.stringify({

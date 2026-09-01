@@ -21,6 +21,13 @@ export interface VerbExecutorOptions {
   onTour?: (steps: TourStep[]) => void;
   /** Action ids the customer has actually wired up. "do" is rejected for anything else. */
   registeredActions?: string[];
+  /**
+   * This turn's frozen runtime-scan.ts snapshot (id -> real element),
+   * checked before the static data-ai/aria-label/text ladder — lets a verb
+   * target a dynamically-rendered element (a list row) the manifest never
+   * saw. Absent entirely for a caller that hasn't wired up live scanning.
+   */
+  liveElements?: Map<string, HTMLElement>;
 }
 
 const FALLBACK_TEXT = "I'm not sure — I couldn't understand that response. Try rephrasing your question.";
@@ -43,13 +50,16 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
 
     case "highlight":
     case "open": {
-      const el = findElement(verb.target);
+      const el = findElement(verb.target, options.liveElements);
       if (!el) {
         (options.onMiss ?? logMiss)({ attempted: verb.target, route });
         options.onExplain(verb.text ?? "I know what you need, but I can't find it on this page right now.");
         return;
       }
       highlightElement(el);
+      // "open" means make the thing actually appear (a menu, a modal, a
+      // panel) — highlighting alone doesn't do that; a real click does.
+      if (verb.verb === "open") el.click();
       if (verb.text) options.onExplain(verb.text);
       return;
     }
@@ -68,22 +78,38 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         return;
       }
 
-      if (verb.apiCall) {
-        // Auto-discovered path: a real, indexer-found handler call on this
-        // exact target element, attached server-side after looking the
-        // target up in the manifest — never something the model emitted
-        // itself (see ApiCallSchema's doc comment in @cairnvibe/core).
-        const el = verb.target ? findElement(verb.target) : null;
-        if (el) highlightElement(el);
-        else if (verb.target) (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+      // Auto-discovered path: the server already verified `target` names a
+      // real element (the static manifest or this exact request's own
+      // live-DOM scan) before ever returning this verb — never something
+      // the model invented (see resolveVerb in server.ts).
+      if (verb.target || verb.apiCall) {
+        const el = verb.target ? findElement(verb.target, options.liveElements) : null;
+        if (el) {
+          // Click-first: the real element's own handler runs in full (any
+          // local state update, spinner, or non-network side effect a raw
+          // fetch would silently skip), and it's the only way to fire an
+          // action that has no fetch/axios call at all — a button that
+          // just reveals a form, e.g. — which never gets an `apiCall` in
+          // the first place. `apiCall` is only ever the fallback below,
+          // for a target that can't be resolved live right now (e.g. it's
+          // on a different page) — never fired in addition to a real
+          // click, so the action can't run twice.
+          highlightElement(el);
+          el.click();
+          if (verb.text) options.onExplain(verb.text);
+          return;
+        }
+        if (verb.target) (options.onMiss ?? logMiss)({ attempted: verb.target, route });
 
-        if (verb.text) options.onExplain(verb.text);
-        void executeApiCall(verb.apiCall).then((result) => {
-          if (!result.ok) {
-            options.onExplain("I tried to do that, but something went wrong — try again in a moment.");
-          }
-        });
-        return;
+        if (verb.apiCall) {
+          if (verb.text) options.onExplain(verb.text);
+          void executeApiCall(verb.apiCall).then((result) => {
+            if (!result.ok) {
+              options.onExplain("I tried to do that, but something went wrong — try again in a moment.");
+            }
+          });
+          return;
+        }
       }
 
       options.onExplain(verb.text ?? "That action isn't available here.");

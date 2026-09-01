@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  ChevronDown,
+  ChevronUp,
   Loader2,
   Mic,
   MicOff,
@@ -17,6 +19,7 @@ import {
 import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
+import { createLiveElementRegistry } from "./runtime-scan";
 import { executeVerbResponse } from "./verb-executor";
 
 export interface CopilotProps {
@@ -63,8 +66,24 @@ export function Copilot({
   persona = "Cairn",
 }: CopilotProps) {
   const pathname = usePathname() ?? "/";
+  // Mirrors `pathname` for use inside long-lived closures (a realtime
+  // session's handlers are all created once, when the connection opens —
+  // same staleness reason runTour tracks its own `currentRoute` locally
+  // rather than trusting its closure's `pathname` after a mid-tour
+  // navigation).
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+    sendFreshContext(); // no-op if no realtime session is open
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  // Collapsed by default so the panel only ever shows the current exchange
+  // — the full archived transcript (built up over a long conversation)
+  // stays out of the way behind an explicit toggle instead of always being
+  // visible inline, which made the panel grow uncomfortably tall.
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>("idle");
@@ -117,6 +136,20 @@ export function Copilot({
   // keeps its own history server-side instead, since that connection is
   // already stateful).
   const historyRef = useRef<HistoryEntry[]>([]);
+
+  // A background scanner that keeps a live inventory of what's actually
+  // clickable on screen right now (runtime-scan.ts) — running continuously
+  // via a MutationObserver so there's never a pause to "go look at the
+  // page" right when a verb needs to click something. `liveMapRef` freezes
+  // one snapshot of it per turn (set alongside every context/question send,
+  // below) so a background rescan landing mid-flight can't shift what an id
+  // resolves to between when a request went out and its response came back.
+  const liveRegistryRef = useRef(createLiveElementRegistry());
+  const liveMapRef = useRef<Map<string, HTMLElement>>(new Map());
+  useEffect(() => {
+    liveRegistryRef.current.start();
+    return () => liveRegistryRef.current.stop();
+  }, []);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -213,6 +246,28 @@ export function Copilot({
     setStatus(next);
   }
 
+  /**
+   * Refreshes the server's picture of route/visible/liveElements over an
+   * already-open realtime connection. Beyond the initial connect, called
+   * on every route change and whenever the mic is about to start listening
+   * again — a real, pre-existing gap this closes as a side effect: the
+   * server's context previously updated only once, at connection open, so
+   * navigating mid-call (via a "navigate" verb, or the user clicking
+   * around) left the server answering every later turn as if the user were
+   * still on the original page. Reads pathnameRef, not the closure's
+   * `pathname`, so it's correct even called from a handler created once at
+   * connection-open time.
+   */
+  function sendFreshContext() {
+    const ws = rtSocketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const liveScan = liveRegistryRef.current.getSnapshot();
+    liveMapRef.current = liveScan.byId;
+    ws.send(
+      JSON.stringify({ type: "context", route: pathnameRef.current, visible: collectVisible(), liveElements: liveScan.elements }),
+    );
+  }
+
   function reportMiss(context: MissContext) {
     logMiss(context);
     if (reportMissesEndpoint) {
@@ -235,6 +290,7 @@ export function Copilot({
       onDo,
       onTour: (steps) => void runTour(steps),
       registeredActions,
+      liveElements: liveMapRef.current,
     });
   }
 
@@ -297,9 +353,23 @@ export function Copilot({
         }
 
         if (step.target) {
-          const el = findElement(step.target);
-          if (el) highlightElement(el);
-          else reportMiss({ attempted: step.target, route: currentRoute });
+          // A fresh scan, not the tour's starting liveMapRef snapshot — a
+          // step after a mid-tour navigation targets elements on a page
+          // that didn't exist when the tour began.
+          const liveScan = liveRegistryRef.current.getSnapshot();
+          const el = findElement(step.target, liveScan.byId);
+          if (el) {
+            highlightElement(el);
+            if (step.click) {
+              el.click();
+              // Give whatever the click reveals (a detail view, an expanded
+              // row) a moment to actually render before narrating it.
+              await new Promise((resolve) => setTimeout(resolve, 400));
+              if (tourGenerationRef.current !== myGeneration) return;
+            }
+          } else {
+            reportMiss({ attempted: step.target, route: currentRoute });
+          }
         }
 
         if (wasRealtimeListening && rtSocketRef.current?.readyState === WebSocket.OPEN) {
@@ -337,10 +407,18 @@ export function Copilot({
     setLastQuestion(q);
     setQuestion("");
     try {
+      const liveScan = liveRegistryRef.current.getSnapshot();
+      liveMapRef.current = liveScan.byId;
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ route: pathname, question: q, visible: collectVisible(), history: historyRef.current }),
+        body: JSON.stringify({
+          route: pathname,
+          question: q,
+          visible: collectVisible(),
+          history: historyRef.current,
+          liveElements: liveScan.elements,
+        }),
       });
       const data = await res.json().catch(() => null);
       handleVerb(data);
@@ -614,6 +692,7 @@ export function Copilot({
         }
         setRtStatus("rt-listening");
         setCaption("");
+        sendFreshContext(); // refresh before the user starts talking again, not after
       }
 
       function disarmThinkingWatchdog() {
@@ -674,7 +753,7 @@ export function Copilot({
       }
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "context", route: pathname, visible: collectVisible() }));
+        sendFreshContext();
         setRtStatus("rt-listening");
         rtStartingRef.current = false;
       };
@@ -843,14 +922,26 @@ export function Copilot({
 
           {(transcript.length > 0 || userCaption || answer || busy) && (
             <div className="cairn-stack">
-              {transcript.map((entry) => (
-                <div
-                  className={entry.role === "user" ? "cairn-bubble cairn-bubble-user cairn-bubble-past" : "cairn-bubble cairn-bubble-agent cairn-bubble-past"}
-                  key={entry.id}
+              {transcript.length > 0 && (
+                <button
+                  type="button"
+                  className="cairn-history-toggle"
+                  onClick={() => setHistoryExpanded((v) => !v)}
+                  aria-expanded={historyExpanded}
                 >
-                  {entry.role === "agent" ? <span className="cairn-bubble-text">{entry.text}</span> : entry.text}
-                </div>
-              ))}
+                  {historyExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  {historyExpanded ? "Hide earlier" : `${transcript.length} earlier`}
+                </button>
+              )}
+              {historyExpanded &&
+                transcript.map((entry) => (
+                  <div
+                    className={entry.role === "user" ? "cairn-bubble cairn-bubble-user cairn-bubble-past" : "cairn-bubble cairn-bubble-agent cairn-bubble-past"}
+                    key={entry.id}
+                  >
+                    {entry.role === "agent" ? <span className="cairn-bubble-text">{entry.text}</span> : entry.text}
+                  </div>
+                ))}
               {userCaption && (
                 <div className="cairn-bubble cairn-bubble-user" key={`u-${userCaption}`}>
                   {userCaption}
@@ -1219,6 +1310,26 @@ const COPILOT_STYLES = `
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: rgba(11, 13, 18, 0.48);
+}
+.cairn-history-toggle {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: none;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(11, 13, 18, 0.4);
+  cursor: pointer;
+  border-radius: 999px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.cairn-history-toggle:hover {
+  background: rgba(11, 13, 18, 0.05);
+  color: rgba(11, 13, 18, 0.6);
 }
 .cairn-thinking {
   display: inline-flex;

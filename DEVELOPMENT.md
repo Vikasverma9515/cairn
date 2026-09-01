@@ -256,6 +256,79 @@ live audio round-trip couldn't be exercised in this environment (no real
 microphone available), so the fixes are verified at the protocol/logic
 level, not yet confirmed by ear.
 
+**Runtime DOM awareness — the agent can now see and click what's actually
+on screen** (`@cairnvibe/core` 0.1.3, `@cairnvibe/indexer` 0.2.6,
+`@cairnvibe/sdk` 0.2.6). The manifest is a build-time snapshot: it can only
+ever know about elements a developer manually tagged or that existed in
+source at scan time. Two concrete, real failures came from this — VOXERA's
+Sessions list (each session a `<div>`/card with no per-item id — the
+indexer sees the list container, never a specific row) and its Agent
+Builder's "New Agent" button (reveals a form, no `fetch` call at all, so
+the `do` verb — which only knew how to fire a raw apiCall — had nothing to
+attach and correctly refused every time). Fixed with a genuinely new
+capability, not a patch to the old one:
+- New `packages/sdk/src/runtime-scan.ts`: a live DOM scanner running
+  continuously in the background via a debounced `MutationObserver` (never
+  a per-request scan-and-wait — the element map is always already warm),
+  finding real interactive elements — `data-ai`-tagged or plain
+  `button`/`a`/`role=button` — currently in the viewport, each with a real,
+  bounded snippet of its actual visible text (~80 chars, capped element
+  count). This is the one deliberate reversal of an explicit prior design
+  decision (`context-collector.ts`'s "never send page text, only ids") —
+  confirmed with the user before building it — because there's no other way
+  to let the agent address "the session with the Fear badge" or describe
+  what a dynamically-rendered list actually contains.
+- The manifest's own static elements still exist and are still used first
+  where they apply — this is additive, a fallback for what the build-time
+  scan structurally can't see, not a replacement.
+- `do`/`open` became click-first instead of fetch-first: the client now
+  tries to resolve the real element (via the live scan or the existing
+  static ladder) and calls a real `el.click()` — the actual button's own
+  handler runs in full (local state, spinners, anything beyond a network
+  call), which is also the only way to fire an action that has no `fetch`
+  at all. The previously-only path (constructing and firing the raw
+  `apiCall` directly) is now strictly a fallback for a target that can't be
+  resolved live right now (e.g. it's on a page reached earlier in the
+  conversation) — never fired in addition to a real click, so nothing runs
+  twice.
+- Tours gained an optional per-step `click: true` so a guided walkthrough
+  can actually demonstrate ("I'll open Sessions and click into one") rather
+  than only ever highlighting and describing.
+- `examples/demo-app` gained two new pages purpose-built as regression
+  tests for exactly these gaps (a Sessions list with no per-row id, an
+  Agent Builder button that only reveals a form) and its `dev` script was
+  folded into the same `cairn-realtime --with "next dev"` single-command
+  pattern already shipped for VOXERA, since fighting VOXERA's own
+  competing voice-agent UI and auth was making it an unreliable place to
+  verify realtime-specific fixes.
+- A real, unrelated setup bug surfaced while wiring `demo-app` back up:
+  its `package.json` still pinned `@cairnvibe/sdk`/`core` to `^0.1.0`, a
+  semver range that (per 0.x rules) no longer matched the current `0.2.x`/
+  `0.1.3` local packages — so npm workspaces silently fell back to
+  installing a real, stale registry copy instead of symlinking the local
+  source, and `demo-app` had been testing against months-old code without
+  anyone noticing. Fixed by bumping the ranges to match; `npm ls` now shows
+  every workspace correctly deduped to `./packages/*`.
+
+Verified live end-to-end (not just server-side, and not just unit tests —
+177 passing, but the real proof is a real browser): on `demo-app`, "open
+the session with the fear emotion" correctly highlighted and clicked that
+exact card (the page's own selection state updated, detail panel
+populated); "create a new agent for me" clicked the real "New Agent"
+button and revealed its form; a tour step with `click: true` clicked the
+real per-row Archive button for one specific invoice (a dynamic
+`/api/invoices/${id}/archive` URL — never auto-executable via the old
+apiCall-only path) and the app's own handler ran in full, invoice status
+flipping to "Archived" and the page reloading exactly as a real manual
+click would.
+
+**Compact panel by default** (same `@cairnvibe/sdk` release): the
+transcript persisted from the prior session's fix but was always shown
+inline, growing the panel uncomfortably tall over a longer conversation —
+reported as "too big." Now collapsed by default (only the current
+exchange shows), with a small "N earlier" toggle to expand the full
+archived history on demand.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 

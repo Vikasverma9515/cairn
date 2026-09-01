@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, FileText, TriangleAlert } from "lucide-react";
+import { ArrowRight, Bot, FileText, MessageSquare, TriangleAlert } from "lucide-react";
 
 export default function HomePage() {
   return (
@@ -25,6 +25,24 @@ export default function HomePage() {
         >
           <span className="flex items-center gap-3 font-medium text-gray-800">
             <TriangleAlert size={18} className="text-amber-500" /> View failure dashboard
+          </span>
+          <ArrowRight size={16} className="text-gray-400" />
+        </Link>
+        <Link
+          href="/sessions"
+          className="flex items-center justify-between rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-sm transition hover:border-gray-300 hover:shadow"
+        >
+          <span className="flex items-center gap-3 font-medium text-gray-800">
+            <MessageSquare size={18} className="text-emerald-500" /> Sessions (no per-row id, on purpose)
+          </span>
+          <ArrowRight size={16} className="text-gray-400" />
+        </Link>
+        <Link
+          href="/agents"
+          className="flex items-center justify-between rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-sm transition hover:border-gray-300 hover:shadow"
+        >
+          <span className="flex items-center gap-3 font-medium text-gray-800">
+            <Bot size={18} className="text-violet-500" /> Agent Builder (click-only action, no fetch)
           </span>
           <ArrowRight size={16} className="text-gray-400" />
         </Link>

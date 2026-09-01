@@ -148,6 +148,103 @@ describe("executeVerbResponse", () => {
     }
   });
 
+  function fakeElement() {
+    return {
+      click: vi.fn(),
+      scrollIntoView: vi.fn(),
+      classList: { add: vi.fn(), remove: vi.fn() },
+    } as unknown as HTMLElement;
+  }
+
+  // highlightElement (element-ladder.ts) calls window.setTimeout — stub a
+  // minimal window for these tests, same node environment gap the rest of
+  // this suite already works around by not exercising highlight/open at all.
+  function withWindowStub<T>(fn: () => T): T {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      return fn();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("open: clicks the resolved target, not just highlights it", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["sessions-tab", el]]);
+      executeVerbResponse({ verb: "open", target: "sessions-tab" }, "/admin", { ...opts, liveElements });
+      expect(el.click).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("highlight: does NOT click, unlike open", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["invoice-table", el]]);
+      executeVerbResponse({ verb: "highlight", target: "invoice-table" }, "/invoices", { ...opts, liveElements });
+      expect(el.click).not.toHaveBeenCalled();
+    });
+  });
+
+  it("do: click-first — a real, resolvable target is clicked directly, apiCall never fires even when both are present", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["archive-inv-2", el]]);
+      executeVerbResponse(
+        {
+          verb: "do",
+          action: "archive-invoice",
+          target: "archive-inv-2",
+          apiCall: { method: "POST", url: "/api/invoices/inv-2/archive" },
+        },
+        "/invoices",
+        { ...opts, liveElements },
+      );
+      expect(el.click).toHaveBeenCalledTimes(1);
+      // Give any stray microtask a chance to run — the apiCall path must never fire.
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(opts.onDo).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("do: target names a real element that just reveals UI, no apiCall at all — still clicks it for real (the 'New Agent' case)", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["new-agent-button", el]]);
+      executeVerbResponse({ verb: "do", action: "create-agent", target: "new-agent-button" }, "/agents", { ...opts, liveElements });
+      expect(el.click).toHaveBeenCalledTimes(1);
+      expect(opts.onExplain).not.toHaveBeenCalledWith("That action isn't available here.");
+    });
+  });
+
+  it("do: target can't be resolved live — falls back to firing apiCall directly", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const opts = makeOptions();
+      executeVerbResponse(
+        { verb: "do", action: "archive-invoice", target: "archive-inv-2", apiCall: { method: "POST", url: "/api/invoices/inv-2/archive" } },
+        "/invoices",
+        opts, // no liveElements at all — the element can't be found live
+      );
+      await vi.waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith("/api/invoices/inv-2/archive", { method: "POST", credentials: "same-origin" }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("degrades a verb outside the fixed enum to explain, never executes it", () => {
     const opts = makeOptions();
     executeVerbResponse({ verb: "deleteAll", action: "deleteAll" }, "/invoices", opts);
