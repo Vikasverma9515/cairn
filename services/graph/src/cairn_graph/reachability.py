@@ -57,7 +57,7 @@ def compute_dead_symbols(conn: sqlite3.Connection) -> ReachabilityResult:
             by_parent.setdefault(sym.parent, []).append(sym)
 
     uses_by_context = _load_uses_by_context(conn)  # calls + references, unioned — see module docstring
-    files_importing_name = _load_import_usages(conn)
+    imported_names = _load_imported_names(conn)
     framework_root_names = _load_framework_root_names(conn)
     top_level_uses = _load_top_level_uses(conn)
 
@@ -72,10 +72,33 @@ def compute_dead_symbols(conn: sqlite3.Connection) -> ReachabilityResult:
     # defined test helper class/fixture function used only inside a
     # describe() block read as dead without this, since the callback
     # wrapping it has no name to traverse from.
-    roots = [s for s in symbols if s.exported or s.name in framework_root_names or s.name in top_level_uses]
+    #
+    # `s.name in imported_names` used to be a check done *inside* the BFS,
+    # gated on the symbol whose name matched already being reachable —
+    # which meant it could never actually be the reason anything became
+    # reachable (a symbol has to be reachable before that branch can even
+    # run), while still costing a full scan of every import in the
+    # codebase on every single reachable symbol popped from the queue.
+    # Found live stress-testing against a 175k-symbol real codebase: that
+    # scan alone was the dominant cost behind a 23.5-minute run. Moving it
+    # here is both the performance fix and the correctness fix — "a
+    # symbol imported by name is reachable regardless of whether the
+    # importing file is itself called" is a fact about the symbol from
+    # the start, not something contingent on BFS order.
+    roots = [s for s in symbols if s.exported or s.name in framework_root_names or s.name in top_level_uses or s.name in imported_names]
     queue: list[SymbolRef] = roots
     for s in queue:
         reachable_ids.add(s.id)
+
+    # Tracks which *names* have already had their uses_by_context edges
+    # expanded — not which symbol ids have been popped. Multiple distinct
+    # symbols legitimately share a name in a codebase this size (hundreds
+    # of unrelated methods called `get`/`dispose`/`handle`), and
+    # uses_by_context is itself keyed by name, so re-running the same
+    # name's expansion once per symbol sharing it was pure redundant work:
+    # the set of names it discovers is identical every time. This turns
+    # that from O(symbols sharing a name) back down to O(distinct names).
+    processed_names: set[str] = set()
 
     while queue:
         current = queue.pop()
@@ -104,22 +127,15 @@ def compute_dead_symbols(conn: sqlite3.Connection) -> ReachabilityResult:
                     reachable_ids.add(method.id)
                     queue.append(method)
 
+        if current.name in processed_names:
+            continue
+        processed_names.add(current.name)
+
         # Follow calls/references from this symbol's name to any symbol
         # with a matching name (heuristic, not type-resolved — see
         # extract.py).
         for used_name in uses_by_context.get(current.name, ()):
             for candidate in by_name.get(used_name, ()):
-                if candidate.id not in reachable_ids:
-                    reachable_ids.add(candidate.id)
-                    queue.append(candidate)
-
-        # A symbol imported by name into some file is reachable regardless
-        # of whether that importing file's own top-level code is itself
-        # "called" by anything — importing is its own use.
-        for importer_file_id, imported_name in files_importing_name:
-            if imported_name != current.name:
-                continue
-            for candidate in by_name.get(imported_name, ()):
                 if candidate.id not in reachable_ids:
                     reachable_ids.add(candidate.id)
                     queue.append(candidate)
@@ -155,13 +171,16 @@ def _load_framework_root_names(conn: sqlite3.Connection) -> set[str]:
     return {r[0] for r in rows}
 
 
-def _load_import_usages(conn: sqlite3.Connection) -> list[tuple[int, str]]:
-    """(importing_file_id, imported_name) pairs, flattened out of the
-    JSON-encoded `names` column — kept as a flat list rather than a dict
-    since one name can legitimately be imported by many files."""
-    rows = conn.execute("SELECT file_id, names FROM imports").fetchall()
-    out: list[tuple[int, str]] = []
-    for file_id, names_json in rows:
-        for name in json.loads(names_json):
-            out.append((file_id, name))
+def _load_imported_names(conn: sqlite3.Connection) -> set[str]:
+    """Every distinct name imported anywhere in the codebase, flattened
+    out of the JSON-encoded `names` column. Which *file* did the
+    importing was never actually used by any caller of this — a symbol
+    imported by name is reachable regardless of which file imported it,
+    so a flat set of names is both simpler and, unlike the old flat
+    (file_id, name) list this replaced, no longer the thing that made
+    compute_dead_symbols scan every import in the codebase once per
+    reachable symbol."""
+    out: set[str] = set()
+    for (names_json,) in conn.execute("SELECT names FROM imports").fetchall():
+        out.update(json.loads(names_json))
     return out

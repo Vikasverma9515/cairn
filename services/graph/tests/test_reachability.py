@@ -496,6 +496,27 @@ def test_php_reachability_end_to_end(tmp_path: Path):
     assert "unusedHelper" in dead_names
 
 
+def test_symbol_imported_but_never_called_is_reachable_purely_from_the_import(tmp_path: Path):
+    # Regression test for a real bug found live: the old implementation's
+    # "imported by name is reachable" check ran *inside* the BFS, gated on
+    # the symbol whose name matched already being reachable — which meant
+    # it could never actually be the reason anything became reachable (a
+    # symbol has to already be in the reachable set before that branch
+    # even runs). It only ever looked correct because every existing test
+    # for this case happened to also have a real call edge rescuing the
+    # symbol independently. This fixture has neither: helper is imported
+    # by a.ts and never called or referenced anywhere.
+    write(tmp_path / "a.ts", 'import { helper } from "./b";\n')
+    write(tmp_path / "b.ts", "function helper() { return 1; }")
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+
+    assert "helper" not in {s.name for s in result.dead}
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

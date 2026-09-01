@@ -932,21 +932,45 @@ wasn't written with in mind.
   circular imports at exactly this location, so this is a correct
   finding, not a false positive from the resolver.
 
-**What does NOT scale yet, measured, not guessed**: `dead` (reachability
-/ dead-code detection) took **23.5 minutes** on this same codebase —
-1,657 unreachable/unexported symbols found out of 175,824 (0.94%, a
-plausible ratio, not a red flag on correctness), but the wall-clock time
-is a real gap next to `build`'s and `deps`' seconds-to-low-minutes.
-Root-cause hypothesis, not yet verified by profiling: `uses_by_context`
-and `by_name` are keyed by bare symbol *name*, not by symbol id — in a
-codebase this size, hundreds of unrelated methods can share a common
-name (`get`, `dispose`, `handle`, ...), and the BFS in
-`compute_dead_symbols` re-walks the same name's use-edges once per
-symbol that shares it, not once per distinct name. That's a real,
-scoped, fixable algorithmic problem (memoize per-name work instead of
-per-symbol-id), not a fundamental architecture flaw — flagged here for
-the next phase rather than hot-fixed under time pressure against a
-result already captured.
+**Update — fixed and re-measured, same repo, same command.** `dead` took
+23.5 minutes on first measurement. Reading `compute_dead_symbols` found
+two real bugs, not one hypothesis:
+
+1. **The dominant cost**: an "imported by name is reachable" check ran
+   *inside* the BFS, gated on the matching symbol already being
+   reachable — which meant it could never actually be the reason
+   anything became reachable (a symbol has to already be reachable
+   before that branch runs at all), while still scanning every import in
+   the codebase (127,972 of them) on every single reachable symbol
+   popped from the queue (174,167 of them) — worst case, ~22 *billion*
+   comparisons. Fixed by moving it to the initial root-seeding step,
+   where the underlying intent ("importing is its own use") is both
+   correctly implemented for the first time *and* free — O(imports)
+   once, not O(imports × reachable symbols).
+2. The originally-hypothesized one: `uses_by_context` is keyed by bare
+   symbol name, and the BFS re-walked the same name's use-edges once per
+   *symbol id* sharing that name, not once per distinct name. Fixed with
+   a `processed_names` memo set.
+
+**Both fixes are behavior-preserving** — all 18 existing reachability
+tests still pass unchanged, plus a new regression test proving bug #1
+was a real correctness gap, not just slow: a symbol reachable *only*
+through being imported (never called anywhere) now correctly reads as
+not-dead, which the old code could never actually achieve despite
+believing it did.
+
+**Re-measured on a fresh clone of the same repo**: real CPU work dropped
+from 1015.75s to **13.32s** — a 76x reduction, the true signal that the
+algorithmic fix worked. Wall-clock time dropped from 23.5 minutes to 6.7
+minutes, a smaller improvement than the CPU number, because this
+specific run measured at 7% CPU utilization — almost the entire
+wall-clock time was spent waiting, not computing, which lines up with
+this dev machine's disk being 97% full at the time (a known cause of
+degraded macOS I/O). Reporting both numbers rather than just the
+flattering one: the fix demonstrably removed the computational
+bottleneck; whether wall-clock time improves further on hardware with
+normal free disk space is a real open question this measurement can't
+answer on its own, and shouldn't be papered over.
 
 Every generated file (the clone, the 500MB+ structure-graph db) was
 deleted after this test — this section is the only trace of it, by
@@ -967,7 +991,10 @@ what was actually true, not to keep a giant external repo checked in.
   verified against the real installed SDKs, but never actually called
   against a live account (no credentials in this environment). Test both
   for real the moment credentials exist.
-- **Dead-code detection performance at real scale** — see "External
-  stress test" below: `compute_dead_symbols` took 23.5 minutes on a
-  175k-symbol codebase, while `build`/`deps` handled the same codebase
-  in seconds. A real, found-not-guessed algorithmic gap, not yet fixed.
+- **Confirming dead-code detection's wall-clock time on a machine with
+  normal free disk space** — see "External stress test" below: the
+  algorithmic fix cut real CPU work 76x (1015.75s → 13.32s), but the
+  re-measurement ran on a dev machine at 97% disk capacity, at 7% CPU
+  utilization — wall-clock (23.5min → 6.7min) is a real improvement but
+  likely still I/O-bound by environment, not algorithm. Re-run on a
+  machine with headroom before calling wall-clock time solved.
