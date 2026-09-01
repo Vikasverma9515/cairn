@@ -1,5 +1,5 @@
 {
-  "framework": "nextjs",
-  "buildCommand": "npm run build --workspaces --if-present",
-  "outputDirectory": "examples/demo-app/.next"
+  "buildCommand": "true",
+  "installCommand": "true",
+  "outputDirectory": "site"
 }

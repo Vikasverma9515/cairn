@@ -3,7 +3,8 @@
 
   <h1>Cairn</h1>
 
-  <p><strong>Your app explains itself — out loud, in real time, generated straight from your code.</strong></p>
+  <p><strong>Don't learn the software. Just tell it what you want.</strong></p>
+  <p>Vibe coding is describing the app you want built. Cairn is <strong>vibe using</strong> — describing what you want <em>done</em>, in software you've never opened before.</p>
 
   <p>
     <a href="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml"><img src="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
@@ -11,63 +12,70 @@
     <a href="./ROADMAP.md"><img src="https://img.shields.io/badge/framework%20support-Next.js%20today%2C%20any%20framework%20on%20the%20roadmap-6366f1.svg" alt="Framework support"></a>
     <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-6366f1.svg" alt="PRs welcome"></a>
   </p>
+
+  <img src="docs/images/landing-page.png" width="720" alt="Cairn landing page — 'Don't learn the software, just tell it what you want,' with a live example of an agent building an n8n-style flow from a spoken request" />
 </div>
 
-## What this is
+> **New here and confused about what's in this repo?** Read
+> [DEVELOPMENT.md](./DEVELOPMENT.md) first — it explains the two separate
+> things this repo contains and which one this README is about (short
+> version: this one, the product).
 
-Point Cairn at your app and it reads your own source — every route, every
-button, every handler — the same way a new hire would. An LLM turns that
-into plain-English descriptions of what each part of your UI *does*, not
-just what it's called. That output ships as a small JSON file in your
-build. At runtime, a drop-in widget uses it to answer real questions from
-real users — "where do I archive an invoice?", "what does this page do?"
-— by highlighting the actual element, walking them through a multi-step
-tour, or (if you let it) just doing the action itself. Ask it out loud and
-it answers out loud, with low-latency streaming speech you can talk over
-mid-sentence.
+## What this is, in plain English
 
-The part that makes this safe to ship, not just a cute demo: the model
-never gets to run arbitrary code or pick a CSS selector. Every response is
-constrained to one of five verbs — `explain`, `highlight`, `open`,
-`navigate`, `do` — validated server-side against a fixed schema regardless
-of what the client sends. A lookup miss degrades to a plain explanation.
-It never guesses and clicks the wrong thing.
+Normally, using new software means *learning* it — where the buttons are,
+what they're called, which order to click them in. Cairn flips that
+around: you describe what you want, out loud or typed, and an agent does
+it — using the app's real buttons and real actions, the same way you
+would with a mouse. Say "build me a flow that emails me on a new lead,"
+and it happens in front of you, in a tool you've never opened before.
+
+It's not a chatbot bolted onto the side that tells you what to click. It
+clicks.
+
+- **For your customers** — they don't learn your product, they describe
+  what they want and watch it happen.
+- **For you, the builder** — every user gets a product expert without you
+  writing an onboarding flow. Point Cairn at your source once.
+- **For your peace of mind** — the agent can only take actions you've
+  explicitly registered, checked server-side against a fixed schema. It
+  can never invent a click or run arbitrary code.
 
 <div align="center">
   <img src="docs/images/demo.gif" width="720" alt="Cairn widget answering a question, then walking through a two-step tour with a live highlighted button" />
-  <p><sub>A real, unscripted capture against the example app: ask a question → get a live tour, one highlighted element at a time.</sub></p>
+  <p><sub>A real, unscripted capture against the example app.</sub></p>
 </div>
 
 Status: working end-to-end today, including live LLM calls (Anthropic or
 Groq) and live voice (Deepgram STT/TTS). **Next.js is the only framework
-Cairn's analyzer understands today** — the runtime (voice, verb execution,
-element finding) is already framework-agnostic under the hood, and
+Cairn's analyzer reads source for today** — the runtime (voice, action
+execution, element finding) is already framework-agnostic, and
 `cairn build <url>` can point at *any* framework's running app via a
 headless-browser crawl instead of reading source. See
-[ROADMAP.md](./ROADMAP.md) for what's left, [LATER.md](./LATER.md) for
-smaller gaps within the current scope, and
-[BUILD_PLAN.md](./BUILD_PLAN.md) for the original design.
+[ROADMAP.md](./ROADMAP.md) for what's left and
+[DEVELOPMENT.md](./DEVELOPMENT.md) for the full build history, phase by
+phase.
 
-Not published to npm yet — install via a `file:` path pointing at this repo
-(see Quick start) until that changes.
+Not published to npm yet — install via a `file:` path pointing at this
+repo (see Quick start) until that changes.
 
 ## How it works
 
 ```
-repo ──► L1 AST scan ──► L2 reachability ──► L3 describe (LLM) ──► ui-manifest.json
-         (ts-morph)       (graph walk)        Anthropic or Groq
-         deterministic     deterministic       judgment, cached
+your app ──► read source ──► map what's real ──► register actions ──► live agent
+             (AST scan)       (reachability)      (your own auth)     explain / highlight
+                                                                       open / navigate / do
 ```
 
-`ui-manifest.json` ships as a static asset in your build. At runtime, a
-`<Copilot/>` widget reads the user's question + current route + visible
-`data-ai` elements, sends them to your own `/api/copilot` route, and gets back
-exactly one verb from a fixed enum (`explain` / `highlight` / `open` /
-`navigate` / `do`) — never a selector, never code. A lookup failure always
-degrades to a plain explanation; it never guesses and clicks the wrong thing.
-Every LLM response is independently re-validated server-side against that
-same fixed schema, so a prompt-injection attempt in the user's question can't
-produce an unregistered action — see `packages/sdk/src/server.test.ts`.
+At runtime, `<Copilot/>` reads the user's question + current route +
+visible elements, sends them to your own `/api/copilot` route, and gets
+back exactly one verb from a fixed enum — `explain`, `highlight`, `open`,
+`navigate`, or `do` — never a raw selector, never arbitrary code. Every
+response is independently re-validated server-side against that same
+schema, so a prompt-injection attempt in the user's question can't
+produce an unregistered action (see `packages/sdk/src/server.test.ts`). A
+lookup miss always degrades to a plain explanation — it never guesses and
+clicks the wrong thing.
 
 ## Quick start
 
@@ -84,24 +92,10 @@ npm run dev -w demo-app                         # or: cd examples/demo-app && np
 # (npm run dev also auto-builds the manifest via predev if it's missing)
 ```
 
-The second `npm install` isn't a typo: npm only links a workspace package's
-`bin` entry (here, `cairn` and `cairn-realtime`) into `node_modules/.bin`
-if that package's `dist/` already exists *when `npm install` runs* — and
-on a fresh clone it doesn't yet. Running it again after the build picks
-the bins up. (CI and any script that calls the CLI internally instead
-invoke `packages/indexer/dist/cli.js` directly, sidestepping this
-entirely — see `scripts/check-determinism.sh`.)
-
-`@cairn/core` and `@cairn/sdk` ship raw TypeScript (bundlers like Next.js
-transpile them fine via `transpilePackages`), but the `cairn` CLI runs
-standalone via plain `node`, outside any bundler — it needs the one-time
-compile above. This is also what makes it installable into a real, separate
-project: point a consumer's `package.json` at
-`"@cairn/indexer": "file:../cairn/packages/indexer"` (etc.) the way
-`~/Desktop/cairn-dashboard` does in this session's testing — an actual
-second Next.js app, outside this repo, installed as a real dependency
-rather than another workspace example, used to prove Cairn works as an
-installed product and not just inside its own monorepo.
+The second `npm install` isn't a typo: npm only links a workspace
+package's `bin` entry into `node_modules/.bin` if that package's `dist/`
+already exists *when `npm install` runs* — and on a fresh clone it
+doesn't yet.
 
 ```jsx
 // app/layout.tsx
@@ -131,187 +125,109 @@ export async function POST(request: Request) {
 }
 ```
 
-Mark anything you want addressed by a stable id, regardless of copy changes:
+Mark anything you want addressed by a stable id, regardless of copy
+changes: `<button data-ai="create-invoice">New Invoice</button>`.
+`<Link>` and any `*Button`-named component with an `onClick` are picked up
+automatically too — `data-ai` is for precision, not a requirement.
 
-```jsx
-<button data-ai="create-invoice">New Invoice</button>
-```
+## Beyond React
 
-`<Link>` and any `*Button`-named component with an `onClick` are also picked
-up automatically (heuristic — see LATER.md), so `data-ai` is for precision,
-not a requirement.
-
-## Installing the widget outside React
-
-`<Copilot/>` (above) is the React entry point. Everything else — Vue,
-Angular, Svelte, a plain static HTML page, anything that produces a DOM —
-uses the same widget as a Web Component instead, via
-`packages/sdk/dist/cairn-widget.js` (built by `npm run build -w @cairn/sdk`,
-self-contained, no dependencies to install):
+`<Copilot/>` is the React entry point. Everything else — Vue, Angular,
+Svelte, a plain static HTML page — uses the same widget as a Web
+Component instead, self-contained, no dependencies:
 
 ```html
 <script src="/cairn-widget.js"></script>
-<cairn-widget
-  endpoint="/api/copilot"
-  speak-endpoint="/api/copilot/speak"
-  transcribe-endpoint="/api/copilot/transcribe"
-  realtime-url="ws://localhost:3010"
-  persona="Cairn"
-  registered-actions="archiveInvoice"
-></cairn-widget>
-
-<script>
-  document.querySelector("cairn-widget").addEventListener("cairn-do", (e) => {
-    const { action, target } = e.detail; // same as <Copilot/>'s onDo prop
-  });
-</script>
+<cairn-widget endpoint="/api/copilot" persona="Cairn"></cairn-widget>
 ```
 
-Full parity with `<Copilot/>` — typed Q&A, tours, push-to-talk mic, and
-live realtime voice conversation (streaming TTS, barge-in, mute controls)
-all work the same way via this one tag. The backend side
-(`createCopilotHandler`/`createRealtimeServer` from `@cairn/sdk/server`) is
-plain Node — nothing above requires Next.js on the server either, an
-Express/Fastify route works the same way the Next.js route above does.
+Full parity with `<Copilot/>` — typed Q&A, tours, mic, live voice
+conversation. The backend (`createCopilotHandler`/`createRealtimeServer`)
+is plain Node — no Next.js required server-side either.
 
-Live-verified working end-to-end from a genuinely static HTML file with
-zero React and zero build step:
-`examples/demo-app/public/cairn-widget-test.html` — including the
-realtime path, verified against the real relay with a synthetic mic
-stream (this sandbox has no real microphone; see ROADMAP.md Phase 1 for
-exactly what was and wasn't exercised that way).
-
-## Analyzing a non-Next.js app (`cairn build` in crawl mode)
-
-`cairn build <dir>` reads Next.js source directly. For anything else, point
-it at a **running** app instead of a source directory — it crawls the
-rendered pages with a headless browser (needs Chromium once:
-`npx playwright install chromium`):
+For an app whose source Cairn can't read (not Next.js, or not this repo
+at all), point the CLI at a **running** app instead:
 
 ```bash
 cairn build http://localhost:3000 --provider groq --out .
 ```
 
-Auto-detected from the `http(s)://` — no `--mode` flag needed. Crawls
-same-origin links up to a few hops deep, reads the interactive elements
-actually rendered on each page (any framework's output is just DOM by the
-time it reaches the browser), and produces the exact same
-`ui-manifest.json` shape the source-reading path does. Trade-off: no
-handler/API-call evidence (nothing to read source for), so "does"
-descriptions are inferred from visible text and page context alone — less
-precise than the Next.js path, but works on anything with a UI.
-
-Live-verified against a genuinely framework-free static HTML site (two
-plain `.html` files, no build tool involved at all) — crawled it, got a
-real manifest, asked "how do I get support?" through the normal
-`createCopilotHandler` flow, got back a correct `highlight` verb pointing
-at the right button.
-
-For an app that requires being logged in, add `--storage-state <file>`
-with a Playwright storage-state JSON from a real session (e.g.
-`npx playwright open <url> --save-storage=state.json`, log in once in the
-window it opens). This tool never automates a login form itself — bring
-an already-authenticated session instead.
-
-Not handled: routes reachable only via client-side `router.push()`-style
-navigation with no real `<a href>` link — see ROADMAP.md's Phase 2 section
-for why that's a deliberate limitation, not just an unaddressed one.
+It crawls same-origin pages with a headless browser and reads the
+interactive elements actually rendered — works on any framework's output,
+at the cost of less precise "does" descriptions (no source to read for
+handler logic). See [ROADMAP.md](./ROADMAP.md) for what crawl mode
+doesn't handle yet (client-side-only routing with no real `<a href>`).
 
 ## Voice & conversation
-
-Beyond typed questions, `<Copilot/>` can hold a real spoken conversation —
-run `cairn-realtime` (from `@cairn/sdk`, its own long-lived process
-alongside `next dev`) and pass `realtimeUrl` to the widget:
 
 ```jsx
 <Copilot
   registeredActions={["archiveInvoice"]}
   onDo={handleDo}
-  speakEndpoint="/api/copilot/speak"        // typed/mic answers spoken aloud (Deepgram TTS)
-  transcribeEndpoint="/api/copilot/transcribe" // push-to-talk mic button (Deepgram STT)
-  realtimeUrl="ws://localhost:3010"         // full live voice conversation
-  persona="Cairn"                            // display name, woven into the system prompt
+  speakEndpoint="/api/copilot/speak"           // typed/mic answers spoken aloud
+  transcribeEndpoint="/api/copilot/transcribe" // push-to-talk mic button
+  realtimeUrl="ws://localhost:3010"            // full live voice conversation
+  persona="Cairn"
 />
 ```
 
 ```bash
-# .env: DEEPGRAM_API_KEY, CAIRN_REGISTERED_ACTIONS, CAIRN_CAPABILITY, CAIRN_PERSONA
-npx cairn-realtime --port 3010
+npx cairn-realtime --port 3010   # its own long-lived process alongside `next dev`
 ```
 
-What that gets you:
-- **Streaming speech, not a wait-then-play clip.** TTS is a persistent
-  Deepgram WebSocket, not a buffered REST call — audio starts within
-  ~1-1.5s instead of 5-10s (`packages/sdk/src/tts-stream.ts`).
-- **Barge-in.** Talk over the agent and it stops immediately — a local mic
-  energy check triggers it client-side, the server drops any audio already
-  in flight for the interrupted turn.
-- **Tours.** A question whose answer spans several elements (or several
-  pages) comes back as an ordered walkthrough — highlight, narrate, move
-  on — instead of one paragraph naming five buttons at once.
-- **Conversation memory.** "Highlight that instead" resolves against the
-  last few turns, not just the current question.
-- **Capability tiers.** `capability: "explain" | "guide" | "act"` (default
-  `"act"`) caps what the agent is *allowed* to do independent of which
-  actions are registered — `"explain"` can only talk and point,
-  `"guide"` adds moving around the app, `"act"` adds real actions.
+- **Streaming, not buffered** — audio starts in ~1–1.5s over a persistent
+  WebSocket, not a 5–10s wait for a full clip.
+- **Barge-in** — talk over the agent and it stops immediately.
+- **Tours** — an answer spanning several elements comes back as an
+  ordered walkthrough, not one paragraph naming five buttons.
+- **Memory** — "highlight that instead" resolves against the last few
+  turns.
+- **Capability tiers** — `explain` / `guide` / `act` (default `act`) caps
+  what the agent is *allowed* to do, independent of which actions are
+  registered.
 
-Every spoken/displayed `text` is held to one rule regardless of path: no
-markdown, never say an internal element id out loud — see
-`buildSystemPrompt` in `packages/sdk/src/server.ts`.
+Every spoken/displayed line follows one rule regardless of path: no
+markdown, never say an internal element id out loud.
 
 ## CLI
 
-```bash
-cairn init <dir>                          # scaffolds the backend + .env.example — detects your framework
-cairn scan <dir>                          # L1 only, deterministic, no LLM call
-cairn build <dir> [--provider anthropic|groq]           # Next.js source scan
-cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   # any framework — crawls a running app
-cairn diff <old-manifest.json> <new-manifest.json>   # what changed between two builds
-cairn docs <dir>                          # reads <dir>/ui-manifest.json, writes CAIRN_DOCS.md
-```
-
-`cairn init` only ever writes files that don't already exist — it never
-touches something you already have (e.g. an existing layout). Next.js
-projects get a real `app/api/copilot/route.ts` (or `pages/api/copilot.ts`
-for Pages Router) wired up to `createCopilotHandler`; anything else gets a
-standalone Express server (`cairn-server.cjs`) exercising the exact same
-handler — `createCopilotHandler` is plain Node either way, Express is just
-the simplest thing to scaffold, not a requirement. Both paths print the
-remaining manual steps (env vars, where to mount the widget) rather than
-guessing at files it shouldn't touch on its own.
-
-## Data & persistence
-
-| Data | Where it lives |
+| Command | What it does |
 |---|---|
-| `ui-manifest.json` | A file on disk, checked into your build (not a database) — it's a build artifact, versioned by commit, meant to be diffable (`cairn diff`) and shippable as a static asset. The demo app's `/api/copilot` route re-reads it on every request, so a `cairn build` while the dev server is running takes effect on the next question — no restart needed. |
-| Failure-dashboard misses | `@cairn/sdk/dashboard`'s in-memory `createMissesStore()` is the default (fine for a single instance, gone on restart) — but for anything that needs to survive restarts/redeploys, use `createSqliteMissesStore` from `@cairn/sdk/dashboard-sqlite`, which implements the exact same `MissesStore` interface against a real SQLite file. The demo app uses the SQLite version. |
-| The demo app's own data (invoices) | SQLite, `examples/demo-app/data/cairn-demo.db` (gitignored, created on first run) — a real example of how you'd persist your own app's data alongside Cairn, not a toy in-memory array. |
+| `cairn init <dir>` | Scaffolds the backend + `.env.example` — detects your framework, never overwrites existing files. |
+| `cairn scan <dir>` | L1 only, deterministic, no LLM call. |
+| `cairn build <dir>` | Full pipeline against Next.js source. |
+| `cairn build <url>` | Crawl mode — any framework, from a running app. |
+| `cairn diff <a> <b>` | What changed between two manifests. |
+| `cairn docs <dir>` | Reads a manifest, writes a human-readable `CAIRN_DOCS.md`. |
 
 ## Repo layout
 
 ```
 packages/
-  core/      @cairn/core    — manifest + verb schemas (zod), shared by indexer and sdk
-  indexer/   @cairn/indexer — the `cairn` CLI: L1 scan, L2 reachability, L3 describe, diff, docs
-  sdk/       @cairn/sdk     — <Copilot/> (React) and <cairn-widget> (Web Component, any
-                               framework — src/web-component.ts), verb executor, element
-                               ladder, server handler, realtime voice relay, failure
-                               dashboard (./dashboard), voice transcription (./transcribe-server)
-examples/demo-app/          — Next.js app exercising all of the above, including a real
-                               archive-invoice write action and a live failure dashboard
-fixtures/                   — small fixture project the indexer's unit tests scan
+  core/      @cairn/core    — manifest + verb schemas (zod)
+  indexer/   @cairn/indexer — the `cairn` CLI: scan, reachability, describe, diff, docs
+  sdk/       @cairn/sdk     — <Copilot/> (React) and <cairn-widget> (any framework),
+                               verb executor, server handler, realtime voice, dashboard
+examples/demo-app/          — a real Next.js app exercising all of the above
+services/graph/              — a separate Python service — see DEVELOPMENT.md before assuming
+                               this is part of the same product
+fixtures/                    — small fixture project the indexer's unit tests scan
 ```
 
 ## Testing
 
 ```bash
-npm test          # vitest across all packages — L1/L2/L3 (mocked + real-provider-shaped fakes),
-                   # core schemas, verb executor, server handler (Anthropic + Groq), dashboard, diff, docs
+npm test              # vitest across all packages
 npm run typecheck
-npm run determinism   # `cairn scan` twice, diff must be empty — no API key required
+npm run determinism    # `cairn scan` twice, diff must be empty — no API key required
 ```
+
+## Learn more
+
+- [DEVELOPMENT.md](./DEVELOPMENT.md) — what's been built, phase by phase, and the two
+  separate tracks in this repo
+- [ROADMAP.md](./ROADMAP.md) — what's left, in detail
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — how to send a PR
 
 ## License
 

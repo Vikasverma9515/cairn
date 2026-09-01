@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cairn — talk to your software instead of clicking around</title>
+<meta name="description" content="Cairn is an AI agent that lives inside your product and actually uses it for your customer — clicking, filling forms, running the flow — while they just say what they want. Point it at your app once; every customer gets an agent that already knows your product." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='30' fill='%236366f1'/%3E%3Crect x='45' y='80' width='38' height='16.5' rx='4' fill='%23fff'/%3E%3Crect x='29' y='54.5' width='70' height='16.5' rx='4' fill='%23fff' fill-opacity='.82'/%3E%3Crect x='52.5' y='29' width='23' height='16.5' rx='4' fill='%23fff' fill-opacity='.6'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0a0a0e;
+    --bg-raised: #111219;
+    --bg-raised-2: #16171f;
+    --border: rgba(255,255,255,0.09);
+    --border-soft: rgba(255,255,255,0.06);
+    --ink: #edeef2;
+    --ink-soft: #a7a9b6;
+    --ink-faint: #6c6e7d;
+    --accent: #7075f5;
+    --accent-2: #9ba1ff;
+    --accent-dim: #4f5bd5;
+    --good: #6fcf97;
+    --warn: #e0a458;
+    --radius: 14px;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    --display: "Fraunces", Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(1100px 560px at 18% -10%, rgba(112,117,245,0.16), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(79,91,213,0.10), transparent 55%);
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+  code, pre, .mono { font-family: var(--mono); }
+
+  /* ---------- nav ---------- */
+  nav {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: blur(10px);
+    background: rgba(10,10,14,0.72);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .brand svg { display: block; }
+  .brand span { font-family: var(--display); font-weight: 600; font-size: 1.25rem; letter-spacing: 0.01em; }
+  .navlinks { display: flex; align-items: center; gap: 28px; font-size: 0.92rem; }
+  .navlinks a { text-decoration: none; color: var(--ink-soft); transition: color .15s; }
+  .navlinks a:hover { color: var(--ink); }
+  .navlinks .gh {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--ink); border: 1px solid var(--border); padding: 7px 14px;
+    border-radius: 999px; font-size: 0.85rem;
+  }
+  .navlinks .gh:hover { border-color: var(--accent); }
+
+  /* ---------- hero ---------- */
+  header.hero { padding: 88px 0 0; position: relative; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center; padding-bottom: 72px; }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 48px; } }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.06em;
+    color: var(--accent-2); text-transform: uppercase;
+    border: 1px solid rgba(112,117,245,0.35); background: rgba(112,117,245,0.08);
+    padding: 6px 12px; border-radius: 999px; margin-bottom: 28px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px rgba(111,207,151,0.18); }
+  h1.hero-title {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(2.3rem, 3.6vw, 3.15rem);
+    line-height: 1.22;
+    letter-spacing: -0.01em;
+    margin: 0 0 24px;
+    text-wrap: balance;
+  }
+  h1.hero-title em {
+    font-style: italic;
+    background: linear-gradient(100deg, var(--accent-2), var(--accent-dim));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    padding-bottom: 0.08em;
+    display: inline-block;
+  }
+  .hero-sub {
+    font-size: 1.08rem; color: var(--ink-soft); max-width: 46ch; margin: 0 0 36px;
+  }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 0; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 13px 22px; border-radius: 10px; font-size: 0.95rem; font-weight: 500;
+    text-decoration: none; border: 1px solid transparent; transition: transform .15s, border-color .15s, background .15s;
+  }
+  .btn-primary { background: linear-gradient(100deg, var(--accent-2), var(--accent-dim)); color: #0a0a12; font-weight: 600; }
+  .btn-primary:hover { transform: translateY(-1px); }
+  .btn-ghost { border-color: var(--border); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--accent); }
+
+  .term {
+    background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius);
+    max-width: 620px; overflow: hidden; box-shadow: 0 30px 80px -30px rgba(0,0,0,0.6);
+  }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 11px 16px; border-bottom: 1px solid var(--border-soft); }
+  .term-bar i { width: 10px; height: 10px; border-radius: 50%; background: #3a3b45; }
+  .term-bar span { margin-left: 8px; font-family: var(--mono); font-size: 0.76rem; color: var(--ink-faint); }
+  .term pre { margin: 0; padding: 20px 22px; font-size: 0.87rem; line-height: 1.8; overflow-x: auto; }
+  .term .c1 { color: var(--ink-faint); } /* comment */
+  .term .c2 { color: var(--accent-2); }  /* command */
+  .term .c3 { color: var(--good); }      /* success/path */
+
+  /* ---------- hero product visual: agent session transcript ---------- */
+  .visual { position: relative; }
+  .term .agent-log {
+    margin: 0; padding: 20px 22px 6px; font-size: 0.82rem; line-height: 1.9; overflow-x: auto;
+    white-space: pre-wrap;
+  }
+  .agent-log .who { color: var(--ink-faint); }
+  .agent-log .q2 { color: var(--ink); }
+  .agent-log .arrow { color: var(--accent-2); }
+  .agent-log .tool { color: var(--accent-2); }
+  .agent-log .arg { color: var(--good); }
+  .agent-log .out { color: var(--ink-faint); }
+  .agent-log .spec { color: var(--warn); font-weight: 600; }
+  .gate-row {
+    display: flex; align-items: center; gap: 9px; margin: 6px 22px 18px; padding: 10px 14px;
+    border-radius: 9px; background: rgba(224,164,88,0.08); border: 1px solid rgba(224,164,88,0.28);
+    font-family: var(--mono); font-size: 0.76rem; color: #f0c896;
+  }
+
+  /* ---------- proof strip ---------- */
+  .proof-strip {
+    display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border-soft);
+  }
+  .proof-item { padding: 22px 4px 22px 0; border-right: 1px solid var(--border-soft); }
+  .proof-item:last-child { border-right: none; }
+  .proof-item .val { font-family: var(--display); font-weight: 600; font-size: 1.3rem; color: var(--ink); }
+  .proof-item .lbl { font-size: 0.78rem; color: var(--ink-faint); margin-top: 2px; }
+  @media (max-width: 720px) {
+    .proof-strip { grid-template-columns: repeat(2, 1fr); }
+    .proof-item:nth-child(2) { border-right: none; }
+  }
+
+  /* ---------- section shell ---------- */
+  section { padding: 88px 0; border-top: 1px solid var(--border-soft); }
+  .kicker {
+    font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent-2); margin: 0 0 14px;
+  }
+  h2 {
+    font-family: var(--display); font-weight: 600; font-size: clamp(1.7rem, 3vw, 2.3rem);
+    margin: 0 0 18px; letter-spacing: -0.01em; text-wrap: balance;
+  }
+  .lede { color: var(--ink-soft); max-width: 66ch; font-size: 1.03rem; margin: 0 0 48px; }
+
+  /* ---------- pipeline ---------- */
+  .pipeline {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; align-items: stretch;
+    border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg-raised);
+  }
+  .pipe-step { padding: 26px 20px; position: relative; border-right: 1px solid var(--border-soft); }
+  .pipe-step:last-child { border-right: none; }
+  .pipe-step .n { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-faint); margin-bottom: 10px; }
+  .pipe-step h3 { font-size: 0.98rem; margin: 0 0 8px; font-weight: 600; }
+  .pipe-step p { font-size: 0.85rem; color: var(--ink-soft); margin: 0; }
+  .pipe-step::after {
+    content: "→"; position: absolute; right: -12px; top: 50%; transform: translateY(-50%);
+    color: var(--accent); font-size: 1.1rem; z-index: 2; display: none;
+  }
+  @media (min-width: 720px) { .pipe-step:not(:last-child)::after { display: block; } }
+  .pipe-out {
+    margin-top: 18px; font-family: var(--mono); font-size: 0.83rem; color: var(--ink-soft);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .pipe-out .arrow { color: var(--accent-2); }
+
+  /* ---------- verbs ---------- */
+  .verb-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 28px 0 0; }
+  .verb {
+    font-family: var(--mono); font-size: 0.85rem; padding: 9px 15px; border-radius: 8px;
+    background: var(--bg-raised); border: 1px solid var(--border); color: var(--accent-2);
+  }
+
+  /* ---------- feature grid ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1px; background: var(--border-soft); border: 1px solid var(--border-soft); border-radius: var(--radius); overflow: hidden; }
+  .card { background: var(--bg-raised); padding: 30px 26px; }
+  .card .ico {
+    width: 38px; height: 38px; border-radius: 9px; display: flex; align-items: center; justify-content: center;
+    background: rgba(112,117,245,0.12); border: 1px solid rgba(112,117,245,0.25); margin-bottom: 18px;
+    color: var(--accent-2); font-size: 1.05rem;
+  }
+  .card h3 { font-size: 1.02rem; margin: 0 0 10px; font-weight: 600; }
+  .card p { font-size: 0.9rem; color: var(--ink-soft); margin: 0; }
+
+  /* ---------- install ---------- */
+  .install-note {
+    display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border-radius: 10px;
+    background: rgba(224,164,88,0.08); border: 1px solid rgba(224,164,88,0.28); font-size: 0.88rem; color: #f0c896;
+    margin-bottom: 32px;
+  }
+  .copybox { position: relative; }
+  .copybox .term { max-width: none; }
+  .copy-btn {
+    position: absolute; top: 11px; right: 14px; font-family: var(--mono); font-size: 0.72rem;
+    color: var(--ink-faint); background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; cursor: pointer; transition: color .15s, border-color .15s;
+  }
+  .copy-btn:hover { color: var(--ink); border-color: var(--accent); }
+
+  /* ---------- cli table ---------- */
+  table.cli { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table.cli th { text-align: left; font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); padding: 0 0 14px; font-weight: 500; }
+  table.cli td { padding: 14px 0; border-top: 1px solid var(--border-soft); vertical-align: top; }
+  table.cli code { color: var(--accent-2); font-size: 0.85rem; white-space: nowrap; }
+  table.cli .desc { color: var(--ink-soft); padding-left: 24px; }
+
+  /* ---------- footer ---------- */
+  footer { padding: 56px 0 64px; border-top: 1px solid var(--border-soft); }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 24px; align-items: center; }
+  footer .flinks { display: flex; gap: 24px; flex-wrap: wrap; font-size: 0.88rem; }
+  footer .flinks a { color: var(--ink-soft); text-decoration: none; }
+  footer .flinks a:hover { color: var(--ink); }
+  footer .fbrand { display: flex; align-items: center; gap: 9px; color: var(--ink-faint); font-size: 0.85rem; }
+
+  @media (max-width: 720px) {
+    .pipeline { grid-template-columns: 1fr; }
+    .pipe-step { border-right: none; border-bottom: 1px solid var(--border-soft); }
+    header.hero { padding: 72px 0 56px; }
+    section { padding: 60px 0; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg width="28" height="28" viewBox="0 0 128 128" fill="none">
+        <rect width="128" height="128" rx="30" fill="#6366f1"/>
+        <rect x="45" y="80" width="38" height="16.5" rx="4" fill="#fff"/>
+        <rect x="29" y="54.5" width="70" height="16.5" rx="4" fill="#fff" fill-opacity="0.82"/>
+        <rect x="52.5" y="29" width="23" height="16.5" rx="4" fill="#fff" fill-opacity="0.6"/>
+      </svg>
+      <span>cairn</span>
+    </a>
+    <div class="navlinks">
+      <a href="#plain">What it does</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a class="gh" href="https://github.com/Vikasverma9515/cairn" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <span class="eyebrow"><span class="dot"></span> Vibe using — not vibe coding</span>
+        <h1 class="hero-title">Don't learn the software. <em>Just tell it what you want.</em></h1>
+        <p class="hero-sub">
+          Cairn is an AI agent that lives inside your product and actually uses it for your
+          customer — clicking the real buttons, filling the real forms, running the real flow
+          — while they just say what they want, out loud or typed. Point it at your app once;
+          every customer gets an agent that already knows your product.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#install">Get started →</a>
+          <a class="btn btn-ghost" href="https://github.com/Vikasverma9515/cairn" target="_blank" rel="noopener">View source on GitHub</a>
+        </div>
+      </div>
+
+      <div class="visual">
+        <div class="term" style="max-width:none;">
+          <div class="term-bar"><i></i><i></i><i></i><span>customer talking to the agent</span></div>
+          <pre class="agent-log"><span class="who">you</span> <span class="q2">"set up a flow that emails me when a new lead comes in"</span>
+<span class="arrow">→</span> <span class="tool">do</span>: <span class="arg">add_trigger</span>("New Lead")
+<span class="arrow">→</span> <span class="tool">do</span>: <span class="arg">add_action</span>("Send Email")
+<span class="arrow">→</span> <span class="tool">do</span>: <span class="arg">connect</span>(trigger → action)
+<span class="out">   ✓ flow created, using the app's own actions</span>
+
+<span class="who">agent</span> <span class="q2">"Want me to turn it on?"</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="proof-strip">
+      <div class="proof-item"><div class="val">5</div><div class="lbl">fixed verbs — never a raw click it invented</div></div>
+      <div class="proof-item"><div class="val">~1.5s</div><div class="lbl">to first spoken reply, streamed</div></div>
+      <div class="proof-item"><div class="val">2</div><div class="lbl">LLM providers — Anthropic or Groq</div></div>
+      <div class="proof-item"><div class="val">0</div><div class="lbl">dependencies for the web component</div></div>
+    </div>
+  </div>
+</header>
+
+<section id="plain">
+  <div class="wrap">
+    <p class="kicker">In plain English</p>
+    <h2 style="max-width: 26ch;">What Cairn actually does</h2>
+    <p class="lede" style="margin-bottom: 20px;">
+      Normally, using new software means <em style="font-style:italic; color:var(--ink);">learning</em>
+      it — where the buttons are, what they're called, which order to click them in. Cairn
+      flips that around. You describe what you want, out loud or typed, and the agent does
+      it — using the app's real buttons and real actions, the same way you would with a
+      mouse. Say "build me a flow that emails me on a new lead," and it happens in front of
+      you, in a tool you've never opened before.
+    </p>
+    <p class="lede">
+      Vibe coding is describing the app you want built. This is <strong style="color:var(--ink); font-weight:600;">vibe using</strong> —
+      describing what you want done. It's not a chatbot bolted onto the side that tells you
+      what to click. It clicks.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></svg></div>
+        <h3>For your customers</h3>
+        <p>They don't learn your product. They say what they want and watch it happen in real time — talked or typed, no manual, no support ticket.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg></div>
+        <h3>For you, the builder</h3>
+        <p>Every user gets a product expert without you writing an onboarding flow — Cairn reads your source once and already knows what your app can do.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+        <h3>For your peace of mind</h3>
+        <p>The agent can only take actions you've explicitly registered, checked server-side against a fixed list — it can never invent a click or run arbitrary code.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <p class="kicker">How it works</p>
+    <h2>Cairn reads your app once, then acts inside it, live.</h2>
+    <p class="lede">
+      Everything except the description-writing step is plain static analysis — same input,
+      same output, every time. The agent doesn't improvise a UI it's never seen; it works from
+      a real map of your app's actual buttons, forms, and actions.
+    </p>
+    <div class="pipeline">
+      <div class="pipe-step">
+        <div class="n">01 · deterministic</div>
+        <h3>Read the source</h3>
+        <p>Every route, component, and handler — the same way a new hire would learn your app.</p>
+      </div>
+      <div class="pipe-step">
+        <div class="n">02 · deterministic</div>
+        <h3>Map what's real</h3>
+        <p>What's actually wired up and clickable, not just declared somewhere in the code.</p>
+      </div>
+      <div class="pipe-step">
+        <div class="n">03 · one-time</div>
+        <h3>Register the actions</h3>
+        <p>You expose the write actions you want the agent to be able to take — archive an invoice, add a workflow step — through your own auth.</p>
+      </div>
+      <div class="pipe-step">
+        <div class="n">04 · live</div>
+        <h3>Talk, and it acts</h3>
+        <p>A customer describes what they want; the agent explains, highlights, navigates, or does it — through the real UI, in real time.</p>
+      </div>
+    </div>
+
+    <p class="kicker" style="margin-top:56px;">What keeps it safe</p>
+    <h2 style="max-width: 30ch;">The model never picks a selector. It picks one of five verbs.</h2>
+    <p class="lede">
+      Every response is independently re-validated server-side against a fixed schema —
+      regardless of what the client sends. It can only take an action you registered; it can
+      never invent a click, run arbitrary code, or touch something you didn't allow. A lookup
+      miss degrades to a plain explanation, never a guess.
+    </p>
+    <div class="verb-row">
+      <span class="verb">explain</span>
+      <span class="verb">highlight</span>
+      <span class="verb">open</span>
+      <span class="verb">navigate</span>
+      <span class="verb">do</span>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <p class="kicker">Features</p>
+    <h2>Everything a "someone else uses it for you" agent needs.</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></svg></div>
+        <h3>Streaming voice</h3>
+        <p>A persistent WebSocket, not a buffered clip — audio starts in ~1–1.5s instead of a 5–10s wait. Talk over it mid-sentence and it stops immediately (barge-in).</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/></svg></div>
+        <h3>Multi-step walkthroughs</h3>
+        <p>A request that spans several steps comes back as an ordered sequence — highlight, narrate, act, move on — not one paragraph naming five buttons at once.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg></div>
+        <h3>Any framework, any stack</h3>
+        <p>React via <code>&lt;Copilot/&gt;</code>, or drop <code>&lt;cairn-widget&gt;</code> into Vue, Angular, Svelte, or a plain static HTML page — same web component, zero dependencies.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></div>
+        <h3>Works on apps you didn't write</h3>
+        <p>Point <code>cairn build</code> at a running URL instead of source and it crawls the rendered page with a headless browser — works on any framework's output.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg></div>
+        <h3>Conversation memory</h3>
+        <p>"Do that for the other one too" resolves against the last few turns, not just the current request — a real back-and-forth, not stateless Q&amp;A.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+        <h3>Capability tiers</h3>
+        <p><code>explain</code> / <code>guide</code> / <code>act</code> caps what the agent is allowed to do, independent of which actions your app has registered — dial it up per customer, per plan.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <p class="kicker">Install</p>
+    <h2>Wire it into your app in about ten minutes.</h2>
+    <p class="lede">Next.js is the only framework the source-reading analyzer understands today — the runtime (voice, action execution, element finding) is already framework-agnostic, and crawl mode covers everything else in the meantime.</p>
+
+    <div class="install-note">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      <span>Not published to npm yet — install via a <code>file:</code> path pointing at a local clone (below), or as a git dependency, until it is.</span>
+    </div>
+
+    <div class="copybox">
+      <div class="term">
+        <div class="term-bar"><i></i><i></i><i></i><span>bash</span></div>
+        <pre id="install-cmd"><span class="c1"># 1. clone and build the CLI + SDK once</span>
+<span class="c2">git clone</span> https://github.com/Vikasverma9515/cairn.git
+<span class="c2">cd</span> cairn &amp;&amp; <span class="c2">npm install</span>
+<span class="c2">npm run build</span> -w @cairn/indexer -w @cairn/sdk
+<span class="c2">npm install</span>                <span class="c1"># re-run so npm links the cairn / cairn-realtime bins</span>
+
+<span class="c1"># 2. point it at your Next.js app</span>
+<span class="c2">cp</span> .env.example .env       <span class="c1"># fill in ANTHROPIC_API_KEY or GROQ_API_KEYS</span>
+<span class="c2">npx cairn build</span> ./your-app --provider groq
+
+<span class="c1"># 3. register the actions the agent can take, mount the widget</span>
+<span class="c2">npx cairn init</span> ./your-app   <span class="c1"># scaffolds the backend route + .env.example</span></pre>
+      </div>
+      <button class="copy-btn" data-copy-target="install-cmd">copy</button>
+    </div>
+  </div>
+</section>
+
+<section id="cli">
+  <div class="wrap">
+    <p class="kicker">CLI reference</p>
+    <h2>Six commands, that's the whole surface.</h2>
+    <table class="cli">
+      <tr><th style="width:1%;">Command</th><th class="desc">What it does</th></tr>
+      <tr><td><code>cairn init &lt;dir&gt;</code></td><td class="desc">Scaffolds the backend route + <code>.env.example</code> — detects your framework, never overwrites existing files.</td></tr>
+      <tr><td><code>cairn scan &lt;dir&gt;</code></td><td class="desc">L1 only — deterministic, no LLM call, no API key needed.</td></tr>
+      <tr><td><code>cairn build &lt;dir&gt;</code></td><td class="desc">Full pipeline against Next.js source — writes <code>ui-manifest.json</code>.</td></tr>
+      <tr><td><code>cairn build &lt;url&gt;</code></td><td class="desc">Crawl mode — points at a running app instead of source, works on any framework.</td></tr>
+      <tr><td><code>cairn diff &lt;a&gt; &lt;b&gt;</code></td><td class="desc">What changed between two manifests — useful in CI to catch silent drift.</td></tr>
+      <tr><td><code>cairn docs &lt;dir&gt;</code></td><td class="desc">Reads an existing manifest and writes a human-readable <code>CAIRN_DOCS.md</code>.</td></tr>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fbrand">
+      <svg width="20" height="20" viewBox="0 0 128 128" fill="none">
+        <rect width="128" height="128" rx="30" fill="#3a3b45"/>
+        <rect x="45" y="80" width="38" height="16.5" rx="4" fill="#fff" fill-opacity="0.7"/>
+        <rect x="29" y="54.5" width="70" height="16.5" rx="4" fill="#fff" fill-opacity="0.55"/>
+        <rect x="52.5" y="29" width="23" height="16.5" rx="4" fill="#fff" fill-opacity="0.4"/>
+      </svg>
+      MIT licensed · Cairn contributors
+    </div>
+    <div class="flinks">
+      <a href="https://github.com/Vikasverma9515/cairn" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/Vikasverma9515/cairn/blob/main/README.md" target="_blank" rel="noopener">Full docs</a>
+      <a href="https://github.com/Vikasverma9515/cairn/blob/main/ROADMAP.md" target="_blank" rel="noopener">Roadmap</a>
+      <a href="https://github.com/Vikasverma9515/cairn/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/Vikasverma9515/cairn/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = document.getElementById(btn.getAttribute('data-copy-target'));
+      var text = target.innerText;
+      navigator.clipboard.writeText(text).then(function () {
+        var original = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(function () { btn.textContent = original; }, 1600);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>
