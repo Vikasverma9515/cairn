@@ -14,6 +14,29 @@ Consistent with the on-prem/no-data-leakage story: customer *code* never
 leaves the machine — only a one-time, content-free model-weight download
 happens, the same category of network access `pip install` itself needs.
 
+**A faster model was tried, benchmarked, and rejected — worth recording
+why, not just that it didn't ship.** `sentence-transformers/
+all-MiniLM-L6-v2` measured a real 32x speedup (336.1ms → 10.5ms per
+symbol) with zero quality loss on a narrow 4-query check reusing this
+session's earlier dogfood scenarios. That check was too narrow: rerun at
+real scale (850 symbols, the actual cairn repo, all four queries against
+the *full* corpus instead of 4 hand-picked candidates), one of the four
+broke outright — "resolve a user command into an action" no longer
+returned `resolveVerb` anywhere in the top 15, where the original model
+correctly ranks it #1 at 0.716 on the identical corpus, confirmed
+apples-to-apples with the sync state reset between runs. Speed that
+breaks search quality isn't an optimization; reverted to
+`BAAI/bge-small-en-v1.5`.
+
+**What did ship**: multiprocess `parallel=` embedding, which changes
+*nothing* about quality (same model, same vectors, computed
+concurrently instead of serially) — measured a real 1.37x speedup at
+realistic snippet length (336.1ms → 245.1ms per symbol), worth taking
+since it carries none of the model-swap's risk. `parallel` is threaded
+through `embed_texts`/`build_vector_index` rather than hardcoded, since
+the right worker count is a property of the machine running this, not a
+constant this module should assume.
+
 Storage is Qdrant in embedded/local mode (`QdrantClient(path=...)`, no
 server process) — an on-disk vector index next to the SQLite graph, same
 "just files, no infra to run" shape as the rest of this service. A real
@@ -47,15 +70,26 @@ def _get_embedder(model_name: str):
     return _model_cache[model_name]
 
 
-def embed_texts(texts: Sequence[str], model_name: str = DEFAULT_MODEL, embed_fn: EmbedFn | None = None) -> list[list[float]]:
+def embed_texts(
+    texts: Sequence[str], model_name: str = DEFAULT_MODEL, embed_fn: EmbedFn | None = None, parallel: int | None = None
+) -> list[list[float]]:
     """The one place model choice is decided — swapped out in tests via
-    `embed_fn` so the suite never needs a network call or a loaded model."""
+    `embed_fn` so the suite never needs a network call or a loaded model.
+
+    `parallel` maps directly to fastembed's own multiprocess embedding —
+    measured live at realistic snippet length (~2.6k chars): a real 1.37x
+    speedup (336.1ms -> 245.1ms per text) for this specific model, with
+    zero effect on the output (same model, same vectors, just computed
+    concurrently). Not defaulted on unconditionally here: for a tiny
+    batch the worker-process spawn cost can exceed what it saves, so
+    `build_vector_index` below only requests it once a run is large
+    enough to be worth the overhead."""
     if embed_fn is not None:
         return embed_fn(texts)
     if not texts:
         return []
     model = _get_embedder(model_name)
-    return [vec.tolist() for vec in model.embed(list(texts))]
+    return [vec.tolist() for vec in model.embed(list(texts), parallel=parallel)]
 
 
 def _read_snippet(file_path: str, start_line: int, end_line: int) -> str:
@@ -114,12 +148,16 @@ class VectorIndexSummary:
     files_removed: int = 0
 
 
+_PARALLEL_WORTH_IT_ABOVE = 50  # symbols — below this, worker-spawn overhead measured to exceed the savings
+
+
 def build_vector_index(
     db_path: str,
     vector_dir: str,
     model_name: str = DEFAULT_MODEL,
     embed_fn: EmbedFn | None = None,
     batch_size: int = 64,
+    parallel: int | None = None,
 ) -> VectorIndexSummary:
     """Incremental: only (re-)embeds files whose content_hash has changed
     since the last `build_vector_index` call, the same content-hash lever
@@ -127,7 +165,14 @@ def build_vector_index(
     repo's *second* vectorize fast, not just its second parse. Reads each
     symbol's own source lines off disk (not just its name) so the
     embedding captures what the code actually does, not just what it's
-    called."""
+    called.
+
+    `parallel` defaults to None (fastembed's own serial path) rather than
+    always-on: most calls here are incremental (a handful of changed
+    files), where multiprocess spawn overhead measured live to exceed
+    what it saves. Left unset, a large enough run (more symbols than
+    `_PARALLEL_WORTH_IT_ABOVE`) auto-enables it; pass an explicit value
+    to override either way."""
     conn = open_store(db_path)  # ensures vector_sync exists even if this db was never opened via open_store before
 
     current_files = dict(conn.execute("SELECT path, content_hash FROM files").fetchall())
@@ -167,17 +212,22 @@ def build_vector_index(
         )
 
     texts = [_symbol_text(s.kind, s.name, s.parent, _read_snippet(s.file_path, s.start_line, s.end_line)) for s in symbols]
-
-    first_batch = embed_texts(texts[:1], model_name=model_name, embed_fn=embed_fn)
-    dim = len(first_batch[0]) if first_batch else 0
-    if not client.collection_exists("symbols"):
-        client.create_collection(collection_name="symbols", vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
+    effective_parallel = parallel if parallel is not None else (4 if len(symbols) > _PARALLEL_WORTH_IT_ABOVE else None)
 
     batches = 0
     for start in range(0, len(symbols), batch_size):
         chunk_symbols = symbols[start : start + batch_size]
         chunk_texts = texts[start : start + batch_size]
-        vectors = embed_texts(chunk_texts, model_name=model_name, embed_fn=embed_fn)
+        vectors = embed_texts(chunk_texts, model_name=model_name, embed_fn=embed_fn, parallel=effective_parallel)
+        # Collection creation needs the real embedding dimension, which is
+        # only known once something has actually been embedded — get it
+        # from this first real batch rather than a separate throwaway
+        # embed_texts(texts[:1]) call that used to embed the very first
+        # text twice (once alone, once again as part of this loop's first
+        # chunk) for no reason.
+        if not client.collection_exists("symbols"):
+            dim = len(vectors[0]) if vectors else 0
+            client.create_collection(collection_name="symbols", vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
         points = [
             PointStruct(
                 id=sym.id,

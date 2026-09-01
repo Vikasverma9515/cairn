@@ -430,7 +430,27 @@ storage directory, so opening a second `QdrantClient` against the same
 one client for the delete step, a second for `create_collection`)
 crashes with `RuntimeError: Storage folder ... is already accessed by
 another instance`. Fixed by using exactly one client for the whole call.
-Dogfooded live against the real cairn monorepo (661 symbols): first
+
+**Throughput, Month 7**: a genuinely smaller/faster embedding model
+(`sentence-transformers/all-MiniLM-L6-v2`) was tried, benchmarked at a
+real 32x speedup, and rejected — verified at real scale (the full real
+850-symbol corpus, not the narrow 4-query check that first looked
+clean), it silently broke one of the four dogfooded queries outright
+(`resolveVerb` dropped out of the top 15 for "resolve a user command
+into an action", where the original model correctly ranks it #1 at
+0.716 on the identical corpus). Speed that breaks search quality isn't
+an optimization, so the model stayed `BAAI/bge-small-en-v1.5`. What did
+ship: `parallel=` multiprocess embedding, which changes nothing about
+the output (same model, same vectors, computed concurrently) — real
+measured throughput improved from ~0.808s/symbol to ~0.275s/symbol
+(2.9x) on a real 850-symbol vectorize run, with both dogfooded queries
+still landing the identical correct top result at the identical score.
+Auto-enabled only above 50 symbols (`_PARALLEL_WORTH_IT_ABOVE`) — a tiny
+incremental run's worker-process spawn cost was measured to exceed what
+it saves.
+
+Dogfooded live against the real cairn monorepo (661 symbols, later 850
+as the repo grew): first
 `vectorize` took 533.79s of real embedding work; a second `vectorize`
 with nothing changed took **0.14s wall time, 0 symbols embedded** — the
 scale lever pillar 8/9's "works even at lakhs of files" needs on the
