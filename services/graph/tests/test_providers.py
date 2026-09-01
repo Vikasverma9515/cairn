@@ -3,8 +3,11 @@ from __future__ import annotations
 import pytest
 
 from cairn_graph.providers import (
+    DeepgramSTTProvider,
     EchoLLMProvider,
+    GroqLLMProvider,
     LLMProvider,
+    MissingCredentialError,
     ProviderNotRegisteredError,
     Registry,
     STTProvider,
@@ -103,3 +106,63 @@ def test_load_provider_falls_back_to_default_when_no_name_or_env(monkeypatch):
     monkeypatch.delenv("CAIRN_LLM_PROVIDER", raising=False)
     provider = load_provider(llm_registry, "CAIRN_LLM_PROVIDER", "echo")
     assert isinstance(provider, EchoLLMProvider)
+
+
+# --- Groq / Deepgram: SDK plumbing only, no network call --------------
+# The actual round-trip (a real chat completion, a real transcription of
+# real speech audio) was verified live once against the real installed
+# SDKs and real credentials — see providers.py's module docstring for
+# the confirmed request/response shapes. Re-making a real network call on
+# every pytest run would be flaky, cost money, and burn a shared
+# account's quota for no correctness benefit over that verified result.
+# What's actually worth unit-testing here is this module's own logic:
+# does construction fail clearly without a key, does it succeed and wire
+# up correctly with one, does the result satisfy the Protocol.
+
+
+def test_groq_provider_raises_a_clear_error_with_no_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(MissingCredentialError, match="GROQ_API_KEY"):
+        GroqLLMProvider()
+
+
+def test_groq_provider_constructs_with_an_explicit_key_and_satisfies_the_protocol():
+    provider = GroqLLMProvider(api_key="dummy-not-a-real-key")
+    assert isinstance(provider, LLMProvider)
+
+
+def test_groq_provider_picks_up_the_key_from_the_env_var(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "dummy-not-a-real-key")
+    provider = GroqLLMProvider()
+    assert isinstance(provider, LLMProvider)
+
+
+def test_groq_provider_defaults_to_a_non_reasoning_model():
+    # Found live: a reasoning-capable model (openai/gpt-oss-20b) can spend
+    # an entire small token budget on invisible reasoning tokens and
+    # return an empty visible reply — the default here must not be one of
+    # those, for a low-latency "talking to a friend" provider (pillar 3).
+    provider = GroqLLMProvider(api_key="dummy-not-a-real-key")
+    assert "reasoning" not in provider._model.lower() and "gpt-oss" not in provider._model
+
+
+def test_deepgram_provider_raises_a_clear_error_with_no_key(monkeypatch):
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    with pytest.raises(MissingCredentialError, match="DEEPGRAM_API_KEY"):
+        DeepgramSTTProvider()
+
+
+def test_deepgram_provider_constructs_with_an_explicit_key_and_satisfies_the_protocol():
+    provider = DeepgramSTTProvider(api_key="dummy-not-a-real-key")
+    assert isinstance(provider, STTProvider)
+
+
+def test_default_registries_include_the_real_providers():
+    assert "groq" in llm_registry.names()
+    assert "deepgram" in stt_registry.names()
+
+
+def test_load_provider_selects_groq_by_explicit_name(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "dummy-not-a-real-key")
+    provider = load_provider(llm_registry, "CAIRN_LLM_PROVIDER", "echo", provider_name="groq")
+    assert isinstance(provider, GroqLLMProvider)

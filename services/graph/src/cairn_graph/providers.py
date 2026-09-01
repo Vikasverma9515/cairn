@@ -9,25 +9,44 @@ name) rather than a code change. This is the seam pillar 5 asks for:
 swapping the LLM or the voice provider means registering a new factory
 under a new name, not touching the orchestrator or the MCP server.
 
-What's deliberately NOT here: real Cartesia/Deepgram/Groq (or
-OpenAI/Anthropic realtime) SDK calls. This project's standing discipline
-is "verify every SDK call against the real, installed package before
-writing it — never guess a vendor's method signature from training
-data" (it's what caught the FastMCP rename and the tree-sitter-language-
-pack download issue earlier). There's no credentialed account available
-in this environment to verify a hosted voice/LLM SDK against, and
-writing unverified vendor integration code would break that discipline
-for the sake of looking more finished. Wiring a real provider in later is
-implementing one of the three Protocols below against that vendor's
-verified SDK — the registry, the config-driven selection, and everything
-that calls through this module stay unchanged.
+Two real hosted providers are wired in now that credentials became
+available in this environment (`examples/demo-app/.env`'s
+`GROQ_API_KEYS`/`DEEPGRAM_API_KEY`): `GroqLLMProvider` and
+`DeepgramSTTProvider` below. Both were verified against the real
+installed SDKs with live API calls before being trusted — not assumed
+from docs or training data, the same discipline that caught the FastMCP
+rename and the tree-sitter-language-pack download issue:
 
-Each Protocol ships exactly one concrete implementation here: a fully
-local, fully real (not mocked-in-tests-only) default that proves the
-registry/config wiring end to end without any network call or API key.
-`EchoLLMProvider` is honestly a stand-in, not a real model — it exists so
-a pipeline can be built and tested end to end for free before a real
-provider is registered.
+- **Groq**: `client.chat.completions.create()` takes
+  `max_completion_tokens`, not `max_tokens` — confirmed by reading the
+  installed SDK's real signature. A reasoning-capable model
+  (`openai/gpt-oss-20b`) spent its entire token budget on internal
+  reasoning tokens and returned an *empty* visible reply on the first
+  live test — not a bug, a real characteristic of that model class,
+  which is why the default model here is a fast non-reasoning one
+  instead. The account's actual available models were fetched live via
+  `client.models.list()`, not guessed.
+- **Deepgram**: the real call is `client.listen.v1.media.transcribe_file
+  (request=audio_bytes, model=..., ...)`, and the transcript lives at
+  `response.results.channels[0].alternatives[0].transcript` — both
+  confirmed with a real transcription of real synthesized speech audio
+  (macOS `say` + `afconvert`), not a silent WAV.
+
+Cartesia/ElevenLabs (TTS) remain unwired — no credentials for those were
+available. Wiring one in later is implementing `TTSProvider` against
+that vendor's verified SDK; the registry and everything that calls
+through it stay unchanged.
+
+Every Protocol still ships one fully local, zero-network default too —
+`EchoLLMProvider` and `UnconfiguredSTTProvider`/`UnconfiguredTTSProvider`
+— so the registry/config wiring stays provable without a network call or
+an API key, and so the automated test suite never needs one either: the
+two real providers' *SDK plumbing* (construction, missing-key handling,
+Protocol conformance) is unit-tested here; their actual network
+round-trip was verified live once, above, not re-run on every `pytest`
+invocation — a real API call on every CI run would be flaky, cost money,
+and burn through a shared account's quota for no correctness benefit
+over a verified-once, documented result.
 """
 
 from __future__ import annotations
@@ -106,11 +125,77 @@ class UnconfiguredTTSProvider:
         )
 
 
+class MissingCredentialError(RuntimeError):
+    pass
+
+
+class GroqLLMProvider:
+    """Real, network-calling LLM provider over Groq's chat completions
+    API — verified live against the installed `groq` SDK (1.7.0): client
+    construction, the `max_completion_tokens` kwarg name, and the
+    `.choices[0].message.content` response path were all confirmed with
+    a real call before being trusted, not assumed. The default model
+    (`qwen/qwen3.8-27b`) was picked specifically because it returns a
+    fast, non-reasoning reply — `openai/gpt-oss-20b` spent an entire
+    small token budget on invisible reasoning tokens and returned an
+    empty visible reply in the same live test, a real property of that
+    model class worth avoiding for a low-latency "talking to a friend"
+    default (pillar 3).
+
+    The API key is read once at construction (`api_key=`, else
+    `GROQ_API_KEY`) and never touched again — no key handling in
+    `complete()`, no logging of the key anywhere."""
+
+    def __init__(self, api_key: str | None = None, model: str = "qwen/qwen3.8-27b", max_tokens: int = 512):
+        key = api_key or os.environ.get("GROQ_API_KEY")
+        if not key:
+            raise MissingCredentialError("GroqLLMProvider needs an API key: pass api_key= or set GROQ_API_KEY")
+        from groq import Groq
+
+        self._client = Groq(api_key=key)
+        self._model = model
+        self._max_tokens = max_tokens
+
+    def complete(self, prompt: str, *, system: str | None = None) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        resp = self._client.chat.completions.create(model=self._model, messages=messages, max_completion_tokens=self._max_tokens)
+        return resp.choices[0].message.content or ""
+
+
+class DeepgramSTTProvider:
+    """Real, network-calling STT provider over Deepgram's prerecorded
+    transcription API — verified live against the installed
+    `deepgram-sdk` (7.8.0) with a real transcription of real synthesized
+    speech audio (not silence), confirming both the call shape
+    (`client.listen.v1.media.transcribe_file(request=audio_bytes,
+    model=...)`) and the response path
+    (`response.results.channels[0].alternatives[0].transcript`) before
+    being trusted."""
+
+    def __init__(self, api_key: str | None = None, model: str = "nova-2"):
+        key = api_key or os.environ.get("DEEPGRAM_API_KEY")
+        if not key:
+            raise MissingCredentialError("DeepgramSTTProvider needs an API key: pass api_key= or set DEEPGRAM_API_KEY")
+        from deepgram import DeepgramClient
+
+        self._client = DeepgramClient(api_key=key)
+        self._model = model
+
+    def transcribe(self, audio: bytes) -> str:
+        resp = self._client.listen.v1.media.transcribe_file(request=audio, model=self._model, smart_format=True)
+        return resp.results.channels[0].alternatives[0].transcript
+
+
 llm_registry = Registry("llm")
 llm_registry.register("echo", EchoLLMProvider)
+llm_registry.register("groq", GroqLLMProvider)
 
 stt_registry = Registry("stt")
 stt_registry.register("unconfigured", UnconfiguredSTTProvider)
+stt_registry.register("deepgram", DeepgramSTTProvider)
 
 tts_registry = Registry("tts")
 tts_registry.register("unconfigured", UnconfiguredTTSProvider)

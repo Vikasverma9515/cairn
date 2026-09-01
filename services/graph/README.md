@@ -135,10 +135,10 @@ positives, period."
 
 ## Language support
 
-TypeScript, TSX, JavaScript, Python, and Go — one `LanguageSpec` in
+TypeScript, TSX, JavaScript, Python, Go, and Java — one `LanguageSpec` in
 `languages.py` plus a language-specific extraction branch in
 `extract.py` per language (`_walk` for the JS/TS grammar family,
-`_walk_python` and `_walk_go` separately: several node *type names* are
+`_walk_python`, `_walk_go`, and `_walk_java` separately: several node *type names* are
 shared across these grammars — `call`/`call_expression` aside,
 `import_statement` means something structurally different in each —
 sharing one walker would mean disambiguating every such node by language
@@ -174,6 +174,39 @@ realistic synthetic Go web-service file (an interface, a struct
 implementing it, pointer-receiver methods, `net/http` handler wiring,
 grouped imports) — 12 symbols, 0 false positives on `dead`, correctly
 flagging exactly the one genuinely unused function.
+
+**Java**, same shape again: `exported` is a real `public` modifier check
+(`modifiers` is a genuine child node of `class_declaration`/
+`method_declaration`/`constructor_declaration` but — found live —
+**not** a named field; `child_by_field_name("modifiers")` silently
+returns `None`, so it has to be found by scanning children for the type
+instead of asked for by name), interface methods are implicitly public
+with no modifier at all, and constructors are captured as a `method`
+symbol named after their own class (`Widget`'s constructor is a method
+named `"Widget"`) — so `new Widget()` reaches both the class and its
+constructor through the same name-based match, no separate synthesis
+needed the way JS's `new_expression` needed one. A second live-verified
+catch: a wildcard import (`import java.util.*;`) parses with the package
+prefix (`java.util`) and the `*` as *separate sibling children*, not one
+combined node — an early version would have silently bound a fake local
+name `"util"` for a wildcard import had a live inspection of the actual
+child list not caught it before the code was written, not after.
+
+**A real bug in `reachability.py` itself, found dogfooding Java, not
+Java-specific**: "a reachable class marks all its methods reachable"
+used to fire for *every* reachable class, not just ones registered with
+a framework — so an ordinary exported class with a genuinely unused
+private helper method had that helper read as reachable purely because
+the class itself was reachable, for every method on it, unconditionally.
+That's the exact opposite of useful for the pattern — a private helper
+nobody calls anymore — dead-code detection exists to catch, and every
+existing test the broader rule was meant to cover (the
+`customElements.define` case) turned out to only actually need the
+narrower, framework-root-scoped version. Fixed by scoping that
+propagation to `current.name in framework_root_names`; a dedicated
+regression test (`test_by_parent_propagation_is_scoped_to_framework_roots_
+not_every_reachable_class`) guards it directly in TypeScript, where the
+bug was just as real, just never triggered by an existing test.
 
 ## MCP server
 
@@ -446,23 +479,55 @@ per kind, selected via `load_provider(registry, env_var, default,
 provider_name=None)`: explicit name wins, then the env var, then a safe
 local default — never a silent surprise about which provider is live.
 
-Deliberately **not** included: real Cartesia/Deepgram/Groq (or any hosted
-voice/LLM) SDK calls. This project's standing rule is "verify every SDK
-call against the real, installed package before writing it, never guess
-a vendor's method signature from training data" — the exact discipline
-that caught the `FastMCP` rename and the `tree-sitter-language-pack`
-download issue. There's no credentialed account in this environment to
-verify a hosted voice/LLM SDK against, and writing unverified vendor
-integration code would break that discipline just to look more finished.
-Wiring a real provider in later means implementing one Protocol against
-that vendor's verified SDK — the registry and everything that calls
-through it (see below) doesn't change.
+**Update: two real hosted providers are wired in.** Credentials for Groq
+and Deepgram became available in this environment
+(`examples/demo-app/.env`); `GroqLLMProvider` and `DeepgramSTTProvider`
+were built against the real installed SDKs (`groq` 1.7.0, `deepgram-sdk`
+7.8.0) and verified with real live calls before being trusted, same
+discipline as everything else here:
 
-Each Protocol ships exactly one real, local, zero-network implementation:
+- **Groq** — `client.chat.completions.create()` takes
+  `max_completion_tokens`, not `max_tokens` (confirmed by reading the
+  installed SDK's actual signature, not docs). The account's real
+  available models were fetched live via `client.models.list()`, not
+  guessed. First live test picked a reasoning-capable model
+  (`openai/gpt-oss-20b`) and got back an *empty* reply — it spent its
+  entire small token budget on invisible reasoning tokens, a real
+  property of that model class. `GroqLLMProvider` defaults to
+  `qwen/qwen3.8-27b` instead — a plain fast reply, 0.429s round-trip
+  measured live, no reasoning overhead — for a low-latency "talking to a
+  friend" default (pillar 3).
+- **Deepgram** — the real call is
+  `client.listen.v1.media.transcribe_file(request=audio_bytes,
+  model=...)`, response at
+  `.results.channels[0].alternatives[0].transcript`. Verified against
+  real synthesized speech (macOS `say` + `afconvert` → WAV), not silence
+  — a real transcript came back, not just a non-error response.
+- **End-to-end proof, not just unit tests**: loaded the real Groq
+  provider through `load_provider()`, fed it into
+  `orchestrator.llm_planner()`, and routed a real request — "delete the
+  old scratch.ts file" — through `route_request()`. It correctly reasoned
+  its way to the `exec` specialist (`delete_file_tool`,
+  `run_command_tool`) — genuine LLM judgment, not the keyword_planner's
+  string matching. The real Deepgram provider transcribed real audio
+  through the same `providers.py` code path used above.
+
+Cartesia/ElevenLabs (TTS) remain unwired — no credentials for those were
+available in this environment. Wiring one in is implementing `TTSProvider`
+against that vendor's verified SDK; the registry and everything that
+calls through it doesn't change. API keys are read once at construction
+from `GROQ_API_KEY`/`DEEPGRAM_API_KEY` (or passed explicitly) and never
+touched again — no key handling inside `complete()`/`transcribe()`, no
+key ever logged, and the automated test suite (below) never makes a real
+network call: constructing a client with a dummy string is safe and
+free, since Groq/Deepgram's SDKs don't validate a key until a real
+request is made.
+
+Each Protocol also still ships one real, local, zero-network default:
 `EchoLLMProvider` (echoes the prompt — a stand-in, not a real model, but
 real enough to prove a pipeline end to end for free) and
 `UnconfiguredSTTProvider`/`UnconfiguredTTSProvider` (raise a clear
-`NotImplementedError` naming the env var to set — honest about the
+`NotImplementedError` naming the env var to set — honest about a real
 capability gap instead of silently returning fake empty audio/text).
 
 The concrete integration point: `orchestrator.llm_planner(provider)`
@@ -475,13 +540,11 @@ listed in the routing prompt itself), so a naive substring check could
 match the wrong one for a request whose earlier options happen to share
 a prefix.
 
-14 tests (`test_providers.py`) plus 5 more in `test_orchestrator.py`
-(a deterministic fake-provider planner test for both the success and
-failure paths, plus an end-to-end run against the real `EchoLLMProvider`
-proving the provider → planner → `route_request` plumbing runs without
-crashing). Dogfooded live: loaded the `echo` provider via
-`load_provider`, fed it into `llm_planner`, routed a real request through
-`route_request` end to end.
+22 tests (`test_providers.py`, including the Groq/Deepgram SDK-plumbing
+tests — construction, missing-key handling, Protocol conformance, no
+network call) plus 5 more in `test_orchestrator.py`. Dogfooded live twice:
+once against the local `echo` provider, once end-to-end against the real
+Groq and Deepgram providers as described above.
 
 ## Analytics (Month 5, first slice)
 
@@ -600,14 +663,14 @@ just that the happy path prints something). 154 tests total, all passing.
 
 ## What's not built yet
 
-- **More languages beyond TS/TSX/JS/Python/Go** — Java, Rust, etc. Same
-  shape of work as adding Go was: one `LanguageSpec` plus a
+- **More languages beyond TS/TSX/JS/Python/Go/Java** — Rust, C#, etc.
+  Same shape of work as adding Go/Java was: one `LanguageSpec` plus a
   language-specific extraction branch (a new grammar family likely needs
   its own walker, same reasoning as `_walk_python`'s docstring).
-- **Real hosted voice/LLM providers** — `providers.py` has the
-  Protocol/registry seam but no verified Cartesia/Deepgram/Groq/hosted-
-  LLM implementation; needs a credentialed account to build against
-  safely (see that module's docstring for why this wasn't guessed).
+- **Real hosted TTS/voice providers** — `providers.py` has real
+  `GroqLLMProvider`/`DeepgramSTTProvider` now; Cartesia/ElevenLabs remain
+  unwired, no credentials for those were available in this environment
+  (see that module's docstring for why this wasn't guessed at instead).
 - **A rendered analytics dashboard** — `analytics.py` is the data layer;
   an actual UI on top of it is a separate frontend concern.
 - **Stress test against a large *external* open-source monorepo** — this
