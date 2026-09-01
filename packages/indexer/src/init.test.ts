@@ -36,6 +36,45 @@ describe("runInit", () => {
     expect(fs.existsSync(path.join(tmpDir, "app", "api", "copilot", "route.ts"))).toBe(false);
   });
 
+  it("does not scaffold speak/transcribe routes by default — voice is opt-in", () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+    fs.mkdirSync(path.join(tmpDir, "app"));
+
+    runInit(tmpDir);
+
+    expect(fs.existsSync(path.join(tmpDir, "app", "api", "copilot", "speak", "route.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "app", "api", "copilot", "transcribe", "route.ts"))).toBe(false);
+  });
+
+  it("scaffolds real speak/transcribe routes (App Router) when voice is requested", () => {
+    // Real bug this guards: choosing voice during `cairn setup` used to save
+    // a DEEPGRAM_API_KEY that nothing ever read — no route existed to call
+    // it, on any framework path this wizard actually supports.
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+    fs.mkdirSync(path.join(tmpDir, "app"));
+
+    const result = runInit(tmpDir, { voice: true });
+
+    const speakPath = path.join(tmpDir, "app", "api", "copilot", "speak", "route.ts");
+    const transcribePath = path.join(tmpDir, "app", "api", "copilot", "transcribe", "route.ts");
+    expect(fs.existsSync(speakPath)).toBe(true);
+    expect(fs.existsSync(transcribePath)).toBe(true);
+    expect(result.filesWritten).toContain(speakPath);
+    expect(result.filesWritten).toContain(transcribePath);
+    expect(fs.readFileSync(speakPath, "utf8")).toContain("createSpeakHandler");
+    expect(fs.readFileSync(transcribePath, "utf8")).toContain("createTranscribeHandler");
+  });
+
+  it("scaffolds real speak/transcribe routes (Pages Router) when voice is requested", () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+
+    const result = runInit(tmpDir, { voice: true });
+
+    expect(result.framework).toBe("next-pages-router");
+    expect(fs.existsSync(path.join(tmpDir, "pages", "api", "copilot", "speak.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "pages", "api", "copilot", "transcribe.ts"))).toBe(true);
+  });
+
   it("falls back to the standalone Express scaffold when next isn't a dependency", () => {
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: {} }));
 

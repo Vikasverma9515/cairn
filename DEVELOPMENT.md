@@ -95,6 +95,35 @@ a direct `/api/copilot` call. `@cairnvibe/sdk` bumped to 0.2.0 (a real
 breaking change to `resolveVerb`'s and `buildSystemPrompt`'s exported
 signatures) and republished.
 
+**Two more real bugs, found by hands-on testing against VOXERA (@cairnvibe/core 0.1.1, @cairnvibe/sdk 0.2.1, @cairnvibe/indexer 0.2.3):**
+- A real, reproducible tour crash: Groq's `openai/gpt-oss-120b` sent
+  `"target": null` for a tour step with nothing specific to point at —
+  completely reasonable model behavior — but the tool schema declared
+  `target` as `string`-only, so Groq's own strict validation rejected
+  the *entire* tool call with a 400 before any code here even ran,
+  degrading a real "what can you do on this page" question straight to
+  a generic failure message. Fixed in two places: the tool schema sent
+  to the model (`["string", "null"]` for every genuinely-optional
+  field), and `VerbResponseSchema` itself (`z.preprocess` normalizing
+  null to undefined) — Groq accepting null on the wire doesn't help if
+  our own Zod parsing rejects it one layer later.
+- Voice was completely unwired despite `cairn setup` collecting a real
+  Deepgram key: `init.ts` never scaffolded `/api/copilot/speak` or
+  `/api/copilot/transcribe` for a Next.js project (only the standalone-
+  server path had them), and the generated `CairnCopilot.tsx` wrapper
+  never passed `speakEndpoint`/`transcribeEndpoint` even when it did.
+  Choosing "Deepgram" during setup did nothing beyond saving a key
+  nothing ever read. Fixed: `runInit` and `injectWidget` both gained a
+  `voice` option: `setup.ts` scaffolds the real speak/transcribe routes
+  (copied from examples/demo-app's already-proven implementation) and
+  wires the matching props into the wrapper, only when voice was
+  actually chosen.
+
+Both verified live, not just in isolation: a direct POST to VOXERA's
+real `/api/copilot` with the exact crashing question now returns a real
+tour; a direct POST to the newly-scaffolded `/api/copilot/speak`
+returns real MP3 audio (14.5KB) from a real Deepgram call.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 

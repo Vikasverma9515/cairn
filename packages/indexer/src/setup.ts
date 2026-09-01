@@ -225,6 +225,18 @@ export async function runSetup(dir: string): Promise<void> {
 
   closePrompts();
 
+  // 3b. Scaffold the speak/transcribe backend routes now that we know
+  // whether voice was actually chosen — runInit is idempotent (never
+  // overwrites), so calling it again here is safe. Real bug this closes:
+  // voice used to write only the key, never the routes or the widget props
+  // that would ever call them — "on" did nothing beyond saving a string
+  // nothing read.
+  const wantsVoice = voiceChoice === "deepgram";
+  if (wantsVoice) {
+    const voiceInit = runInit(dir, { voice: true });
+    for (const f of voiceInit.filesWritten) console.log(`  wrote   ${path.relative(absDir, f) || f}`);
+  }
+
   // 4. Write a real .env (not just .env.example) with whatever was actually given.
   const envLines: string[] = [];
   if (provider === "anthropic") envLines.push(`ANTHROPIC_API_KEY=${providerKey ?? ""}`);
@@ -243,9 +255,10 @@ export async function runSetup(dir: string): Promise<void> {
   // deliberately doesn't do. Falls back to printing instructions on
   // anything it can't confidently parse.
   const framework = init.framework as "next-app-router" | "next-pages-router";
-  const inject = injectWidget(dir, framework);
+  const inject = injectWidget(dir, framework, { voice: wantsVoice });
   if (inject.injected) {
-    console.log(green(`✓ wired the widget into ${path.relative(absDir, inject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)`));
+    const voiceNote = wantsVoice ? " — wired for voice (speak + transcribe)" : "";
+    console.log(green(`✓ wired the widget into ${path.relative(absDir, inject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)${voiceNote}`));
   } else {
     console.log(`\nWidget not auto-wired (${inject.reason}). Add it yourself:`);
     console.log('  import { Copilot } from "@cairnvibe/sdk";');

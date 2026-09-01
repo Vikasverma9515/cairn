@@ -40,7 +40,16 @@ function writeIfAbsent(filePath: string, content: string, result: InitResult): v
   result.filesWritten.push(filePath);
 }
 
-export function runInit(dir: string): InitResult {
+export interface RunInitOptions {
+  /** Also scaffold /api/copilot/speak and /api/copilot/transcribe (Deepgram-backed) —
+   * real bug this closes: previously nothing wrote these routes for a Next.js
+   * project no matter what, so choosing voice during `cairn setup` silently did
+   * nothing beyond saving a key nothing used. Ignored for the standalone-server
+   * path, which already conditionally wires speak in STANDALONE_SERVER. */
+  voice?: boolean;
+}
+
+export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
   const absDir = path.resolve(dir);
   const pkgPath = path.join(absDir, "package.json");
   let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } = {};
@@ -66,21 +75,33 @@ export function runInit(dir: string): InitResult {
 
   if (result.framework === "next-app-router") {
     writeIfAbsent(path.join(absDir, "app", "api", "copilot", "route.ts"), NEXT_APP_ROUTE, result);
+    const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}"];
+    if (options.voice) {
+      writeIfAbsent(path.join(absDir, "app", "api", "copilot", "speak", "route.ts"), NEXT_APP_SPEAK_ROUTE, result);
+      writeIfAbsent(path.join(absDir, "app", "api", "copilot", "transcribe", "route.ts"), NEXT_APP_TRANSCRIBE_ROUTE, result);
+      widgetProps.push('speakEndpoint="/api/copilot/speak"', 'transcribeEndpoint="/api/copilot/transcribe"');
+    }
     result.nextSteps.push(
       "1. cp .env.example .env and fill in your key(s).",
       "2. Add the widget to app/layout.tsx:",
       '   import { Copilot } from "@cairnvibe/sdk";',
-      '   <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />',
+      `   <Copilot ${widgetProps.join(" ")} />`,
       "3. npx cairn build .   (scans this Next.js app's source)",
       "4. npm run dev, then ask it a question.",
     );
   } else if (result.framework === "next-pages-router") {
     writeIfAbsent(path.join(absDir, "pages", "api", "copilot.ts"), NEXT_PAGES_API_ROUTE, result);
+    const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}"];
+    if (options.voice) {
+      writeIfAbsent(path.join(absDir, "pages", "api", "copilot", "speak.ts"), NEXT_PAGES_SPEAK_ROUTE, result);
+      writeIfAbsent(path.join(absDir, "pages", "api", "copilot", "transcribe.ts"), NEXT_PAGES_TRANSCRIBE_ROUTE, result);
+      widgetProps.push('speakEndpoint="/api/copilot/speak"', 'transcribeEndpoint="/api/copilot/transcribe"');
+    }
     result.nextSteps.push(
       "1. cp .env.example .env and fill in your key(s).",
       "2. Add the widget to pages/_app.tsx:",
       '   import { Copilot } from "@cairnvibe/sdk";',
-      '   <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />',
+      `   <Copilot ${widgetProps.join(" ")} />`,
       "3. npx cairn build .   (scans this Next.js app's source)",
       "4. npm run dev, then ask it a question.",
     );
@@ -153,6 +174,79 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     persona: process.env.CAIRN_PERSONA || undefined,
   });
   const result = await copilotHandler(req.body);
+  res.status(result.status).json(result.body);
+}
+`;
+
+// The exact shape examples/demo-app's already-working routes use — copied,
+// not reinvented, since that's the one place in this repo these have
+// actually been proven against real Deepgram calls.
+const NEXT_APP_SPEAK_ROUTE = `import { createSpeakHandler } from "@cairnvibe/sdk/speak-server";
+
+const handler = createSpeakHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
+
+export async function POST(request: Request) {
+  const { text } = await request.json().catch(() => ({ text: "" }));
+  const result = await handler(text ?? "");
+
+  if ("error" in result.body) {
+    return Response.json(result.body, { status: result.status });
+  }
+  return new Response(result.body.audio, {
+    status: result.status,
+    headers: { "content-type": result.body.contentType },
+  });
+}
+`;
+
+const NEXT_APP_TRANSCRIBE_ROUTE = `import { NextResponse } from "next/server";
+import { createTranscribeHandler } from "@cairnvibe/sdk/transcribe-server";
+
+const handler = createTranscribeHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
+
+export async function POST(request: Request) {
+  const contentType = request.headers.get("content-type") ?? "audio/webm";
+  const buffer = await request.arrayBuffer();
+  const result = await handler(buffer, contentType);
+  return NextResponse.json(result.body, { status: result.status });
+}
+`;
+
+const NEXT_PAGES_SPEAK_ROUTE = `import type { NextApiRequest, NextApiResponse } from "next";
+import { createSpeakHandler } from "@cairnvibe/sdk/speak-server";
+
+const handler = createSpeakHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
+
+export default async function speak(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") return res.status(405).end();
+  const result = await handler(req.body?.text ?? "");
+  if ("error" in result.body) {
+    return res.status(result.status).json(result.body);
+  }
+  res.status(result.status).setHeader("content-type", result.body.contentType).send(Buffer.from(result.body.audio));
+}
+`;
+
+const NEXT_PAGES_TRANSCRIBE_ROUTE = `import type { NextApiRequest, NextApiResponse } from "next";
+import { createTranscribeHandler } from "@cairnvibe/sdk/transcribe-server";
+
+const handler = createTranscribeHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
+
+// Pages Router's default body parser only handles JSON/form bodies — raw
+// audio bytes need this off so the handler gets the untouched buffer.
+export const config = { api: { bodyParser: false } };
+
+async function readRawBody(req: NextApiRequest): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+export default async function transcribe(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") return res.status(405).end();
+  const contentType = req.headers["content-type"] ?? "audio/webm";
+  const buffer = await readRawBody(req);
+  const result = await handler(buffer, contentType);
   res.status(result.status).json(result.body);
 }
 `;

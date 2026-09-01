@@ -65,6 +65,49 @@ describe("injectWidget", () => {
     expect(wrapperText).toContain("onDo=");
   });
 
+  it("does not pass speakEndpoint/transcribeEndpoint by default — voice is opt-in", () => {
+    write(
+      "app/layout.tsx",
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+
+    const result = injectWidget(tmpDir, "next-app-router");
+
+    const wrapperText = fs.readFileSync(result.wrapperPath!, "utf8");
+    expect(wrapperText).not.toContain("speakEndpoint");
+    expect(wrapperText).not.toContain("transcribeEndpoint");
+  });
+
+  it("wires speakEndpoint/transcribeEndpoint into the wrapper when voice is requested", () => {
+    // Real bug this guards: the wrapper used to never pass these props at
+    // all, so the widget had no way to know voice existed even when a
+    // valid DEEPGRAM_API_KEY was configured and the backend routes existed.
+    write(
+      "app/layout.tsx",
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+
+    const result = injectWidget(tmpDir, "next-app-router", { voice: true });
+
+    const wrapperText = fs.readFileSync(result.wrapperPath!, "utf8");
+    expect(wrapperText).toContain('speakEndpoint="/api/copilot/speak"');
+    expect(wrapperText).toContain('transcribeEndpoint="/api/copilot/transcribe"');
+  });
+
   it("falls back to inserting after {children} when there's no literal <body> (a custom Providers wrapper)", () => {
     const layout = write(
       "app/layout.tsx",

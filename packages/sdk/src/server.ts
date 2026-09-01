@@ -286,23 +286,34 @@ export class GroqVerbLLM implements VerbLLM {
 const VERB_TOOL_DESCRIPTION = "Respond with exactly one action for the UI to take. Never invent selectors, routes, or code.";
 
 function buildVerbToolSchema(registeredActions: string[]): Record<string, unknown> {
+  // Every genuinely-optional field allows `null` as well as its real type
+  // (`["string", "null"]`, not just `"string"`) — found live, not
+  // theoretical: real models (verified against Groq's openai/gpt-oss-120b)
+  // routinely emit `"target": null` for a tour step that doesn't point at
+  // anything specific, rather than omitting the key — a completely
+  // reasonable way to represent "not applicable" in a homogeneous JSON
+  // array where every item shares the same shape. A plain `type: "string"`
+  // schema rejects that as an outright 400 ("did not match schema:
+  // expected string, but got null") before we ever see a response to
+  // handle — the *entire* tool call is thrown away, not just that one
+  // field, degrading a real "what can you do on this page" question
+  // straight to a generic failure. Nullable optional fields fix this at
+  // the source instead of trying to catch it after the fact.
+  const nullableString = (description: string) => ({ type: ["string", "null"], description });
   return {
     type: "object",
     properties: {
       verb: { type: "string", enum: [...VERBS] },
       text: { type: "string", description: "Shown to the user. Required for explain." },
-      target: {
-        type: "string",
-        description:
-          "Manifest element id. Required for highlight/open. For do, the id of what the action applies to, if it needs one.",
-      },
-      route: { type: "string", description: "A route from the manifest. Required for navigate." },
-      action: {
-        type: "string",
-        description: registeredActions.length
-          ? `Required for do. Must be exactly one of: ${registeredActions.join(", ")}.`
+      target: nullableString(
+        "Manifest element id. Required for highlight/open. For do, the id of what the action applies to, if it needs one. null (or omitted) if not applicable.",
+      ),
+      route: nullableString("A route from the manifest. Required for navigate. null (or omitted) if not applicable."),
+      action: nullableString(
+        registeredActions.length
+          ? `Required for do. Must be exactly one of: ${registeredActions.join(", ")}. null (or omitted) if not applicable.`
           : "Required for do. No actions are registered in this deployment — never use this verb.",
-      },
+      ),
       steps: {
         type: "array",
         description:
@@ -311,12 +322,12 @@ function buildVerbToolSchema(registeredActions: string[]): Record<string, unknow
           type: "object",
           properties: {
             text: { type: "string", description: "One short natural sentence for this step. Same formatting rules as every other text field." },
-            target: { type: "string", description: "Manifest element id to highlight for this step, if this step points at something." },
-            route: {
-              type: "string",
-              description:
-                "Only if this step needs to move to a different page first (a route from the manifest) — most steps stay on the current page and omit this. Same restriction as navigate: not available if navigation isn't allowed here.",
-            },
+            target: nullableString(
+              "Manifest element id to highlight for this step, if this step points at something. null (or omitted) if it doesn't.",
+            ),
+            route: nullableString(
+              "Only if this step needs to move to a different page first (a route from the manifest) — most steps stay on the current page and use null here. Same restriction as navigate: not available if navigation isn't allowed here.",
+            ),
           },
           required: ["text"],
           additionalProperties: false,

@@ -37,7 +37,15 @@ export interface InjectResult {
 
 const WRAPPER_COMPONENT_NAME = "CairnCopilot";
 
-function wrapperSource(): string {
+function wrapperSource(voice: boolean): string {
+  // Real bug this closes: choosing voice during `cairn setup` used to save a
+  // DEEPGRAM_API_KEY that nothing ever read — the generated wrapper never
+  // passed speakEndpoint/transcribeEndpoint, so the widget had no way to
+  // know voice existed regardless of whether a valid key was configured.
+  // These routes only exist when ensure-transpile.ts's sibling in setup.ts
+  // asked init.ts to scaffold them (voice: true) — never reference them here
+  // unwired to a real backend route.
+  const voiceProps = voice ? '\n      speakEndpoint="/api/copilot/speak"\n      transcribeEndpoint="/api/copilot/transcribe"' : "";
   return `"use client";
 
 import { Copilot } from "@cairnvibe/sdk";
@@ -51,7 +59,7 @@ export function ${WRAPPER_COMPONENT_NAME}() {
       registeredActions={[]}
       onDo={(action, target) => {
         // run it through your own auth
-      }}
+      }}${voiceProps}
     />
   );
 }
@@ -76,7 +84,11 @@ function toPosixRelativeImport(fromFile: string, toFileNoExt: string): string {
   return rel;
 }
 
-export function injectWidget(dir: string, framework: "next-app-router" | "next-pages-router"): InjectResult {
+export function injectWidget(
+  dir: string,
+  framework: "next-app-router" | "next-pages-router",
+  options: { voice?: boolean } = {},
+): InjectResult {
   const absDir = path.resolve(dir);
   const target = findLayoutFile(absDir, framework);
   if (!target) {
@@ -96,7 +108,7 @@ export function injectWidget(dir: string, framework: "next-app-router" | "next-p
   const wrapperPath = path.join(absDir, "components", `${WRAPPER_COMPONENT_NAME}${ext}`);
   if (!fs.existsSync(wrapperPath)) {
     fs.mkdirSync(path.dirname(wrapperPath), { recursive: true });
-    fs.writeFileSync(wrapperPath, wrapperSource());
+    fs.writeFileSync(wrapperPath, wrapperSource(!!options.voice));
   }
   const importPath = toPosixRelativeImport(target, wrapperPath.slice(0, -ext.length));
   const widgetJsx = `<${WRAPPER_COMPONENT_NAME} />`;

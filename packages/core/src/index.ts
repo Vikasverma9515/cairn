@@ -62,27 +62,42 @@ export type Manifest = z.infer<typeof ManifestSchema>;
 // wrong shape, a `do` action outside the caller-supplied allowlist — MUST be
 // treated as a parse failure and degraded to `explain`, never executed.
 
+/** An optional string field that also tolerates an explicit `null` — found
+ * live, not theoretical: real models (verified against Groq's
+ * openai/gpt-oss-120b) routinely emit `"target": null` for "not applicable
+ * here" in a homogeneous JSON array/object, rather than omitting the key
+ * entirely. Groq's own tool-call schema rejects that outright (a 400
+ * before this code ever runs — see buildVerbToolSchema in @cairnvibe/sdk),
+ * but once that's fixed to accept null on the wire, this side needs to
+ * accept it too, or the exact same shape just fails one layer later, here,
+ * degrading a real tour to "I'm not sure how to help with that." instead
+ * of an actual crash — quieter, but just as wrong. Normalizes null to
+ * undefined so the inferred type stays exactly `string | undefined`,
+ * matching every other optional field in this schema — no downstream
+ * consumer needs to change. */
+const optionalString = () => z.preprocess((v) => (v === null ? undefined : v), z.string().optional());
+
 export const VerbResponseSchema = z.discriminatedUnion("verb", [
   z.object({ verb: z.literal("explain"), text: z.string().min(1) }).strict(),
   z
     .object({
       verb: z.literal("highlight"),
       target: z.string().min(1),
-      text: z.string().optional(),
+      text: optionalString(),
     })
     .strict(),
   z
     .object({
       verb: z.literal("open"),
       target: z.string().min(1),
-      text: z.string().optional(),
+      text: optionalString(),
     })
     .strict(),
   z
     .object({
       verb: z.literal("navigate"),
       route: z.string().min(1),
-      text: z.string().optional(),
+      text: optionalString(),
     })
     .strict(),
   z
@@ -90,8 +105,8 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       verb: z.literal("do"),
       action: z.string().min(1),
       /** What the action applies to, e.g. a manifest element id. Not every action needs one. */
-      target: z.string().optional(),
-      text: z.string().optional(),
+      target: optionalString(),
+      text: optionalString(),
     })
     .strict(),
   z
@@ -108,9 +123,9 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
           z
             .object({
               text: z.string().min(1),
-              target: z.string().optional(),
+              target: optionalString(),
               /** Navigate here before this step's target lookup — for a walkthrough that spans more than one page. */
-              route: z.string().optional(),
+              route: optionalString(),
             })
             .strict(),
         )

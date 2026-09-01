@@ -51,6 +51,36 @@ describe("safeParseVerbResponse", () => {
     expect(parsed).not.toBeNull();
   });
 
+  it("accepts explicit null on optional fields the same as omitting them — real models send both", () => {
+    // Real bug, found live against Groq's openai/gpt-oss-120b, not a
+    // synthetic case: a tour with a general first step (nothing specific to
+    // point at) came back as `"target": null`, not an omitted key — a
+    // completely reasonable way for a model to represent "not applicable"
+    // in a homogeneous JSON array where every step shares the same shape.
+    const parsed = safeParseVerbResponse({
+      verb: "tour",
+      steps: [
+        { text: "This page gives you an overview.", target: null, route: null },
+        { text: "Click here to see sessions.", target: "sessions-link" },
+      ],
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.verb).toBe("tour");
+    if (parsed?.verb === "tour") {
+      expect(parsed.steps[0].target).toBeUndefined(); // normalized, not left as null
+      expect(parsed.steps[0].route).toBeUndefined();
+    }
+
+    expect(safeParseVerbResponse({ verb: "do", action: "archiveInvoice", target: null, text: null })).toEqual({
+      verb: "do",
+      action: "archiveInvoice",
+    });
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices", text: null })).toEqual({
+      verb: "navigate",
+      route: "/invoices",
+    });
+  });
+
   it("rejects a tour with fewer than 2 steps or more than 6", () => {
     expect(safeParseVerbResponse({ verb: "tour", steps: [{ text: "only one" }] })).toBeNull();
     const sevenSteps = Array.from({ length: 7 }, (_, i) => ({ text: `step ${i}` }));
