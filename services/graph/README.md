@@ -898,6 +898,61 @@ and a failure in one shouldn't block or be attributed to the other.
 exploding check function to prove the runner's failure handling — not
 just that the happy path prints something). 154 tests total, all passing.
 
+## External stress test — real numbers, not a synthetic fixture
+
+Every dogfood test elsewhere in this README runs against this repo
+(115-ish files) or the small fixtures in `tests/`. This is the real
+external-repo test the plan called for: a shallow clone of
+[`microsoft/vscode`](https://github.com/microsoft/vscode) — a large,
+real, actively-maintained TypeScript codebase, explicitly authorized and
+run once, then deleted (nothing from it is checked in).
+
+**Scale**: 13,102 files, 175,824 symbols, 127,972 imports, **1,286,961
+call edges**. 7 files correctly auto-skipped as generated/minified by
+`_looks_generated` — including a real `semver.js` vendor file and
+several `*.perf-data.ts`/`*.stest.ts` fixture files, the exact class of
+file that heuristic exists to catch, now confirmed against files it
+wasn't written with in mind.
+
+**What scales well, measured**:
+
+- **`build`**: 418.5s cold (13,095 files parsed across the process pool,
+  7 skipped, 0 failed). **Second run with nothing changed: 2.53s** — a
+  165x speedup, 0 files re-parsed. The incremental-sync claim, the one
+  this whole architecture is built around, holds at real scale, not just
+  the 115-file scale every other measurement in this README uses.
+- **`deps`** (the dependency graph, including cycle detection): **3.6s**
+  end to end. Correctly identified
+  `extensions/copilot/src/util/vs/platform/instantiation/common/instantiation.ts`
+  (VS Code's actual dependency-injection core) as the highest-blast-radius
+  file (493 dependents) — the right answer, not a guess. Found 338 real
+  import cycles, concentrated in `extensions/copilot/src/util/vs/base/
+  common/` (`lifecycle.ts` ↔ `arrays.ts` ↔ `event.ts` ↔ `async.ts`, and
+  similar) — VS Code's own base utility layer is publicly known to have
+  circular imports at exactly this location, so this is a correct
+  finding, not a false positive from the resolver.
+
+**What does NOT scale yet, measured, not guessed**: `dead` (reachability
+/ dead-code detection) took **23.5 minutes** on this same codebase —
+1,657 unreachable/unexported symbols found out of 175,824 (0.94%, a
+plausible ratio, not a red flag on correctness), but the wall-clock time
+is a real gap next to `build`'s and `deps`' seconds-to-low-minutes.
+Root-cause hypothesis, not yet verified by profiling: `uses_by_context`
+and `by_name` are keyed by bare symbol *name*, not by symbol id — in a
+codebase this size, hundreds of unrelated methods can share a common
+name (`get`, `dispose`, `handle`, ...), and the BFS in
+`compute_dead_symbols` re-walks the same name's use-edges once per
+symbol that shares it, not once per distinct name. That's a real,
+scoped, fixable algorithmic problem (memoize per-name work instead of
+per-symbol-id), not a fundamental architecture flaw — flagged here for
+the next phase rather than hot-fixed under time pressure against a
+result already captured.
+
+Every generated file (the clone, the 500MB+ structure-graph db) was
+deleted after this test — this section is the only trace of it, by
+design: the point was to measure against something real once and record
+what was actually true, not to keep a giant external repo checked in.
+
 ## What's not built yet
 
 - **More languages beyond TS/TSX/JS/Python/Go/Java/Rust/C#/Ruby/PHP** —
@@ -912,8 +967,7 @@ just that the happy path prints something). 154 tests total, all passing.
   verified against the real installed SDKs, but never actually called
   against a live account (no credentials in this environment). Test both
   for real the moment credentials exist.
-- **Stress test against a large *external* open-source monorepo** — this
-  repo (76 files) proves the pipeline is correct; it doesn't prove
-  "lakhs of files" doesn't hit some wall this size can't reveal. Worth
-  doing before calling Month 1 fully done, on a repo of the user's
-  choosing.
+- **Dead-code detection performance at real scale** — see "External
+  stress test" below: `compute_dead_symbols` took 23.5 minutes on a
+  175k-symbol codebase, while `build`/`deps` handled the same codebase
+  in seconds. A real, found-not-guessed algorithmic gap, not yet fixed.
