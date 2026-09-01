@@ -146,7 +146,22 @@ export async function resolveVerb(
   }
 
   if (parsedVerb.data.verb === "do" && !registeredActions.includes(parsedVerb.data.action)) {
-    return { verb: "explain", text: "That action isn't available here." };
+    // Not a manually registered action — the auto-discovery fallback: does
+    // "target" name a real element on the CURRENT page that the indexer
+    // itself found a real, mutating handler call on? If so, attach that
+    // call here (never something the model emitted itself — see
+    // ApiCallSchema's doc comment) so the client can execute exactly the
+    // same request a real click on that element would already make.
+    // Anything else — no target, an unknown target, or a real target with
+    // no discoverable apiCall (a client-only handler, a dynamic per-row
+    // URL — see manifest.ts's parseApiCall) — stays refused, same as before.
+    const target = parsedVerb.data.target;
+    const pageElements = manifest.pages.find((p) => p.route === input.route)?.elements ?? [];
+    const targetElement = target ? pageElements.find((e) => e.id === target) : undefined;
+    if (!targetElement?.apiCall) {
+      return { verb: "explain", text: "That action isn't available here." };
+    }
+    return { ...parsedVerb.data, apiCall: targetElement.apiCall };
   }
 
   // tour is allowed at every tier (see TIER_ALLOWED_VERBS) because
@@ -310,9 +325,11 @@ function buildVerbToolSchema(registeredActions: string[]): Record<string, unknow
       ),
       route: nullableString("A route from the manifest. Required for navigate. null (or omitted) if not applicable."),
       action: nullableString(
-        registeredActions.length
-          ? `Required for do. Must be exactly one of: ${registeredActions.join(", ")}. null (or omitted) if not applicable.`
-          : "Required for do. No actions are registered in this deployment — never use this verb.",
+        "Required for do. A short label for what's being done, e.g. \"archive-invoice\" " +
+          (registeredActions.length
+            ? `— either one of this deployment's registered actions [${registeredActions.join(", ")}], or, for any other element from currentPageElements whose own description says it performs a real action, any short label describing it.`
+            : "for any element from currentPageElements whose own description says it performs a real action — no actions are separately registered in this deployment, but currentPageElements-driven actions still work.") +
+          " null (or omitted) if not applicable.",
       ),
       steps: {
         type: "array",
@@ -383,15 +400,23 @@ Always call ${VERB_TOOL_NAME} exactly once with one of these verbs:
   spans more than one page (e.g. "how do I get from here to Settings and
   turn on X"), a step may also carry a "route" to move there first — most
   steps should NOT set this; only the step where the page actually changes.
-- do: ONLY for an action id from this exact list: [${registeredActions.join(", ") || "none registered — never use do"}].
-  If the action applies to one specific thing among several (e.g. one row in
-  a table), name it in "target". The manifest only describes each element
-  once per page, even if it's rendered many times with different data — so
-  for a per-instance target, use the matching id from the request's
-  "visible" list instead, which reflects the real elements on the page right
-  now (e.g. manifest has one generic "archive" button, but "visible" might
-  list "archive-inv-2" for the specific row the user means).
-  If the user asks for anything not on that list, use "explain" and say you can't do that from here.
+- do: trigger a real action. Two ways this is allowed — anything else, refuse:
+  1. One of this deployment's registered action ids: [${registeredActions.join(", ") || "none registered"}].
+     Put that exact id in "action".
+  2. Any element in "currentPageElements" whose own description says it
+     performs a real action (e.g. "Archives this invoice", "Starts a phone
+     call", "Submits the form") — put that element's id in "target" and a
+     short label describing what it does in "action". This only works for
+     an element on the CURRENT page (it must be in currentPageElements) and
+     only for an action that doesn't depend on which specific row/instance
+     — a generic page-level button, not "archive row 3 of this table". If
+     the user means one specific item among several repeated ones, that's
+     not currently supported through this path — use "explain" and say so,
+     don't guess at a specific instance.
+  If neither applies — the action isn't registered and isn't a real element
+  on this page, or it needs picking a specific instance — use "explain" and
+  say you can't do that from here. Never invent a target or action id that
+  isn't in currentPageElements or the registered list above.
 
 Every "text" field (in explain, or per-step in tour, or the optional text on
 any other verb) is read aloud AND shown on screen, so it must sound like a

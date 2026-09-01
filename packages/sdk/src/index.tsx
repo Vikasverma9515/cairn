@@ -92,16 +92,19 @@ export function Copilot({
   const [rtMicMuted, setRtMicMuted] = useState(false);
   const [rtSpeakerMuted, setRtSpeakerMuted] = useState(false);
   // Set while a "tour" verb's steps are being narrated/highlighted one at a
-  // time — drives the step-progress caption and blocks the input/mic so a
-  // typed or spoken question can't interrupt mid-walkthrough.
+  // time — drives the step-progress caption and blocks the *typed* input so
+  // a typed question can't collide with the walkthrough (a voice
+  // interruption is handled separately — see touringRef/triggerBargeIn).
   const [tourStep, setTourStep] = useState<{ index: number; total: number } | null>(null);
-  const tourGenerationRef = useRef(0); // bumped to cancel an in-progress tour (e.g. widget closed) without extra flags
+  const tourGenerationRef = useRef(0); // bumped to cancel an in-progress tour (e.g. widget closed, or a voice barge-in) without extra flags
   // Mirrors whether a tour is running, for use inside the mic's
   // onaudioprocess callback (a stale closure over React state there would
   // miss a tour that started after the callback was created) — a tour
-  // reuses "rt-speaking" to hold the mic off too, but must NOT be
-  // barge-in-able the way a real conversational reply is (see the RMS
-  // check below): it's a deliberate walkthrough, not a turn to interrupt.
+  // reuses "rt-speaking" to hold the mic off between steps, but IS
+  // barge-in-able like a real conversational reply (see the RMS check
+  // below): interrupting mid-tour cancels the rest of the walkthrough,
+  // the way a real person giving a tour stops when you have a question
+  // instead of talking over you.
   const touringRef = useRef(false);
   // Resolver for "this tour step's audio has fully finished playing" when
   // narrating over an already-open realtime session (see maybeResumeListening
@@ -242,12 +245,14 @@ export function Copilot({
    * actually showing you around instead of one paragraph naming several
    * buttons at once with nothing highlighted.
    *
-   * Always narrates via speakEndpoint (plain request/response TTS), even
-   * during a live realtime session — a tour is a distinct guided
-   * walkthrough, not a conversational turn, so it doesn't need the
-   * streaming relay's turn-taking machinery. If the widget is mid
-   * realtime call, the mic is held off (mirrors "rt-speaking") for the
-   * tour's duration so it can't pick up the tour's own narration.
+   * During a live realtime session, narration reuses the same streaming
+   * Speak connection a normal conversational reply uses (see
+   * speakOverRealtime below) instead of a separate buffered REST call —
+   * otherwise falls back to speakEndpoint. Either way, the mic is held off
+   * between steps (mirrors "rt-speaking") so it doesn't pick up the tour's
+   * own narration — but it's still listening for a real interruption:
+   * talking during a step cancels the rest of the tour via triggerBargeIn,
+   * the same as interrupting a normal spoken reply.
    */
   async function runTour(steps: TourStep[]) {
     const myGeneration = ++tourGenerationRef.current;
@@ -550,12 +555,20 @@ export function Copilot({
         if (ws.readyState !== WebSocket.OPEN) return;
         if (rtMicMutedRef.current) return;
 
-        // Barge-in: while the agent is speaking a real conversational
-        // reply (not touring — a tour deliberately can't be talked over),
-        // keep listening to the mic locally even though it isn't being
-        // sent yet, and cut the agent off the instant the user starts
-        // talking over it instead of making them wait for it to finish.
-        if (rtStateRef.current === "rt-speaking" && !touringRef.current) {
+        // Barge-in: while the agent is speaking a real conversational reply,
+        // still thinking about one, OR mid-tour, keep listening to the mic
+        // locally even though it isn't being sent yet, and cut the agent
+        // off the instant the user starts talking again instead of making
+        // them wait — including during a guided tour, which now cancels the
+        // rest of the walkthrough on interruption (see triggerBargeIn)
+        // instead of being talked-over-proof by design, the way a real
+        // person giving a tour stops when you have a question. The
+        // "rt-thinking" half matters just as much as "rt-speaking": an LLM
+        // turn can easily take a couple of seconds with nothing playing
+        // yet, and without this the mic was completely deaf during that
+        // whole window — found live as "not listening while speaking... no
+        // interrupting system", not just a missed nice-to-have.
+        if (rtStateRef.current === "rt-speaking" || rtStateRef.current === "rt-thinking") {
           const rms = computeRms(e.inputBuffer.getChannelData(0));
           if (rms > BARGE_IN_RMS_THRESHOLD) triggerBargeIn();
           return;
@@ -642,6 +655,19 @@ export function Copilot({
         disarmThinkingWatchdog();
         stopScheduledRtAudio();
         rtAudioDoneArrivingRef.current = true;
+        if (touringRef.current) {
+          // Interrupting mid-guide cancels the whole rest of the tour, not
+          // just the current step — the way a real person giving a tour
+          // stops and answers your question instead of continuing to talk
+          // over you. Without resolving the current step's own pending
+          // promise here, runTour only notices the cancellation via its own
+          // 15s-per-step fallback timeout instead of right away.
+          tourGenerationRef.current++;
+          touringRef.current = false;
+          setTourStep(null);
+          rtTourAudioDoneRef.current?.();
+          rtTourAudioDoneRef.current = null;
+        }
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
         setRtStatus("rt-listening");
         setCaption("");
@@ -718,7 +744,17 @@ export function Copilot({
           // exactly the way a silently-dropped response used to leave it.
           disarmThinkingWatchdog();
           setAnswer(msg.message ?? "Something went wrong.");
-          if (!touringRef.current) {
+          if (touringRef.current) {
+            // A tour step's own speakStreamed() failed server-side (see
+            // realtime-server.ts's "speak" handler). Without resolving this
+            // step's pending promise here, runTour's `await
+            // speakOverRealtime(step.text)` only recovers via its own 15s
+            // fallback timeout — found live as a guide that goes badly
+            // quiet for long stretches, one step at a time.
+            rtAudioDoneArrivingRef.current = true;
+            rtTourAudioDoneRef.current?.();
+            rtTourAudioDoneRef.current = null;
+          } else {
             setRtStatus("rt-listening");
             setCaption("");
           }

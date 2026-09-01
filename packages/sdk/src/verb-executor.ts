@@ -5,7 +5,7 @@
 // explain — never guess, never wrong-click"). The server (`server.ts`)
 // enforces the same schema independently — never trust the client alone.
 
-import { VerbResponseSchema, type TourStep, type VerbResponse } from "@cairnvibe/core";
+import { VerbResponseSchema, type ApiCall, type TourStep, type VerbResponse } from "@cairnvibe/core";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 
 export interface VerbExecutorOptions {
@@ -61,12 +61,32 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
 
     case "do": {
       const allowed = options.registeredActions ?? [];
-      if (!allowed.includes(verb.action)) {
-        options.onExplain("That action isn't available here.");
+      if (allowed.includes(verb.action)) {
+        // Explicit, developer-owned path — unchanged.
+        options.onDo?.(verb.action, verb.target);
+        if (verb.text) options.onExplain(verb.text);
         return;
       }
-      options.onDo?.(verb.action, verb.target);
-      if (verb.text) options.onExplain(verb.text);
+
+      if (verb.apiCall) {
+        // Auto-discovered path: a real, indexer-found handler call on this
+        // exact target element, attached server-side after looking the
+        // target up in the manifest — never something the model emitted
+        // itself (see ApiCallSchema's doc comment in @cairnvibe/core).
+        const el = verb.target ? findElement(verb.target) : null;
+        if (el) highlightElement(el);
+        else if (verb.target) (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+
+        if (verb.text) options.onExplain(verb.text);
+        void executeApiCall(verb.apiCall).then((result) => {
+          if (!result.ok) {
+            options.onExplain("I tried to do that, but something went wrong — try again in a moment.");
+          }
+        });
+        return;
+      }
+
+      options.onExplain(verb.text ?? "That action isn't available here.");
       return;
     }
 
@@ -80,5 +100,25 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         options.onExplain(verb.steps.map((s) => s.text).join(" "));
       }
       return;
+  }
+}
+
+/**
+ * Fires exactly the same request a real click on the target element would
+ * already make — same-origin only (apiCall.url is always relative, never a
+ * different host), and `credentials: "same-origin"` so the browser attaches
+ * the user's own real session cookies, the same way a manual click would.
+ * No body is sent: l1-scan.ts's static capture only ever traces method+url,
+ * never a request body (which usually depends on runtime state a build-time
+ * scan can't see) — fine for the common trigger-style action (an id already
+ * baked into the URL, no other payload needed), a real gap for one that
+ * requires one.
+ */
+async function executeApiCall(apiCall: ApiCall): Promise<{ ok: boolean; status?: number }> {
+  try {
+    const res = await fetch(apiCall.url, { method: apiCall.method, credentials: "same-origin" });
+    return { ok: res.ok, status: res.status };
+  } catch {
+    return { ok: false };
   }
 }

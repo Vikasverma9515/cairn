@@ -14,6 +14,40 @@ import { generateDocsMarkdown } from "./docs";
 import { runInit } from "./init";
 import { runSetup } from "./setup";
 
+/**
+ * A local `cairn build`/`npx cairn build` run (as opposed to a hosting
+ * platform's own build step, which injects its configured env vars
+ * directly into process.env) only ever sees the plain shell environment —
+ * it does NOT get a bundler's or framework's automatic .env/.env.local
+ * loading, since that's scoped to that tool's own process, not whatever
+ * invokes this CLI. A real key sitting in .env was invisible here even
+ * though `cairn setup` had written it there — the exact same class of gap
+ * already fixed for cairn-realtime's own CLI (realtime-cli.ts), for the
+ * exact same reason. No new dependency: .env is a plain KEY=VALUE format.
+ * .env.local loads first so it wins (matches Next.js's own precedence);
+ * nothing here overrides a real, already-set process.env value (a shell
+ * export, or a platform's own injected env vars) — file contents only
+ * ever fill a gap, never override something actually set.
+ */
+function loadDotEnv(dir: string): void {
+  for (const filename of [".env.local", ".env"]) {
+    const filePath = path.join(dir, filename);
+    if (!fs.existsSync(filePath)) continue;
+    for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (process.env[key] === undefined) process.env[key] = value;
+    }
+  }
+}
+
 function parseArgs(rest: string[]): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
@@ -33,6 +67,7 @@ async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const { positional, flags } = parseArgs(rest);
   const dir = positional[0] ?? ".";
+  loadDotEnv(dir);
 
   if (command === "scan") {
     const facts = scanL1(dir);

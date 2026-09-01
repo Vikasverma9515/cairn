@@ -173,6 +173,89 @@ hands-on testing against VOXERA (`@cairnvibe/sdk` 0.2.2 → 0.2.5):**
   realtime-relay fix above: with nothing listening on `realtimeUrl`, a
   voice tour had no working path to test in the first place.
 
+**A `do` action can now auto-execute for real, with zero manual
+configuration** (`@cairnvibe/core` 0.1.3, `@cairnvibe/indexer` 0.2.6,
+`@cairnvibe/sdk` 0.2.6). Previously "do" only ever worked for an action id
+a developer had hand-listed in `registeredActions` — with none configured
+(the common case), the system prompt told the model to never use the verb
+at all. Now: if the model targets a real element from `currentPageElements`
+whose own indexer-generated description says it performs an action,
+`resolveVerb` looks that element up in the manifest server-side and, only
+if it carries a real `apiCall` (the indexer's own static trace of a real
+`fetch`/`axios` call in that element's handler), attaches it to the
+response — never something the model invents. The client fires that exact
+request through the browser's own session, highlights the target, and
+reports failure honestly rather than claiming success. `registeredActions`
+still works exactly as before and takes priority when both could apply.
+Two real, necessary tightenings found while building this:
+- `manifest.ts`'s `parseApiCall` used to accept *any* non-empty URL
+  string, including l1-scan.ts's raw-source-text fallback for a per-row
+  action's dynamic URL (e.g. a template literal like
+  `` `/api/items/${id}/archive` `` capturing literal backticks and an
+  unresolved `${...}` hole) — fetching that as-is would hit a garbage
+  URL. Now only a clean, static, same-origin relative path is accepted;
+  a dynamic per-row URL correctly yields `apiCall: null` (still
+  explainable/highlightable, just not auto-executable — a real,
+  documented gap for a future pass, not silently pretended away).
+- `cairn build`'s own CLI had the identical `.env`-loading gap
+  `cairn-realtime` did (see below) — a local `npx cairn build` or
+  `npm run build` couldn't see a real `GROQ_API_KEYS`/`ANTHROPIC_API_KEY`
+  sitting in `.env`. Fixed the same way, verified live: re-running the
+  exact same VOXERA build that previously skipped ("no key set for
+  groq — skipping") now completes and finds 15 real, auto-discovered
+  actions across the app (an "End Call" button, several form
+  submissions, a settings save, etc).
+Verified live end-to-end, not just server-side: asking VOXERA's real
+`/demo` page widget "please click the end call button right now" resolved
+to a real `do` verb with `apiCall: {method:"POST", url:"/api/session/end"}`
+attached, and the browser's own network log confirmed the widget actually
+fired `POST /api/session/end` (a real 401 — no session was active in the
+test browser — reported back to the user rather than papered over).
+
+**Four real voice-conversation bugs, found by hands-on realtime testing
+against VOXERA** (`@cairnvibe/sdk` 0.2.5 → 0.2.6):
+- **The core one: the agent spoke twice, in parallel, and the transcript
+  showed duplicate entries with no reply in between.** Root cause: the
+  realtime relay treated every Deepgram `is_final:true` Results message as
+  a finished question — but `is_final` only means "this transcript chunk
+  won't be revised," not "the user stopped talking." A single continuous
+  utterance can finalize in several chunks with no real pause between
+  them, each one triggering its own independent LLM+TTS turn. Fixed by
+  accumulating `is_final` chunks and only actually resolving a turn on
+  `speech_final:true` (the real endpointing-detected pause), with
+  Deepgram's separate `UtteranceEnd` event as a fallback so a turn can
+  never get stuck with unflushed buffered text. Also closed a related gap
+  while in there: a barge-in that lands *while* the LLM call for a turn is
+  still in flight now drops that turn's now-stale verb/speech once it
+  finally resolves, instead of letting it land on the client after the
+  user already moved on.
+- The mic was completely deaf during "thinking" (the gap between the
+  user's question finishing and the agent's reply starting) — only
+  "speaking" had a barge-in path. An LLM turn can easily take a couple of
+  seconds with nothing playing yet; reported live as "not listening while
+  speaking... no interrupting system." Fixed by extending the same RMS
+  barge-in check to "thinking" too.
+- A tour ("guide") could not be interrupted at all, by design — talking
+  during a step was silently ignored. Changed on explicit request: a real
+  interruption now cancels the rest of the tour immediately and returns to
+  listening, the way a real person giving a tour stops when you ask
+  something instead of continuing to talk over you.
+- A tour step whose server-side narration failed could hang for a full 15
+  seconds (its own fallback timeout) with zero signal to the user, and if
+  it kept failing, every remaining step would too — read as "the guide
+  goes quiet for long stretches" or "can't speak after the guide is
+  done." Fixed in two places: the "speak" WebSocket handler now catches a
+  failure and sends a real error message instead of an unhandled
+  rejection nobody hears about, and the client's error handler now
+  resolves the current step's pending promise immediately instead of only
+  ever recovering via the timeout.
+All four verified with new, real unit tests exercising the actual message
+sequences (two `is_final` chunks for one utterance → one turn, not two; a
+barge-in mid-resolve → the stale verb never reaches the client) — a full
+live audio round-trip couldn't be exercised in this environment (no real
+microphone available), so the fixes are verified at the protocol/logic
+level, not yet confirmed by ear.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 

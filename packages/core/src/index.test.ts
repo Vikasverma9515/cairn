@@ -81,6 +81,40 @@ describe("safeParseVerbResponse", () => {
     });
   });
 
+  it("accepts a do verb carrying a server-attached apiCall, and tolerates a null one", () => {
+    // apiCall is never something the model itself emits (see server.ts's
+    // resolveVerb) — it's attached after the fact, once the target's been
+    // looked up in the real manifest — but the client re-validates the
+    // full, already-enriched response through this same schema, so it has
+    // to accept the field.
+    const withCall = safeParseVerbResponse({
+      verb: "do",
+      action: "archive-invoice",
+      target: "archive-btn",
+      apiCall: { method: "POST", url: "/api/invoices/archive" },
+    });
+    expect(withCall).toEqual({
+      verb: "do",
+      action: "archive-invoice",
+      target: "archive-btn",
+      apiCall: { method: "POST", url: "/api/invoices/archive" },
+    });
+
+    expect(
+      safeParseVerbResponse({ verb: "do", action: "archive-invoice", target: "archive-btn", apiCall: null }),
+    ).toEqual({ verb: "do", action: "archive-invoice", target: "archive-btn" });
+  });
+
+  it("rejects an apiCall with a method outside the mutating set", () => {
+    expect(
+      safeParseVerbResponse({
+        verb: "do",
+        action: "archive-invoice",
+        apiCall: { method: "GET", url: "/api/invoices" },
+      }),
+    ).toBeNull();
+  });
+
   it("rejects a tour with fewer than 2 steps or more than 6", () => {
     expect(safeParseVerbResponse({ verb: "tour", steps: [{ text: "only one" }] })).toBeNull();
     const sevenSteps = Array.from({ length: 7 }, (_, i) => ({ text: `step ${i}` }));

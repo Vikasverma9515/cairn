@@ -23,7 +23,19 @@ export type Verb = (typeof VERBS)[number];
  */
 export const ApiCallSchema = z.object({
   method: z.enum(["POST", "PUT", "PATCH", "DELETE"]),
-  /** May contain the element's own dynamic template segments (e.g. "${id}") verbatim — see verb-executor.ts for how those get resolved against the real page at runtime. */
+  /**
+   * Always a concrete, same-origin relative path — never a template with an
+   * unresolved "${...}" hole. l1-scan.ts's static capture falls back to a
+   * call's raw source text when the URL isn't a plain string literal (a
+   * template literal for a per-row action, a bare identifier, some other
+   * expression); manifest.ts's parseApiCall rejects all of those rather
+   * than guess at resolving one, so this field is only ever set when it's
+   * genuinely safe to fetch as-is. A per-row/per-instance action (e.g.
+   * "archive this specific invoice") is a real gap this leaves open for
+   * now — those elements still get apiCall: null, explainable/highlightable
+   * but never auto-`do`-executed, until a future pass resolves them against
+   * real page state instead of guessing from the id string.
+   */
   url: z.string(),
 });
 export type ApiCall = z.infer<typeof ApiCallSchema>;
@@ -96,6 +108,12 @@ export type Manifest = z.infer<typeof ManifestSchema>;
  * consumer needs to change. */
 const optionalString = () => z.preprocess((v) => (v === null ? undefined : v), z.string().optional());
 
+/** Same null-tolerance as optionalString, for the one non-string optional
+ * field (apiCall) — never model-emitted (see its doc comment below), but
+ * kept consistent with every other optional field in this schema rather
+ * than being a surprising exception. */
+const optionalApiCall = () => z.preprocess((v) => (v === null ? undefined : v), ApiCallSchema.optional());
+
 export const VerbResponseSchema = z.discriminatedUnion("verb", [
   z.object({ verb: z.literal("explain"), text: z.string().min(1) }).strict(),
   z
@@ -126,6 +144,17 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       /** What the action applies to, e.g. a manifest element id. Not every action needs one. */
       target: optionalString(),
       text: optionalString(),
+      /**
+       * Never set by the model — the tool schema sent to the LLM has no
+       * such field. Attached server-side, in resolveVerb, only after the
+       * model's `target` is looked up in the real manifest and found to
+       * carry a real, indexer-discovered apiCall — the server-side
+       * enrichment step that lets a "do" verb targeting an auto-discovered
+       * action (not just a manually `registeredActions`-listed one) still
+       * carry something the client can safely execute without trusting the
+       * model to have invented it.
+       */
+      apiCall: optionalApiCall(),
     })
     .strict(),
   z

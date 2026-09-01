@@ -33,6 +33,16 @@ const manifest: Manifest = {
           confidence: 0.9,
           evidence: [],
         },
+        {
+          id: "start-call",
+          label: "Start Call",
+          selector: "[data-ai='start-call']",
+          fallbacks: [],
+          does: "Starts a live phone call with the patient.",
+          confidence: 0.9,
+          evidence: [],
+          apiCall: { method: "POST", url: "/api/calls/start" },
+        },
       ],
     },
   ],
@@ -138,6 +148,58 @@ describe("createCopilotHandlerWithLLM", () => {
     const result = await handler({ route: "/invoices", question: "archive the overdue one", visible: [] });
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ verb: "do", action: "archiveInvoice", target: "inv-2" });
+  });
+
+  it("a do-verb targeting an element with a real, auto-discovered apiCall is enriched and passes through — no registeredActions needed", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "start-a-call", target: "start-call" }),
+      // deliberately no registeredActions — this is the auto-discovery path
+    );
+    const result = await handler({ route: "/invoices", question: "call the patient", visible: [] });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({
+      verb: "do",
+      action: "start-a-call",
+      target: "start-call",
+      apiCall: { method: "POST", url: "/api/calls/start" },
+    });
+  });
+
+  it("registeredActions still takes priority over auto-discovery when both could apply", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "start-call", target: "start-call" }),
+      { registeredActions: ["start-call"] },
+    );
+    const result = await handler({ route: "/invoices", question: "call the patient", visible: [] });
+    // The explicit, developer-owned path — no apiCall attached, exactly the
+    // pre-existing behavior for a registered action.
+    expect(result.body).toEqual({ verb: "do", action: "start-call", target: "start-call" });
+  });
+
+  it("a do-verb whose target has no real apiCall (and isn't registered) is refused, not guessed at", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "create-invoice", target: "create-invoice" }),
+    );
+    const result = await handler({ route: "/invoices", question: "make a new invoice" , visible: [] });
+    expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("a do-verb with an unknown/hallucinated target is refused even if the action label looks plausible", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "do", action: "start-a-call", target: "call-button-that-does-not-exist" }),
+    );
+    const result = await handler({ route: "/invoices", question: "call the patient", visible: [] });
+    expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("a do-verb with no target at all cannot use auto-discovery", async () => {
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "do", action: "start-a-call" }));
+    const result = await handler({ route: "/invoices", question: "call the patient", visible: [] });
+    expect((result.body as { verb: string }).verb).toBe("explain");
   });
 
   it("a verb outside the fixed enum is rejected and degraded to explain", async () => {

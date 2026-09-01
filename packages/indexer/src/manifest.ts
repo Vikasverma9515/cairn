@@ -42,21 +42,32 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 /**
- * Turns l1-scan's traced `"POST /api/items/${id}"`-shaped string into
- * structured, executable data — this is what lets a `do` action actually
- * run (verb-executor.ts) instead of only ever describing itself. Only
- * real mutating methods count as an action; `"navigate ..."` (a Link) and
- * a bare GET aren't "do" material — see ApiCallSchema's doc comment in
+ * Turns l1-scan's traced `"POST /api/items"`-shaped string into structured,
+ * executable data — this is what lets a `do` action actually run
+ * (verb-executor.ts) instead of only ever describing itself. Only real
+ * mutating methods count as an action; `"navigate ..."` (a Link) and a bare
+ * GET aren't "do" material — see ApiCallSchema's doc comment in
  * @cairnvibe/core for the safety reasoning (bounded to calls a human
  * developer already wrote and shipped, nothing invented at runtime).
+ *
+ * Only accepts a clean, static, same-origin relative path. l1-scan.ts's URL
+ * capture falls back to a call's raw source text when the first argument
+ * isn't a plain string literal — for a template literal (a per-row action
+ * built as `` `/api/items/${id}/archive` ``) that's literal backticks and a
+ * "${...}" hole, not a real fetchable URL; for a bare identifier or some
+ * other expression it isn't a URL at all. Rejecting both instead of
+ * guessing at resolving them is what keeps this bounded to calls that are
+ * actually safe to fire as-is — see ApiCallSchema's doc comment for the
+ * real gap this leaves (per-row actions aren't auto-executable yet).
  */
-function parseApiCall(handlerCall: string | null): ApiCall | null {
+export function parseApiCall(handlerCall: string | null): ApiCall | null {
   if (!handlerCall) return null;
   const spaceIndex = handlerCall.indexOf(" ");
   if (spaceIndex === -1) return null;
   const method = handlerCall.slice(0, spaceIndex);
   const url = handlerCall.slice(spaceIndex + 1);
   if (!MUTATING_METHODS.has(method) || !url) return null;
+  if (!/^\/[a-zA-Z0-9/_.-]*$/.test(url)) return null;
   return { method: method as ApiCall["method"], url };
 }
 

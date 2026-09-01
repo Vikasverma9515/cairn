@@ -95,7 +95,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   return httpServer;
 }
 
-interface ConnectionDeps {
+export interface ConnectionDeps {
   deepgramApiKey: string;
   sttModel: string;
   ttsVoice: string;
@@ -202,8 +202,13 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
     });
   }
 
+  // Accumulates Deepgram "Results" transcript segments across one utterance
+  // — see handleDeepgramMessage for why this can't just react to every
+  // is_final.
+  const turnState = { buffer: "" };
+
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history);
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation);
   });
 
   dg.on("error", (err) => {
@@ -233,7 +238,20 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
         // client falling back to a separate buffered REST call. No STT/verb
         // resolution involved; the client already resolved the tour steps
         // itself and just needs this text spoken.
-        void speakStreamed(msg.text);
+        //
+        // Caught explicitly, unlike a normal turn's speakStreamed call (see
+        // handleDeepgramMessage) — this one isn't inside that function's own
+        // try/catch, and an uncaught rejection here previously vanished
+        // silently: the client's speakOverRealtime() promise for this step
+        // never resolves except via its own 15s fallback timeout, with
+        // nothing telling the user anything went wrong in the meantime —
+        // found live as a tour that goes badly quiet for stretches at a
+        // time. A real "error" message lets the client's tour-step handler
+        // (index.tsx's ws.onmessage) unstick itself immediately instead.
+        speakStreamed(msg.text).catch((err) => {
+          console.error("[cairn realtime] speakStreamed failed for a tour step:", err);
+          safeSend(client, { type: "error", message: "Something went wrong narrating that step." });
+        });
       }
     } catch {
       // Ignore malformed control messages — never crash the relay on bad client input.
@@ -250,13 +268,15 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   });
 }
 
-async function handleDeepgramMessage(
+export async function handleDeepgramMessage(
   raw: string,
   client: WebSocket,
   deps: ConnectionDeps,
   getContext: () => { route: string; visible: string[] },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
+  turnState: { buffer: string },
+  getGeneration: () => number,
 ): Promise<void> {
   let msg: any;
   try {
@@ -265,26 +285,74 @@ async function handleDeepgramMessage(
     return;
   }
 
+  if (msg.type === "UtteranceEnd") {
+    // A second, independent "the user is truly done" signal Deepgram sends
+    // after utterance_end_ms of silence — a safety net for the rare case a
+    // Results message never carries speech_final:true, so a turn can't get
+    // permanently stuck with real transcript sitting in the buffer forever.
+    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration);
+    return;
+  }
+
   if (msg.type !== "Results") return;
   const transcript: string | undefined = msg.channel?.alternatives?.[0]?.transcript;
   if (!transcript) return;
 
   if (!msg.is_final) {
-    safeSend(client, { type: "interim", text: transcript });
+    safeSend(client, { type: "interim", text: turnState.buffer ? `${turnState.buffer} ${transcript}` : transcript });
     return;
   }
 
+  // is_final means this chunk of transcript is stable and won't be
+  // revised — it does NOT mean the user is done talking. Deepgram can (and
+  // routinely does) finalize several chunks of one continuous utterance in
+  // a row with no real pause between them. Only speech_final (endpointing
+  // actually detected a pause) means the turn is genuinely over. Found
+  // live, not theoretical: treating every is_final as a separate finished
+  // question fired two independent LLM+TTS turns for one utterance — the
+  // literal cause of both the duplicated transcript entries ("hello" /
+  // "hello" with no reply in between) and the agent audibly speaking
+  // twice, overlapping.
+  turnState.buffer = turnState.buffer ? `${turnState.buffer} ${transcript}` : transcript;
+  if (!msg.speech_final) {
+    safeSend(client, { type: "interim", text: turnState.buffer });
+    return;
+  }
+
+  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration);
+}
+
+/**
+ * Everything from here on (the LLM call, TTS streaming) can fail in ways
+ * that have nothing to do with a malformed message — a flaky provider
+ * call, a rate limit, a dropped upstream connection. handleDeepgramMessage
+ * is invoked fire-and-forget (`void handleDeepgramMessage(...)`), so an
+ * uncaught throw here previously vanished into an unhandled rejection: the
+ * client had already been told "final" (entering its "thinking" state) and
+ * then simply never heard from the server again for this turn — stuck
+ * indefinitely with the mic never resuming. Every path out of the try
+ * block now sends the client something that ends the turn.
+ *
+ * myGeneration is captured before the (potentially slow) LLM call and
+ * re-checked before the verb/speech actually goes out — a barge-in that
+ * happens while this turn is still "thinking" bumps the generation, and
+ * without this check the now-stale response would still land on the
+ * client after the user had already moved on to a new question.
+ */
+async function finalizeTurn(
+  turnState: { buffer: string },
+  client: WebSocket,
+  deps: ConnectionDeps,
+  getContext: () => { route: string; visible: string[] },
+  speakStreamed: (text: string) => Promise<void>,
+  history: HistoryTurn[],
+  getGeneration: () => number,
+): Promise<void> {
+  const transcript = turnState.buffer;
+  turnState.buffer = "";
+  const myGeneration = getGeneration();
   safeSend(client, { type: "final", text: transcript });
 
-  // Everything from here on (the LLM call, TTS streaming) can fail in ways
-  // that have nothing to do with a malformed message — a flaky provider
-  // call, a rate limit, a dropped upstream connection. This whole function
-  // is invoked fire-and-forget (`void handleDeepgramMessage(...)`), so an
-  // uncaught throw here previously vanished into an unhandled rejection:
-  // the client had already been told "final" (entering its "thinking"
-  // state) and then simply never heard from the server again for this
-  // turn — stuck indefinitely with the mic never resuming. Every path out
-  // of this try block now sends the client something that ends the turn.
   try {
     const { route, visible } = getContext();
     const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
@@ -293,6 +361,9 @@ async function handleDeepgramMessage(
       visible,
       history,
     });
+
+    if (myGeneration !== getGeneration()) return; // superseded by a barge-in while this turn was resolving
+
     // Sent immediately — before speech synthesis even starts — so
     // highlight/navigate/do execute in the browser right away instead of
     // waiting on audio. The agent visibly acts while it's still about to
@@ -312,8 +383,10 @@ async function handleDeepgramMessage(
     }
   } catch (err) {
     console.error("[cairn realtime] failed to resolve/speak this turn:", err);
-    safeSend(client, { type: "error", message: "Something went wrong answering that — try again." });
-    safeSend(client, { type: "turn_complete" });
+    if (myGeneration === getGeneration()) {
+      safeSend(client, { type: "error", message: "Something went wrong answering that — try again." });
+      safeSend(client, { type: "turn_complete" });
+    }
   }
 }
 

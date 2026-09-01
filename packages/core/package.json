@@ -1,6 +1,6 @@
 {
   "name": "@cairnvibe/core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Shared manifest/verb schema for Cairn — the runtime contract the indexer writes and the SDK validates against.",
   "license": "MIT",
   "publishConfig": { "access": "public" },
