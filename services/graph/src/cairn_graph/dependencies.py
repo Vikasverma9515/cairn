@@ -32,7 +32,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 
-_JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+_JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".rb")
 _PY_EXTENSIONS = (".py", ".pyi")
 
 

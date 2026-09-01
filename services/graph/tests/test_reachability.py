@@ -419,6 +419,45 @@ def test_csharp_reachability_end_to_end(tmp_path: Path):
     assert "UnusedHelper" in dead_names
 
 
+def test_ruby_reachability_end_to_end(tmp_path: Path):
+    write(
+        tmp_path / "widget.rb",
+        """
+        class Widget
+          def self.create
+            w = Widget.new
+            w.render
+            w
+          end
+
+          def render
+            helper
+          end
+
+          private
+
+          def helper
+            "hi"
+          end
+
+          def unused_helper
+            "never called"
+          end
+        end
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "helper" not in dead_names
+    assert "render" not in dead_names
+    assert "unused_helper" in dead_names
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

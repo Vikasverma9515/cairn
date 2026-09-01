@@ -135,11 +135,11 @@ positives, period."
 
 ## Language support
 
-TypeScript, TSX, JavaScript, Python, Go, Java, Rust, and C# — one
+TypeScript, TSX, JavaScript, Python, Go, Java, Rust, C#, and Ruby — one
 `LanguageSpec` in `languages.py` plus a language-specific extraction
 branch in `extract.py` per language (`_walk` for the JS/TS grammar
-family, `_walk_python`, `_walk_go`, `_walk_java`, `_walk_rust`, and
-`_walk_csharp` separately: several node *type names* are
+family, `_walk_python`, `_walk_go`, `_walk_java`, `_walk_rust`,
+`_walk_csharp`, and `_walk_ruby` separately: several node *type names* are
 shared across these grammars — `call`/`call_expression` aside,
 `import_statement` means something structurally different in each —
 sharing one walker would mean disambiguating every such node by language
@@ -253,6 +253,45 @@ identifier found" (which would have silently bound the wrong name).
 Dogfooded against a realistic synthetic C# service (an interface, a
 `Dictionary`-backed implementation, constructor-injected dependencies,
 a `Main` entry point) — 14 symbols, 0 false positives on `dead`.
+
+**Ruby**, genuinely different in one real way from every language before
+it: `private`/`public`/`protected` aren't per-declaration modifiers at
+all — they're bare statements (`private`, no arguments) that change the
+visibility of every method *defined after them, in source order*, until
+the next such statement or the end of the enclosing body. Verified live
+that a class's `body_statement` children really do come through in
+exactly that order (`[method, identifier("private"), method, ...]`),
+which is what makes tracking it correctly possible with one sequential
+pass (`_walk_ruby_body`) instead of a real scope-flow analysis. A class
+or module itself has no such concept — Ruby has no file-boundary export
+syntax, so a class/module is always `exported=True`, not a simplification
+of a real signal the way it is in every other language here, just an
+honest reflection of "this language doesn't have that axis." `require`/
+`require_relative` aren't a dedicated import grammar node at all — both
+parse as an ordinary method `call`, detected and special-cased so they
+don't also pollute the call graph with `require`/`require_relative` as
+fake callees.
+
+**A real bug caught live, not by a synthetic edge case**: `child_by_field_name("body")`
+and the matching entry in a node's `.children` are *never the same
+Python object*, even though they're the same tree position — tree-sitter
+hands back a fresh wrapper on each access. An early version compared
+them with `is` to avoid double-walking a class's body, which silently
+never matched, so a bare no-parens call inside a method (`inner`, no
+receiver — itself a real finding: Ruby's own grammar can't tell that
+apart from a local-variable read without semantic analysis, so it
+becomes a `Reference`, never a `CallEdge`) got recorded *twice*. Caught
+by a dedicated test, fixed by comparing `(start_byte, end_byte)` instead
+of object identity — the same idiom the `skip` set elsewhere in this
+file already uses, for exactly this reason, just not one this walker had
+needed until Ruby's body-splitting logic introduced the first place two
+code paths could both think they alone owned descending into the same
+subtree.
+
+Dogfooded against a realistic synthetic Ruby service (nested modules,
+`private`, `attr_accessor`, a `require_relative` that `dependencies.py`
+correctly resolved to the real file) — 15 symbols, 0 false positives on
+`dead`.
 
 ## MCP server
 
@@ -620,14 +659,16 @@ choice `reachability.py` already made — recomputing from current graph
 state is simpler than keeping a second index in sync with it.
 
 **Scope cut, stated rather than guessed around**: only a *relative*
-import resolves to an internal file edge — TS/JS `./foo`-style paths and
-Python `.foo`-style relative imports, the two styles this graph already
-flags `is_relative` for (including correctly walking `..` up parent
-directories and resolving a bare `from . import x` to a package's
-`__init__.py`). A package import (`react`, `std::collections::HashMap`,
-`java.util.List`, any Go import — Go has no relative-import concept at
-all) is reported as *external*, not silently dropped or guessed at as an
-internal edge.
+import resolves to an internal file edge — TS/JS `./foo`-style paths,
+Python `.foo`-style relative imports (including correctly walking `..`
+up parent directories and resolving a bare `from . import x` to a
+package's `__init__.py`), and Ruby's `require_relative` (which resolves
+through the same path-style logic as TS/JS — `.rb` was added to that
+resolver's extension list once Ruby support made it a real case, not a
+hypothetical one). A package import (`react`, `std::collections::HashMap`,
+`java.util.List`, a Ruby `require`, any Go import — Go has no
+relative-import concept at all) is reported as *external*, not silently
+dropped or guessed at as an internal edge.
 
 Wired into the MCP server as `file_dependencies_tool`/
 `file_dependents_tool`/`dependency_summary_tool`. 11 tests

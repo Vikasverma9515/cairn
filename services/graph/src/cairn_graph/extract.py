@@ -113,6 +113,14 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
         _walk_rust(root, source, result, enclosing=None, skip=skip)
     elif language == "csharp":
         _walk_csharp(root, source, result, enclosing=None, skip=skip)
+    elif language == "ruby":
+        # Not _walk_ruby(root, ...) directly — the top-level `program` node
+        # is itself a sequential statement list where a bare `private` can
+        # appear (rare, but real Ruby), the same shape as a class/module
+        # body. Routing through _walk_ruby_body uniformly means top-level
+        # and class-body visibility tracking share one implementation
+        # instead of the top level silently not supporting it.
+        _walk_ruby_body(root, source, result, enclosing=None, skip=skip)
     else:
         _walk(root, source, result, enclosing=None, skip=skip)
     return result
@@ -858,6 +866,130 @@ def _extract_csharp_using(node: Node, source: bytes, out: ExtractResult) -> None
         name_field = target_node.child_by_field_name("name") if target_node.type == "qualified_name" else target_node
         local_name = _text(name_field, source)
     out.imports.append(ImportRecord(source=source_text, names=(local_name,), is_relative=False, line=line))
+
+
+_RUBY_REQUIRE_METHODS = {"require", "require_relative"}
+
+
+def _walk_ruby(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]], visibility: str) -> None:
+    next_enclosing = enclosing
+
+    if node.type in ("class", "module"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="class",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    # Ruby has no file-boundary export syntax at all for a
+                    # class/module itself — anything defined anywhere is
+                    # globally requireable. Unlike a method, a class can't
+                    # be marked `private`, so this is always True, not a
+                    # simplification of a real signal the way it would be
+                    # in a language that actually has one.
+                    exported=True,
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+        body = node.child_by_field_name("body")
+        # Compare by byte range, not Python `is`: tree-sitter hands back a
+        # fresh wrapper object on each access, so `child_by_field_name`'s
+        # result and the matching entry in `.children` are never the same
+        # object even when they're the same tree position — found live,
+        # by a bare no-receiver call inside a method body (`inner`, no
+        # parens) getting visited twice, once as a Reference from each of
+        # two code paths that both thought they alone owned descending
+        # into the body. The `skip` set elsewhere in this file already
+        # uses (start_byte, end_byte) for exactly this reason; this is the
+        # same fix applied to a case that hadn't needed it until now.
+        body_range = (body.start_byte, body.end_byte) if body is not None else None
+        if body is not None:
+            _walk_ruby_body(body, source, out, next_enclosing, skip)
+        for child in node.children:
+            if body_range is None or (child.start_byte, child.end_byte) != body_range:
+                _walk_ruby(child, source, out, next_enclosing, skip, "public")
+        return
+    elif node.type in ("method", "singleton_method"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="method" if enclosing is not None else "function",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    # The real, sequential-statement Ruby visibility signal
+                    # (see _walk_ruby_body) — not a per-method keyword the
+                    # way every other language here has, but the actual
+                    # mechanism Ruby uses, and the closest real analog to
+                    # "exported" this language has: a private method
+                    # genuinely cannot be called with an explicit receiver
+                    # from outside the class.
+                    exported=(visibility == "public"),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "call":
+        method_node = node.child_by_field_name("method")
+        if method_node is not None:
+            method_name = _text(method_node, source)
+            if node.child_by_field_name("receiver") is None and method_name in _RUBY_REQUIRE_METHODS:
+                _extract_ruby_require(node, source, out, method_name)
+            else:
+                out.calls.append(CallEdge(caller=enclosing, callee=method_name, line=node.start_point[0] + 1))
+    elif node.type in ("identifier", "constant") and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the other walkers — see
+        # Reference's docstring.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_ruby(child, source, out, next_enclosing, skip, visibility)
+
+
+def _walk_ruby_body(body_node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
+    """Ruby's `private`/`public`/`protected` aren't per-declaration
+    modifiers — they're bare statements that change the visibility of
+    every method *defined after them, in source order*, until the next
+    such statement or the end of the enclosing class/module/program body.
+    Found live, not guessed: `body_statement`'s children are exactly
+    `[method, identifier("private"), method, ...]` in source order, which
+    is what makes tracking this correctly possible with one sequential
+    pass instead of needing a real scope-flow analysis."""
+    visibility = "public"
+    for child in body_node.children:
+        if child.type == "identifier":
+            text = _text(child, source)
+            if text in ("private", "protected"):
+                visibility = "private"
+                continue
+            if text == "public":
+                visibility = "public"
+                continue
+        _walk_ruby(child, source, out, enclosing, skip, visibility)
+
+
+def _extract_ruby_require(call_node: Node, source: bytes, out: ExtractResult, method_name: str) -> None:
+    args = call_node.child_by_field_name("arguments")
+    if args is None:
+        return
+    string_arg = next((c for c in args.children if c.type == "string"), None)
+    if string_arg is None:
+        return
+    content = next((c for c in string_arg.children if c.type == "string_content"), None)
+    if content is None:
+        return
+    path = _text(content, source)
+    out.imports.append(
+        ImportRecord(source=path, names=(), is_relative=(method_name == "require_relative"), line=call_node.start_point[0] + 1)
+    )
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:
