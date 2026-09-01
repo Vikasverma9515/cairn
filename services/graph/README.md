@@ -697,6 +697,42 @@ end-to-end against the real Groq and Deepgram providers as described
 above. Cartesia/ElevenLabs have no equivalent live dogfood yet — see the
 confidence-level note above.
 
+## Cost control (Month 10, first slice) — a real ceiling, not just a report
+
+`cost_control.py` is the one piece of Month 10 fully buildable without
+external input. The other two — real tenant isolation (binding a
+caller's identity to one `customer_id` server-side, so nobody can pass
+an arbitrary `customer_id` string and read someone else's memory —
+today's MCP tools trust whatever string they're given) and a real
+security review — need an actual auth/session design decision and an
+actual reviewer respectively, stated honestly here rather than faked
+with a "0 findings" report nobody wrote.
+
+`analytics.py` counts actions; nothing tracked what a customer's usage
+actually *costs*, or stopped one customer's usage from being unbounded.
+`CostTrackingLLMProvider` wraps any real `providers.LLMProvider` — same
+`complete(prompt, *, system=None) -> str` shape, transparent to callers
+— adding a real pre-call limit check (raises *before* the costly call is
+made, not after) and a post-call usage record.
+
+**A real, stated limitation, not a false precision claim**: cost here is
+a character-count-based *estimate* (~4 chars/token, a widely-used rough
+approximation), not exact token billing. `providers.LLMProvider`'s
+`complete()` deliberately doesn't expose vendor-specific token usage —
+Groq's real response has exact `usage.prompt_tokens`/`completion_tokens`,
+but forcing every provider implementation to also return usage metadata
+would break the entire point of the Protocol being uniform across any
+vendor. Good enough to catch runaway usage and give a real number to a
+customer-success team; not good enough to reconcile against an actual
+invoice — that distinction is why it's named an estimate, not a cost.
+
+13 tests (`test_cost_control.py`). Dogfooded live against the real Groq
+provider with a `max_calls=2` ceiling: two real calls succeeded and were
+tracked (11 estimated tokens, $0.0011 estimated cost), the third was
+correctly blocked with a clear `RateLimitExceededError` — verified the
+inner Groq provider was never even invoked for the blocked call, not
+just that an exception was raised somewhere.
+
 ## Agent loop (Month 9, first slice) — the LLM actually executes tools now
 
 `agent_loop.py` closes the exact gap `voice_pipeline.py` found live:
@@ -1110,6 +1146,21 @@ what was actually true, not to keep a giant external repo checked in.
 
 ## What's not built yet
 
+- **Real tenant isolation** — `customer_id` is a client-supplied string
+  scoping every memory/analytics/cost-control query, trusted as given.
+  Nothing stops a caller from passing a different customer's id and
+  reading their memory or usage. Needs a real auth/session design
+  decision (binding a caller's identity server-side) this session isn't
+  positioned to invent unilaterally — a real architectural call, not a
+  quick patch.
+- **A real security review** — the permission gate, the gated actions,
+  and the full MCP surface have never had an actual security review. A
+  review with findings closed is the honest deliverable; "no findings"
+  without one having happened isn't.
+- **Real vendor pricing in `cost_control.py`** — `CostRates` ships a
+  placeholder default (`$0.10/1k tokens`); a real deployment needs its
+  actual provider's published rate plugged in, and the character-based
+  token estimate is honestly approximate, not exact-billing-grade.
 - **More languages beyond TS/TSX/JS/Python/Go/Java/Rust/C#/Ruby/PHP** —
   Kotlin, Swift, Scala, etc. Same shape of work as adding PHP was: one
   `LanguageSpec` plus a language-specific extraction branch (a new
