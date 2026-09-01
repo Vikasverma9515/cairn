@@ -48,6 +48,7 @@ from cairn_graph.actions import (
 )
 from cairn_graph.analytics import action_summary, approval_rate, customer_overview, daily_activity, top_tools
 from cairn_graph.build import build_graph
+from cairn_graph.dependencies import dependency_summary, file_dependencies, file_dependents
 from cairn_graph.memory import open_memory_store, recall, recent_history, record_turn, remember
 from cairn_graph.reachability import compute_dead_symbols
 from cairn_graph.store import list_action_log, log_action, open_store, stats
@@ -209,6 +210,21 @@ def audit_log(conn: sqlite3.Connection, limit: int = 50, customer_id: str | None
     }
 
 
+def get_file_dependencies(conn: sqlite3.Connection, file_path: str) -> dict[str, Any]:
+    deps = file_dependencies(conn, file_path)
+    return {"file": file_path, "internal": list(deps.internal), "external": list(deps.external)}
+
+
+def get_file_dependents(conn: sqlite3.Connection, file_path: str) -> dict[str, Any]:
+    """The "what would break if I change this file" query — every other
+    indexed file whose own import resolves to `file_path`."""
+    return {"file": file_path, "dependents": list(file_dependents(conn, file_path))}
+
+
+def get_dependency_summary(conn: sqlite3.Connection, top_n: int = 10) -> dict[str, Any]:
+    return dependency_summary(conn, top_n)
+
+
 def semantic_search(vector_dir: str, query: str, limit: int = 10, embed_fn=None) -> dict[str, Any]:
     """Find code by what it does, not what it's named — the complement to
     `search_symbols`'s substring match. Returns an empty list, not an
@@ -264,7 +280,10 @@ def build_server(
             "approved=true only after they say yes — never on your own. "
             "delete_file_tool and run_command_tool always need approval, "
             "in either permission mode. audit_log_tool lists what's been "
-            "attempted so far, applied or not."
+            "attempted so far, applied or not. file_dependencies_tool/"
+            "file_dependents_tool/dependency_summary_tool answer "
+            "file-level questions (only relative imports resolve to an "
+            "internal edge — a package import is reported as external)."
         ),
     )
     conn = open_store(db_path)
@@ -429,6 +448,31 @@ def build_server(
                 for c in overview
             ]
         }
+
+    @server.tool()
+    def file_dependencies_tool(file_path: str) -> dict[str, Any]:
+        """What one file depends on: internal (resolved to another
+        indexed file — only relative imports resolve) and external
+        (package imports, reported as-written, not a file in this repo)."""
+        with _lock:
+            return get_file_dependencies(conn, file_path)
+
+    @server.tool()
+    def file_dependents_tool(file_path: str) -> dict[str, Any]:
+        """The reverse of file_dependencies_tool: every indexed file that
+        imports this one — the "what would break if I change this file"
+        question, at file granularity."""
+        with _lock:
+            return get_file_dependents(conn, file_path)
+
+    @server.tool()
+    def dependency_summary_tool(top_n: int = 10) -> dict[str, Any]:
+        """Company-facing headline numbers for the dependency graph: the
+        most-depended-on files (high blast radius if changed), files
+        nothing internal depends on (candidate entry points), and any
+        real import cycle found."""
+        with _lock:
+            return get_dependency_summary(conn, top_n)
 
     return server
 

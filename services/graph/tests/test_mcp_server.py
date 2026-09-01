@@ -161,6 +161,9 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "recent_history_tool",
         "analytics_tool",
         "customer_overview_tool",
+        "file_dependencies_tool",
+        "file_dependents_tool",
+        "dependency_summary_tool",
     } <= tool_names
 
 
@@ -262,6 +265,34 @@ def test_memory_tools_round_trip_through_the_real_compiled_server(tmp_path: Path
     history = _call(server, "recent_history_tool", {"customer_id": "acme"})
     assert history["turns"][0]["content"] == "hello"
     assert history["turns"][0]["role"] == "user"
+
+
+def test_file_dependencies_tool_resolves_a_real_relative_import(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    result = _call(server, "file_dependencies_tool", {"file_path": str(tmp_path / "a.ts")})
+
+    assert result["internal"] == [str(tmp_path / "b.ts")]
+
+
+def test_file_dependents_tool_is_the_reverse(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    result = _call(server, "file_dependents_tool", {"file_path": str(tmp_path / "b.ts")})
+
+    assert result["dependents"] == [str(tmp_path / "a.ts")]
+
+
+def test_dependency_summary_tool_reports_no_cycles_for_this_fixture(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    result = _call(server, "dependency_summary_tool", {})
+
+    assert result["cycle_count"] == 0
+    assert result["most_depended_on"][0]["file"] == str(tmp_path / "b.ts")
 
 
 def test_analytics_tool_reflects_a_real_gated_action_through_the_compiled_server(tmp_path: Path):

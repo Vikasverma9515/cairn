@@ -1,9 +1,10 @@
 """Semantic search over the structure graph — the second of the plan's
-three-index design (parse graph + vector index + eventually a
-relationship/dependency index). Answers "what code does something like
-this" queries that name-substring search (`cli.py`'s `query` / MCP's
-`search`) structurally can't — a symbol named `computeTotal` and one named
-`sumLineItems` are unrelated by name but adjacent by meaning.
+three-index design (parse graph + vector index + relationship/dependency
+index — see `dependencies.py` for the third). Answers "what code does
+something like this" queries that name-substring search (`cli.py`'s
+`query` / MCP's `search`) structurally can't — a symbol named
+`computeTotal` and one named `sumLineItems` are unrelated by name but
+adjacent by meaning.
 
 Embeddings run locally via fastembed (ONNX runtime, no torch — a much
 smaller install than sentence-transformers for the same job). Model

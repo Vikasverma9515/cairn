@@ -571,6 +571,53 @@ network call) plus 5 more in `test_orchestrator.py`. Dogfooded live twice:
 once against the local `echo` provider, once end-to-end against the real
 Groq and Deepgram providers as described above.
 
+## Dependency graph — the third index
+
+`dependencies.py` is the third of the plan's three-index design (parse
+graph + vector index + relationship/dependency index), sketched as
+future work when the vector index was built and now filled in. Distinct
+from `usages` (symbol-level, name-based, doesn't know which *file* a
+name came from): this resolves each import to a real file path and
+answers file-granularity questions —
+
+```bash
+python -m cairn_graph.cli deps --db .cairn-graph.db --top 10
+```
+
+- **`file_dependencies`** / **`file_dependents`** — what one file
+  imports, and (the reverse) what would break if it changed.
+- **`find_cycles`** — real circular-import chains via a plain DFS with a
+  recursion stack (this graph is file-count-sized, not
+  edge-count-explosive, so a simple cycle finder is easier to verify
+  correct than a fancier one for the same result).
+- **`dependency_summary`** — the headline numbers: most-depended-on files
+  (highest blast radius), files with no internal dependents (candidate
+  entry points), and the cycle count.
+
+Computed live from the existing `imports`/`files` tables, the same
+choice `reachability.py` already made — recomputing from current graph
+state is simpler than keeping a second index in sync with it.
+
+**Scope cut, stated rather than guessed around**: only a *relative*
+import resolves to an internal file edge — TS/JS `./foo`-style paths and
+Python `.foo`-style relative imports, the two styles this graph already
+flags `is_relative` for (including correctly walking `..` up parent
+directories and resolving a bare `from . import x` to a package's
+`__init__.py`). A package import (`react`, `std::collections::HashMap`,
+`java.util.List`, any Go import — Go has no relative-import concept at
+all) is reported as *external*, not silently dropped or guessed at as an
+internal edge.
+
+Wired into the MCP server as `file_dependencies_tool`/
+`file_dependents_tool`/`dependency_summary_tool`. 11 tests
+(`test_dependencies.py`, including real cycle detection and a Python
+package-`__init__.py` resolution test) plus 3 more in
+`test_mcp_server.py`. Dogfooded live against the real cairn monorepo:
+correctly identified `packages/indexer/src/types.ts` (a shared types
+module — exactly the file that *should* have the highest blast radius)
+as the most-depended-on file, and correctly reported zero import cycles
+in a codebase that genuinely has none.
+
 ## Analytics (Month 5, first slice)
 
 `analytics.py` is pillar 7 — "helps the company analyze the customer,

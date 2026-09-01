@@ -49,6 +49,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("doctor", help="check that this install actually works before relying on it")
 
+    deps_p = sub.add_parser("deps", help="file-level dependency graph: most-depended-on files, entry points, cycles")
+    deps_p.add_argument("--db", default=".cairn-graph.db")
+    deps_p.add_argument("--top", type=int, default=10)
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -67,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_route(args.request)
     if args.command == "doctor":
         return _run_doctor()
+    if args.command == "deps":
+        return _run_deps(args.db, args.top)
     return 1
 
 
@@ -181,6 +187,26 @@ def _run_doctor() -> int:
         print("\ncairn-graph doctor: one or more checks failed — see FAIL lines above", file=sys.stderr)
         return 1
     print("\ncairn-graph doctor: all checks passed")
+    return 0
+
+
+def _run_deps(db: str, top_n: int) -> int:
+    import sqlite3
+
+    from cairn_graph.dependencies import dependency_summary
+
+    conn = sqlite3.connect(db)
+    summary = dependency_summary(conn, top_n)
+    print(f"most depended-on files (top {top_n}):")
+    for row in summary["most_depended_on"]:
+        print(f"  {row['dependent_count']:3d}  {row['file']}")
+    print(f"\n{len(summary['files_with_no_internal_dependents'])} file(s) with no internal dependents (candidate entry points)")
+    if summary["cycle_count"] == 0:
+        print("\nno import cycles found")
+    else:
+        print(f"\n{summary['cycle_count']} import cycle(s) found:")
+        for cycle in summary["cycles"]:
+            print("  " + " -> ".join(cycle))
     return 0
 
 
