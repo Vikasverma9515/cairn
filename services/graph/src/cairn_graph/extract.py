@@ -105,6 +105,8 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
     # language's version of a name it wasn't written for.
     if language == "python":
         _walk_python(root, source, result, enclosing=None, skip=skip)
+    elif language == "go":
+        _walk_go(root, source, result, enclosing=None, skip=skip)
     else:
         _walk(root, source, result, enclosing=None, skip=skip)
     return result
@@ -384,6 +386,151 @@ def _extract_python_import(node: Node, source: bytes, out: ExtractResult) -> Non
             if local_name is not None:
                 source_text = module_text or (_text(dotted, source) if dotted is not None else local_name)
                 out.imports.append(ImportRecord(source=source_text, names=(local_name,), is_relative=is_relative, line=line))
+
+
+def _go_is_public(name: str) -> bool:
+    # Go's real convention, verified live against tree-sitter-go: no
+    # `export` keyword, an exported identifier is one whose first letter
+    # is uppercase — a package-level rule, not per-declaration syntax.
+    return bool(name) and name[0:1].isupper()
+
+
+def _walk_go(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
+    next_enclosing = enclosing
+
+    if node.type == "import_declaration":
+        _extract_go_import(node, source, out)
+    elif node.type == "function_declaration":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="function",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_go_is_public(name),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "method_declaration":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="method",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_go_is_public(name),
+                    parent=_go_receiver_type_name(node, source),
+                )
+            )
+            next_enclosing = name
+    elif node.type == "type_declaration":
+        for spec in (c for c in node.children if c.type == "type_spec"):
+            name_node = spec.child_by_field_name("name")
+            type_node = spec.child_by_field_name("type")
+            if name_node is None:
+                continue
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            kind = "class" if type_node is not None and type_node.type == "struct_type" else "interface" if type_node is not None and type_node.type == "interface_type" else "type_alias"
+            out.symbols.append(
+                Symbol(
+                    kind=kind,
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_go_is_public(name),
+                    parent=enclosing,
+                )
+            )
+    elif node.type == "call_expression":
+        callee = _go_callee_name(node, source)
+        if callee is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+    elif node.type in ("identifier", "type_identifier", "field_identifier", "package_identifier") and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the other walkers — see
+        # Reference's docstring. Go splits what JS calls "property_identifier"
+        # into field_identifier (struct fields/methods) and separately has
+        # package_identifier for `pkg.Name` — both are bare-name uses this
+        # catch-all should see, same as any other reference.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_go(child, source, out, next_enclosing, skip)
+
+
+def _go_receiver_type_name(method_node: Node, source: bytes) -> str | None:
+    receiver = method_node.child_by_field_name("receiver")
+    if receiver is None:
+        return None
+    param_decl = next((c for c in receiver.children if c.type == "parameter_declaration"), None)
+    if param_decl is None:
+        return None
+    type_node = param_decl.child_by_field_name("type")
+    if type_node is None:
+        return None
+    if type_node.type == "pointer_type":
+        # `(w *Widget)` — the receiver type is Widget, not the pointer
+        # itself; a value receiver `(w Widget)` and a pointer receiver
+        # `(w *Widget)` on the same type must land on the same `parent`
+        # name, or a struct's methods would split across two "classes"
+        # depending on which receiver form each one happened to use.
+        # pointer_type has no named field for its inner type (verified
+        # live — child_by_field_name("type") returns None; an earlier
+        # version relied on that call anyway and silently fell through to
+        # the wrong node), so take the type_identifier child directly.
+        inner = next((c for c in type_node.children if c.type == "type_identifier"), None)
+        type_node = inner if inner is not None else type_node
+    return _text(type_node, source)
+
+
+def _go_callee_name(call_node: Node, source: bytes) -> str | None:
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return None
+    if fn.type == "identifier":
+        return _text(fn, source)
+    if fn.type == "selector_expression":
+        field_node = fn.child_by_field_name("field")
+        return _text(field_node, source) if field_node is not None else None
+    return None
+
+
+def _extract_go_import(node: Node, source: bytes, out: ExtractResult) -> None:
+    line = node.start_point[0] + 1
+
+    def handle_spec(spec: Node) -> None:
+        path_node = spec.child_by_field_name("path")
+        if path_node is None:
+            return
+        path = _text(path_node, source).strip("\"")
+        alias_node = spec.child_by_field_name("name")
+        # Go's default local identifier for an unaliased import is the
+        # last segment of the import path (e.g. "strings" from
+        # ".../strings"), not the full path — that's what call sites in
+        # this file actually reference.
+        local_name = _text(alias_node, source) if alias_node is not None else path.rstrip("/").rsplit("/", 1)[-1]
+        out.imports.append(ImportRecord(source=path, names=(local_name,), is_relative=False, line=line))
+
+    found_spec = False
+    for child in node.children:
+        if child.type == "import_spec":
+            handle_spec(child)
+            found_spec = True
+        elif child.type == "import_spec_list":
+            for spec in (c for c in child.children if c.type == "import_spec"):
+                handle_spec(spec)
+                found_spec = True
+    if not found_spec:
+        return  # malformed/empty import_declaration — nothing to record
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:

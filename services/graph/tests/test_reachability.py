@@ -219,6 +219,53 @@ def test_reference_tracking_does_not_make_everything_reachable(tmp_path: Path):
     assert "used" not in {s.name for s in result.dead}
 
 
+def test_go_reachability_end_to_end(tmp_path: Path):
+    # Proves the whole pipeline (build_graph -> compute_dead_symbols), not
+    # just extraction in isolation — an exported entry point calling a
+    # private helper and instantiating+using a struct via a receiver
+    # method, plus one genuinely unused private function as the negative
+    # case.
+    write(
+        tmp_path / "widget.go",
+        """
+        package main
+
+        type Widget struct{}
+
+        func NewWidget() *Widget {
+            return &Widget{}
+        }
+
+        func (w *Widget) Render() string {
+            return helper()
+        }
+
+        func helper() string {
+            return "hi"
+        }
+
+        func Run() string {
+            w := NewWidget()
+            return w.Render()
+        }
+
+        func unusedHelper() string {
+            return "never called"
+        }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "helper" not in dead_names
+    assert "Render" not in dead_names
+    assert "unusedHelper" in dead_names
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

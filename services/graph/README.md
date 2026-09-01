@@ -135,22 +135,45 @@ positives, period."
 
 ## Language support
 
-TypeScript, TSX, JavaScript, and Python — one `LanguageSpec` in
+TypeScript, TSX, JavaScript, Python, and Go — one `LanguageSpec` in
 `languages.py` plus a language-specific extraction branch in
 `extract.py` per language (`_walk` for the JS/TS grammar family,
-`_walk_python` separately: several node *type names* are shared between
-the two grammars — `call`/`call_expression` aside, `import_statement`
-means something structurally different in each — sharing one walker
-would mean disambiguating every such node by language anyway, so each
-grammar family gets its own walker instead). Python's "exported" is the
-real Python convention, not a copy of JS's `export` keyword: a
-module-level name not prefixed with `_` is public; dunder methods
-(`__init__`, `__str__`, ...) are always treated as reachable regardless,
-since the interpreter's own object protocol calls them, not any code in
-the file being indexed — the same category as a Web Component's
-`connectedCallback`. Python also needs no `new_expression` handling at
-all: `Widget()` is Python's actual instantiation syntax, already the
-same `call` node every plain function call produces.
+`_walk_python` and `_walk_go` separately: several node *type names* are
+shared across these grammars — `call`/`call_expression` aside,
+`import_statement` means something structurally different in each —
+sharing one walker would mean disambiguating every such node by language
+anyway, so each grammar family gets its own walker instead). Python's
+"exported" is the real Python convention, not a copy of JS's `export`
+keyword: a module-level name not prefixed with `_` is public; dunder
+methods (`__init__`, `__str__`, ...) are always treated as reachable
+regardless, since the interpreter's own object protocol calls them, not
+any code in the file being indexed — the same category as a Web
+Component's `connectedCallback`. Python also needs no `new_expression`
+handling at all: `Widget()` is Python's actual instantiation syntax,
+already the same `call` node every plain function call produces.
+
+**Go**, added the same way Python was: its own real convention for
+"exported" (a name's first letter being uppercase — no keyword, verified
+live against `tree-sitter-go` before writing the check), a `method`
+kind whose `parent` is resolved from the receiver's type (`(w *Widget)
+Render()` → parent `"Widget"`), and `call_expression`/selector-call
+handling that covers constructor-style factory functions (`NewWidget()`)
+for free, the same way Python's plain `call` node covers `Widget()` —
+Go has no `new` keyword either. **Two real bugs found and fixed
+dogfooding this, both live-verified against the actual grammar before
+being trusted**: `pointer_type` (the node for a `*Widget`-shaped
+receiver) turned out to have no field named `"type"` —
+`child_by_field_name("type")` silently returns `None` rather than
+erroring, so the first version fell through to the wrong node and a
+pointer-receiver method's `parent` came out as the literal string
+`"*Widget"` instead of `"Widget"`, caught by a test asserting a value
+receiver and a pointer receiver on the same struct resolve to the same
+parent. Fixed by taking the `type_identifier` child directly instead of
+trusting a field name that doesn't exist. Dogfooded further against a
+realistic synthetic Go web-service file (an interface, a struct
+implementing it, pointer-receiver methods, `net/http` handler wiring,
+grouped imports) — 12 symbols, 0 false positives on `dead`, correctly
+flagging exactly the one genuinely unused function.
 
 ## MCP server
 
@@ -577,8 +600,8 @@ just that the happy path prints something). 154 tests total, all passing.
 
 ## What's not built yet
 
-- **More languages beyond TS/TSX/JS/Python** — Go, Java, Rust, etc. Same
-  shape of work as adding Python was: one `LanguageSpec` plus a
+- **More languages beyond TS/TSX/JS/Python/Go** — Java, Rust, etc. Same
+  shape of work as adding Go was: one `LanguageSpec` plus a
   language-specific extraction branch (a new grammar family likely needs
   its own walker, same reasoning as `_walk_python`'s docstring).
 - **Real hosted voice/LLM providers** — `providers.py` has the
