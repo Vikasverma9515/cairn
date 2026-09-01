@@ -619,16 +619,38 @@ discipline as everything else here:
   string matching. The real Deepgram provider transcribed real audio
   through the same `providers.py` code path used above.
 
-Cartesia/ElevenLabs (TTS) remain unwired — no credentials for those were
-available in this environment. Wiring one in is implementing `TTSProvider`
-against that vendor's verified SDK; the registry and everything that
-calls through it doesn't change. API keys are read once at construction
-from `GROQ_API_KEY`/`DEEPGRAM_API_KEY` (or passed explicitly) and never
-touched again — no key handling inside `complete()`/`transcribe()`, no
-key ever logged, and the automated test suite (below) never makes a real
+**Update: `CartesiaTTSProvider`/`ElevenLabsTTSProvider` are wired in
+too, at a deliberately different confidence level from Groq/Deepgram.**
+No Cartesia/ElevenLabs credentials exist in this environment, so unlike
+Groq/Deepgram there was no real network call to verify the round-trip
+against. What *was* verified live, by reading the real installed SDKs
+(`cartesia` 4.1.0, `elevenlabs` 2.65.0) rather than assumed: constructor
+signatures, the current non-deprecated method (`tts.generate`, not the
+deprecated `tts.bytes`), the exact structured params each needs
+(Cartesia's `output_format` is a typed dict — `{"container": "mp3",
+"sample_rate": 44100, "bit_rate": 128000}` — not a plain string; `voice`
+*is* a plain voice-ID string per the SDK's own docstring), and how to
+get raw bytes back (`response.read()` for Cartesia; ElevenLabs's
+`convert()` returns `Iterator[bytes]` directly, joined with
+`b"".join(...)`). That is real verification of the SDK's *structure*,
+not a guess from training data — but it is explicitly not the same
+claim as "called against a real account and produced real audio."
+**Test both for real the moment credentials exist**; until then this
+README and the code both say "structurally verified," not "behaviorally
+verified" — a distinction Groq/Deepgram's writeup above didn't need to
+draw, because that verification already happened. Neither provider takes
+a default `voice_id`: unlike an LLM's default *model*, a voice ID is
+account-specific data with no portable universal value, so it's required
+(`voice_id=` or `CARTESIA_VOICE_ID`/`ELEVENLABS_VOICE_ID`) and raises a
+clear `MissingVoiceIdError` rather than silently picking one.
+
+API keys for all four real providers are read once at construction
+(`*_API_KEY` env vars, or passed explicitly) and never touched again —
+no key handling inside `complete()`/`transcribe()`/`synthesize()`, no key
+ever logged, and the automated test suite (below) never makes a real
 network call: constructing a client with a dummy string is safe and
-free, since Groq/Deepgram's SDKs don't validate a key until a real
-request is made.
+free, since none of these SDKs validate a key until a real request is
+made.
 
 Each Protocol also still ships one real, local, zero-network default:
 `EchoLLMProvider` (echoes the prompt — a stand-in, not a real model, but
@@ -647,11 +669,13 @@ listed in the routing prompt itself), so a naive substring check could
 match the wrong one for a request whose earlier options happen to share
 a prefix.
 
-22 tests (`test_providers.py`, including the Groq/Deepgram SDK-plumbing
-tests — construction, missing-key handling, Protocol conformance, no
-network call) plus 5 more in `test_orchestrator.py`. Dogfooded live twice:
-once against the local `echo` provider, once end-to-end against the real
-Groq and Deepgram providers as described above.
+39 tests (`test_providers.py`, covering all four real providers' SDK
+plumbing — construction, missing-key/missing-voice-id handling, Protocol
+conformance, no network call) plus 5 more in `test_orchestrator.py`.
+Dogfooded live twice: once against the local `echo` provider, once
+end-to-end against the real Groq and Deepgram providers as described
+above. Cartesia/ElevenLabs have no equivalent live dogfood yet — see the
+confidence-level note above.
 
 ## Dependency graph — the third index
 
@@ -826,12 +850,11 @@ just that the happy path prints something). 154 tests total, all passing.
   `_walk_python`'s docstring). Ten languages now cover the large
   majority of real-world codebases; further additions are open-ended and
   worth doing per a specific customer's actual stack, not speculatively.
-- **Real hosted TTS/voice providers** — `providers.py` has real
-  `GroqLLMProvider`/`DeepgramSTTProvider` now; Cartesia/ElevenLabs remain
-  unwired, no credentials for those were available in this environment
-  (see that module's docstring for why this wasn't guessed at instead).
-- **A rendered analytics dashboard** — `analytics.py` is the data layer;
-  an actual UI on top of it is a separate frontend concern.
+- **A real network round-trip for Cartesia/ElevenLabs** — `providers.py`
+  has `CartesiaTTSProvider`/`ElevenLabsTTSProvider` now, structurally
+  verified against the real installed SDKs, but never actually called
+  against a live account (no credentials in this environment). Test both
+  for real the moment credentials exist.
 - **Stress test against a large *external* open-source monorepo** — this
   repo (76 files) proves the pipeline is correct; it doesn't prove
   "lakhs of files" doesn't hit some wall this size can't reveal. Worth

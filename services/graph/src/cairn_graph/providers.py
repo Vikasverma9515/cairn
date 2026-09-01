@@ -32,10 +32,29 @@ rename and the tree-sitter-language-pack download issue:
   confirmed with a real transcription of real synthesized speech audio
   (macOS `say` + `afconvert`), not a silent WAV.
 
-Cartesia/ElevenLabs (TTS) remain unwired — no credentials for those were
-available. Wiring one in later is implementing `TTSProvider` against
-that vendor's verified SDK; the registry and everything that calls
-through it stay unchanged.
+**`CartesiaTTSProvider`/`ElevenLabsTTSProvider` are wired in too, at a
+different confidence level than Groq/Deepgram — worth being explicit
+about.** No Cartesia/ElevenLabs credentials exist in this environment,
+so unlike Groq/Deepgram there was no real network call to verify the
+actual round-trip against. What *was* verified live, by reading the
+real installed SDKs (`cartesia` 4.1.0, `elevenlabs` 2.65.0) rather than
+assumed: constructor signatures, the current non-deprecated method to
+call (`tts.generate`, not the deprecated `tts.bytes`), the exact
+structured params each needs (Cartesia's `output_format` is a typed
+dict like `{"container": "mp3", "sample_rate": 44100, "bit_rate":
+128000}`, not a plain string — `voice` *is* a plain voice-ID string per
+its own docstring), and how to get raw bytes back out
+(`CartesiaResponse.read()`; ElevenLabs's `convert()` returns
+`Iterator[bytes]` directly, joined with `b"".join(...)`). That's real
+verification of the SDK's shape, not a guess from training data — but
+it is not the same claim as "this has been called against a real
+account and produced real audio." Test both for real the moment
+credentials exist; until then, treat them as *structurally* verified,
+not *behaviorally* verified — the distinction Groq/Deepgram's docstring
+above doesn't need to make because that verification already happened.
+Neither takes a default `voice_id`: unlike an LLM's default *model*,
+a TTS voice ID is account-specific data with no portable universal
+value — guessing one would be worse than requiring it explicitly.
 
 Every Protocol still ships one fully local, zero-network default too —
 `EchoLLMProvider` and `UnconfiguredSTTProvider`/`UnconfiguredTTSProvider`
@@ -189,6 +208,79 @@ class DeepgramSTTProvider:
         return resp.results.channels[0].alternatives[0].transcript
 
 
+class MissingVoiceIdError(RuntimeError):
+    pass
+
+
+class CartesiaTTSProvider:
+    """Structurally verified against the installed `cartesia` SDK
+    (4.1.0), not yet behaviorally verified against a real account — see
+    this module's docstring for the distinction. `tts.generate()` (not
+    the deprecated `tts.bytes`) needs a structured `output_format`, not a
+    plain string; `voice` is a plain voice-ID string per the SDK's own
+    docstring. The response is read via `.read()` to get raw bytes."""
+
+    def __init__(
+        self,
+        voice_id: str | None = None,
+        api_key: str | None = None,
+        model_id: str = "sonic-3",
+        output_format: dict | None = None,
+    ):
+        key = api_key or os.environ.get("CARTESIA_API_KEY")
+        if not key:
+            raise MissingCredentialError("CartesiaTTSProvider needs an API key: pass api_key= or set CARTESIA_API_KEY")
+        voice = voice_id or os.environ.get("CARTESIA_VOICE_ID")
+        if not voice:
+            raise MissingVoiceIdError(
+                "CartesiaTTSProvider needs a voice_id: pass voice_id= or set CARTESIA_VOICE_ID "
+                "(a voice ID is account-specific — there is no portable default to fall back to)"
+            )
+        from cartesia import Cartesia
+
+        self._client = Cartesia(api_key=key)
+        self._voice_id = voice
+        self._model_id = model_id
+        self._output_format = output_format or {"container": "mp3", "sample_rate": 44100, "bit_rate": 128000}
+
+    def synthesize(self, text: str) -> bytes:
+        response = self._client.tts.generate(
+            model_id=self._model_id,
+            transcript=text,
+            voice=self._voice_id,
+            output_format=self._output_format,
+        )
+        return response.read()
+
+
+class ElevenLabsTTSProvider:
+    """Structurally verified against the installed `elevenlabs` SDK
+    (2.65.0), not yet behaviorally verified against a real account — see
+    this module's docstring. `text_to_speech.convert(voice_id, text=...)`
+    returns `Iterator[bytes]` directly (simpler than Cartesia's response-
+    object wrapper) — joined into one `bytes` value with `b"".join(...)`."""
+
+    def __init__(self, voice_id: str | None = None, api_key: str | None = None, model_id: str = "eleven_multilingual_v2"):
+        key = api_key or os.environ.get("ELEVENLABS_API_KEY")
+        if not key:
+            raise MissingCredentialError("ElevenLabsTTSProvider needs an API key: pass api_key= or set ELEVENLABS_API_KEY")
+        voice = voice_id or os.environ.get("ELEVENLABS_VOICE_ID")
+        if not voice:
+            raise MissingVoiceIdError(
+                "ElevenLabsTTSProvider needs a voice_id: pass voice_id= or set ELEVENLABS_VOICE_ID "
+                "(a voice ID is account-specific — there is no portable default to fall back to)"
+            )
+        from elevenlabs.client import ElevenLabs
+
+        self._client = ElevenLabs(api_key=key)
+        self._voice_id = voice
+        self._model_id = model_id
+
+    def synthesize(self, text: str) -> bytes:
+        chunks = self._client.text_to_speech.convert(self._voice_id, text=text, model_id=self._model_id)
+        return b"".join(chunks)
+
+
 llm_registry = Registry("llm")
 llm_registry.register("echo", EchoLLMProvider)
 llm_registry.register("groq", GroqLLMProvider)
@@ -199,6 +291,8 @@ stt_registry.register("deepgram", DeepgramSTTProvider)
 
 tts_registry = Registry("tts")
 tts_registry.register("unconfigured", UnconfiguredTTSProvider)
+tts_registry.register("cartesia", CartesiaTTSProvider)
+tts_registry.register("elevenlabs", ElevenLabsTTSProvider)
 
 
 def load_provider(registry: Registry, env_var: str, default: str, provider_name: str | None = None):
