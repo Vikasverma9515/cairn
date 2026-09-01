@@ -18,6 +18,7 @@ import tree_sitter_go as tsgo
 import tree_sitter_java as tsjava
 import tree_sitter_javascript as tsjs
 import tree_sitter_python as tspy
+import tree_sitter_rust as tsrust
 import tree_sitter_typescript as tsts
 from tree_sitter import Language, Parser
 
@@ -39,6 +40,7 @@ _JAVASCRIPT = LanguageSpec("javascript", Language(tsjs.language()))
 _PYTHON = LanguageSpec("python", Language(tspy.language()))
 _GO = LanguageSpec("go", Language(tsgo.language()))
 _JAVA = LanguageSpec("java", Language(tsjava.language()))
+_RUST = LanguageSpec("rust", Language(tsrust.language()))
 
 # Extension -> language, longest/most-specific match first where it matters
 # (.tsx must not fall through to plain typescript, which can't parse JSX).
@@ -55,6 +57,7 @@ _EXTENSION_MAP: dict[str, LanguageSpec] = {
     ".pyi": _PYTHON,
     ".go": _GO,
     ".java": _JAVA,
+    ".rs": _RUST,
 }
 
 _PARSER_CACHE: dict[LanguageId, Parser] = {}

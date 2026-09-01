@@ -109,6 +109,8 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
         _walk_go(root, source, result, enclosing=None, skip=skip)
     elif language == "java":
         _walk_java(root, source, result, enclosing=None, skip=skip)
+    elif language == "rust":
+        _walk_rust(root, source, result, enclosing=None, skip=skip)
     else:
         _walk(root, source, result, enclosing=None, skip=skip)
     return result
@@ -629,6 +631,129 @@ def _extract_java_import(node: Node, source: bytes, out: ExtractResult) -> None:
     local_name = segments[-1]
     source_path = ".".join(segments[:-1]) if is_static and len(segments) > 1 else full_path
     out.imports.append(ImportRecord(source=source_path, names=(local_name,), is_relative=False, line=node.start_point[0] + 1))
+
+
+def _rust_is_public(node: Node) -> bool:
+    # `pub`/`pub(crate)`/etc. shows up as a `visibility_modifier` child —
+    # simpler than Java's case (this one *is* a real, if unnamed, node to
+    # scan for either way, verified the same way: found by type, not by
+    # a field name that might not exist).
+    return any(c.type == "visibility_modifier" for c in node.children)
+
+
+def _walk_rust(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
+    next_enclosing = enclosing
+
+    if node.type == "use_declaration":
+        _extract_rust_use(node, source, out)
+    elif node.type in ("struct_item", "trait_item", "enum_item"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="interface" if node.type == "trait_item" else "class",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_rust_is_public(node),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "impl_item":
+        # Not a symbol itself — just sets the enclosing name so
+        # function_items in its body get the right `parent`. `impl Widget
+        # { ... }` and `impl Greeter for Widget { ... }` both expose the
+        # implementing type via the same `type` field.
+        type_node = node.child_by_field_name("type")
+        if type_node is not None:
+            next_enclosing = _text(type_node, source)
+    elif node.type == "function_item":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="method" if enclosing is not None else "function",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_rust_is_public(node),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "call_expression":
+        callee = _rust_callee_name(node, source)
+        if callee is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+    elif node.type in ("identifier", "type_identifier", "field_identifier") and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the other walkers — see
+        # Reference's docstring.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_rust(child, source, out, next_enclosing, skip)
+
+
+def _rust_callee_name(call_node: Node, source: bytes) -> str | None:
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return None
+    if fn.type == "identifier":
+        return _text(fn, source)
+    if fn.type == "scoped_identifier":
+        # `Widget::new(...)` / `String::from(...)` — the `name` field is
+        # always the last path segment, the actual function/associated-
+        # function name a `by_name` match needs, not the full path.
+        name_node = fn.child_by_field_name("name")
+        return _text(name_node, source) if name_node is not None else None
+    if fn.type == "field_expression":
+        # `w.render()` / `s.to_uppercase()` — a method call.
+        field_node = fn.child_by_field_name("field")
+        return _text(field_node, source) if field_node is not None else None
+    return None
+
+
+def _extract_rust_use(node: Node, source: bytes, out: ExtractResult) -> None:
+    line = node.start_point[0] + 1
+    target = next((c for c in node.children if c.type not in ("use", ";")), None)
+    if target is None:
+        return
+    _extract_rust_use_target(target, source, out, line)
+
+
+def _extract_rust_use_target(node: Node, source: bytes, out: ExtractResult, line: int) -> None:
+    if node.type == "scoped_identifier":
+        # Plain `use std::collections::HashMap;` — the `name` field is
+        # always the last segment, the identifier this file actually
+        # binds into scope.
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            out.imports.append(ImportRecord(source=_text(node, source), names=(_text(name_node, source),), is_relative=False, line=line))
+    elif node.type == "use_as_clause":
+        path_node = node.child_by_field_name("path")
+        alias_node = node.child_by_field_name("alias")
+        if path_node is not None and alias_node is not None:
+            out.imports.append(ImportRecord(source=_text(path_node, source), names=(_text(alias_node, source),), is_relative=False, line=line))
+    elif node.type == "scoped_use_list":
+        # `use std::{fmt, io};` — one ImportRecord per item in the list,
+        # each sourced as `path::item` so it reads the same as if it had
+        # been written out as a separate plain `use` statement.
+        path_node = node.child_by_field_name("path")
+        list_node = node.child_by_field_name("list")
+        prefix = _text(path_node, source) if path_node is not None else ""
+        if list_node is not None:
+            for item in (c for c in list_node.children if c.type == "identifier"):
+                item_name = _text(item, source)
+                out.imports.append(ImportRecord(source=f"{prefix}::{item_name}" if prefix else item_name, names=(item_name,), is_relative=False, line=line))
+    elif node.type == "identifier":
+        # A bare `use foo;` with no path at all.
+        out.imports.append(ImportRecord(source=_text(node, source), names=(_text(node, source),), is_relative=False, line=line))
+    # `use_wildcard` (`use std::fmt::*;`) binds no single name — nothing to record.
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:

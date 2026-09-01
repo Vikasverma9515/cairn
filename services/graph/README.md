@@ -135,10 +135,11 @@ positives, period."
 
 ## Language support
 
-TypeScript, TSX, JavaScript, Python, Go, and Java — one `LanguageSpec` in
-`languages.py` plus a language-specific extraction branch in
-`extract.py` per language (`_walk` for the JS/TS grammar family,
-`_walk_python`, `_walk_go`, and `_walk_java` separately: several node *type names* are
+TypeScript, TSX, JavaScript, Python, Go, Java, and Rust — one
+`LanguageSpec` in `languages.py` plus a language-specific extraction
+branch in `extract.py` per language (`_walk` for the JS/TS grammar
+family, `_walk_python`, `_walk_go`, `_walk_java`, and `_walk_rust`
+separately: several node *type names* are
 shared across these grammars — `call`/`call_expression` aside,
 `import_statement` means something structurally different in each —
 sharing one walker would mean disambiguating every such node by language
@@ -207,6 +208,30 @@ propagation to `current.name in framework_root_names`; a dedicated
 regression test (`test_by_parent_propagation_is_scoped_to_framework_roots_
 not_every_reachable_class`) guards it directly in TypeScript, where the
 bug was just as real, just never triggered by an existing test.
+
+**Rust**, same shape once more: `exported` is a real `visibility_modifier`
+child check (`pub`, same non-field-based scan as Java's modifiers, since
+this is also a real but unnamed child node — checked live before writing
+the code this time, not after). Methods live inside `impl Type { ... }`
+blocks, which aren't symbols themselves — they just set the enclosing
+name so every `function_item` in their body picks up the right `parent`,
+the same trick Python's `class_definition` handling already uses; this
+also means `impl Trait for Type { ... }` (implementing a trait) attaches
+its methods to `Type`, not `Trait`, which is the name real call sites
+actually use. Call-edge extraction handles all three real Rust call
+shapes: a plain `inner()`, an associated-function call like
+`Widget::new()` (the callee is `scoped_identifier`'s `name` field — always
+the last path segment, verified live, so `Widget::new` correctly
+resolves to `new`, not the full path), and a method call like
+`w.render()` (`field_expression`'s `field` field). Imports
+(`use std::{fmt, io};`, `use ... as alias;`, `use ...::*;`) each needed
+their own real grammar node checked live — `scoped_use_list`,
+`use_as_clause`, `use_wildcard` — before being handled, not assumed
+to look like Go's or Java's. Dogfooded against a realistic synthetic
+Rust service (a trait, two `impl` blocks including a trait impl,
+associated functions, method dispatch, a `Display` impl using a macro)
+— 14 symbols, 0 false positives on `dead`, correctly flagging the one
+genuinely unused method.
 
 ## MCP server
 
@@ -663,10 +688,11 @@ just that the happy path prints something). 154 tests total, all passing.
 
 ## What's not built yet
 
-- **More languages beyond TS/TSX/JS/Python/Go/Java** — Rust, C#, etc.
-  Same shape of work as adding Go/Java was: one `LanguageSpec` plus a
-  language-specific extraction branch (a new grammar family likely needs
-  its own walker, same reasoning as `_walk_python`'s docstring).
+- **More languages beyond TS/TSX/JS/Python/Go/Java/Rust** — C#, Ruby,
+  PHP, etc. Same shape of work as adding Rust was: one `LanguageSpec`
+  plus a language-specific extraction branch (a new grammar family
+  likely needs its own walker, same reasoning as `_walk_python`'s
+  docstring).
 - **Real hosted TTS/voice providers** — `providers.py` has real
   `GroqLLMProvider`/`DeepgramSTTProvider` now; Cartesia/ElevenLabs remain
   unwired, no credentials for those were available in this environment

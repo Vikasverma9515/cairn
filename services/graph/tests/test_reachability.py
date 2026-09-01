@@ -338,6 +338,48 @@ def test_java_reachability_end_to_end(tmp_path: Path):
     assert "unusedHelper" in dead_names
 
 
+def test_rust_reachability_end_to_end(tmp_path: Path):
+    write(
+        tmp_path / "widget.rs",
+        """
+        pub struct Widget;
+
+        impl Widget {
+            pub fn new() -> Widget {
+                Widget
+            }
+
+            pub fn render(&self) -> String {
+                helper()
+            }
+
+            fn unused_helper(&self) -> String {
+                String::from("never called")
+            }
+        }
+
+        fn helper() -> String {
+            String::from("hi")
+        }
+
+        pub fn run() -> String {
+            let w = Widget::new();
+            w.render()
+        }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "helper" not in dead_names
+    assert "render" not in dead_names
+    assert "unused_helper" in dead_names
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")
