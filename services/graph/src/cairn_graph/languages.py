@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import tree_sitter_c_sharp as tscs
 import tree_sitter_go as tsgo
 import tree_sitter_java as tsjava
 import tree_sitter_javascript as tsjs
@@ -41,6 +42,7 @@ _PYTHON = LanguageSpec("python", Language(tspy.language()))
 _GO = LanguageSpec("go", Language(tsgo.language()))
 _JAVA = LanguageSpec("java", Language(tsjava.language()))
 _RUST = LanguageSpec("rust", Language(tsrust.language()))
+_CSHARP = LanguageSpec("csharp", Language(tscs.language()))
 
 # Extension -> language, longest/most-specific match first where it matters
 # (.tsx must not fall through to plain typescript, which can't parse JSX).
@@ -58,6 +60,7 @@ _EXTENSION_MAP: dict[str, LanguageSpec] = {
     ".go": _GO,
     ".java": _JAVA,
     ".rs": _RUST,
+    ".cs": _CSHARP,
 }
 
 _PARSER_CACHE: dict[LanguageId, Parser] = {}

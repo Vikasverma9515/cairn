@@ -380,6 +380,45 @@ def test_rust_reachability_end_to_end(tmp_path: Path):
     assert "unused_helper" in dead_names
 
 
+def test_csharp_reachability_end_to_end(tmp_path: Path):
+    write(
+        tmp_path / "Widget.cs",
+        """
+        public class Widget {
+            public Widget() {}
+
+            public static Widget Create() {
+                Widget w = new Widget();
+                w.Render();
+                return w;
+            }
+
+            public string Render() {
+                return Helper();
+            }
+
+            private string Helper() {
+                return "hi";
+            }
+
+            private string UnusedHelper() {
+                return "never called";
+            }
+        }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "Helper" not in dead_names
+    assert "Render" not in dead_names
+    assert "UnusedHelper" in dead_names
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

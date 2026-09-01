@@ -111,6 +111,8 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
         _walk_java(root, source, result, enclosing=None, skip=skip)
     elif language == "rust":
         _walk_rust(root, source, result, enclosing=None, skip=skip)
+    elif language == "csharp":
+        _walk_csharp(root, source, result, enclosing=None, skip=skip)
     else:
         _walk(root, source, result, enclosing=None, skip=skip)
     return result
@@ -754,6 +756,108 @@ def _extract_rust_use_target(node: Node, source: bytes, out: ExtractResult, line
         # A bare `use foo;` with no path at all.
         out.imports.append(ImportRecord(source=_text(node, source), names=(_text(node, source),), is_relative=False, line=line))
     # `use_wildcard` (`use std::fmt::*;`) binds no single name — nothing to record.
+
+
+def _cs_is_public(node: Node) -> bool:
+    if node.parent is not None and node.parent.parent is not None and node.parent.parent.type == "interface_declaration":
+        return True  # interface members are implicitly public, same as Java
+    for child in node.children:
+        if child.type == "modifier" and any(gc.type == "public" for gc in child.children):
+            return True
+    return False
+
+
+def _walk_csharp(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
+    next_enclosing = enclosing
+
+    if node.type == "using_directive":
+        _extract_csharp_using(node, source, out)
+    elif node.type in ("class_declaration", "interface_declaration", "struct_declaration", "record_declaration"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="interface" if node.type == "interface_declaration" else "class",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_cs_is_public(node),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type in ("method_declaration", "constructor_declaration"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="method",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_cs_is_public(node),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "invocation_expression":
+        callee = _cs_callee_name(node, source)
+        if callee is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=callee, line=node.start_point[0] + 1))
+    elif node.type == "object_creation_expression":
+        # `new Widget(...)` — same reasoning as JS's new_expression: a
+        # class only ever instantiated, never called bare (C# has no bare-
+        # call instantiation syntax anyway), would otherwise read as dead.
+        type_node = node.child_by_field_name("type")
+        if type_node is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=_text(type_node, source), line=node.start_point[0] + 1))
+    elif node.type in ("identifier", "type_identifier") and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the other walkers — see
+        # Reference's docstring.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_csharp(child, source, out, next_enclosing, skip)
+
+
+def _cs_callee_name(call_node: Node, source: bytes) -> str | None:
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return None
+    if fn.type == "identifier":
+        return _text(fn, source)
+    if fn.type == "member_access_expression":
+        name_node = fn.child_by_field_name("name")
+        return _text(name_node, source) if name_node is not None else None
+    return None
+
+
+def _extract_csharp_using(node: Node, source: bytes, out: ExtractResult) -> None:
+    line = node.start_point[0] + 1
+    # `using System;` / `using System.Collections.Generic;` / `using Utils
+    # = MyApp.Helpers.Utils;` — an alias clause has both an `identifier`
+    # (the alias) and a `qualified_name`/`identifier` (the real target)
+    # as direct children, so the alias is whichever `identifier` comes
+    # *before* the `=` token, not just "the first identifier found".
+    children = list(node.children)
+    eq_index = next((i for i, c in enumerate(children) if c.type == "="), None)
+    if eq_index is not None:
+        alias_node = children[eq_index - 1]
+        target_node = children[eq_index + 1]
+        local_name = _text(alias_node, source)
+        source_text = _text(target_node, source)
+    else:
+        target_node = next((c for c in children if c.type in ("qualified_name", "identifier")), None)
+        if target_node is None:
+            return
+        source_text = _text(target_node, source)
+        name_field = target_node.child_by_field_name("name") if target_node.type == "qualified_name" else target_node
+        local_name = _text(name_field, source)
+    out.imports.append(ImportRecord(source=source_text, names=(local_name,), is_relative=False, line=line))
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:

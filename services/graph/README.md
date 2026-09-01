@@ -135,11 +135,11 @@ positives, period."
 
 ## Language support
 
-TypeScript, TSX, JavaScript, Python, Go, Java, and Rust — one
+TypeScript, TSX, JavaScript, Python, Go, Java, Rust, and C# — one
 `LanguageSpec` in `languages.py` plus a language-specific extraction
 branch in `extract.py` per language (`_walk` for the JS/TS grammar
-family, `_walk_python`, `_walk_go`, `_walk_java`, and `_walk_rust`
-separately: several node *type names* are
+family, `_walk_python`, `_walk_go`, `_walk_java`, `_walk_rust`, and
+`_walk_csharp` separately: several node *type names* are
 shared across these grammars — `call`/`call_expression` aside,
 `import_statement` means something structurally different in each —
 sharing one walker would mean disambiguating every such node by language
@@ -232,6 +232,27 @@ Rust service (a trait, two `impl` blocks including a trait impl,
 associated functions, method dispatch, a `Display` impl using a macro)
 — 14 symbols, 0 false positives on `dead`, correctly flagging the one
 genuinely unused method.
+
+**C#**, same shape once more, cleaner in one way than Java: `name` is a
+real named field on `class_declaration`/`method_declaration`/
+`constructor_declaration`/`interface_declaration` (verified live —
+unlike Java's `modifiers`, this one didn't have a surprise), so no
+scan-for-the-first-identifier-child workaround was needed there.
+`exported` is a `modifier` child containing a nested `public` node
+(checked live rather than assumed identical to Java's shape, since it
+turned out to be a different structure: one `modifier` node per keyword,
+not one wrapper node holding several). Interface members are implicitly
+public, same convention as Java. Constructors are captured as a method
+named after their class, same as Java, so `new Widget()` reaches both
+through one name-based match. The one real parsing subtlety, checked
+live before writing the code: `using Utils = MyApp.Helpers.Utils;` (an
+alias) has the alias identifier and the real target as two *separate*
+children straddling an `=` token, not one combined node — the alias is
+"whichever identifier comes right before the `=`", not just "the first
+identifier found" (which would have silently bound the wrong name).
+Dogfooded against a realistic synthetic C# service (an interface, a
+`Dictionary`-backed implementation, constructor-injected dependencies,
+a `Main` entry point) — 14 symbols, 0 false positives on `dead`.
 
 ## MCP server
 
