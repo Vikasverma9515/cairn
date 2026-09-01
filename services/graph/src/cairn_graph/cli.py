@@ -69,6 +69,13 @@ def main(argv: list[str] | None = None) -> int:
     voice_p.add_argument("--memory-db", default=".cairn-graph-memory.db")
     voice_p.add_argument("--out-audio", default=None, help="path to write the synthesized reply audio to, if --tts-provider is given")
 
+    agent_p = sub.add_parser(
+        "agent",
+        help="run one request through the real tool-calling agent loop (Groq only right now — GROQ_API_KEY must be set), with real search/dead/deps tools wired to this index",
+    )
+    agent_p.add_argument("request")
+    agent_p.add_argument("--db", default=".cairn-graph.db")
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -95,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_voice_turn(
             args.audio_file, args.stt_provider, args.llm_provider, args.tts_provider, args.customer, args.memory_db, args.out_audio
         )
+    if args.command == "agent":
+        return _run_agent(args.request, args.db)
     return 1
 
 
@@ -288,6 +297,46 @@ def _run_voice_turn(
         with open(out_audio, "wb") as f:
             f.write(result.reply_audio)
         print(f"wrote reply audio to {out_audio}")
+    return 0
+
+
+def _run_agent(request: str, db: str) -> int:
+    from cairn_graph.agent_loop import ToolSpec, run_agent_loop
+    from cairn_graph.mcp_server import find_dead_code, get_dependency_summary, search_symbols
+    from cairn_graph.store import open_store
+
+    conn = open_store(db)
+    tools = [
+        ToolSpec(
+            name="search_symbols",
+            description="Search the codebase for a symbol by name substring. Returns matching functions/classes/methods with their file and line.",
+            parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            fn=lambda query: search_symbols(conn, query, limit=10),
+        ),
+        ToolSpec(
+            name="find_dead_code",
+            description="List unexported symbols unreachable from any export or known entry point.",
+            parameters={"type": "object", "properties": {}},
+            fn=lambda: find_dead_code(conn, limit=20),
+        ),
+        ToolSpec(
+            name="dependency_summary",
+            description="Most-depended-on files, candidate entry points, and any import cycles in the codebase.",
+            parameters={"type": "object", "properties": {}},
+            fn=lambda: get_dependency_summary(conn, top_n=10),
+        ),
+    ]
+
+    result = run_agent_loop(
+        request,
+        tools=tools,
+        system="You are a coding assistant with real tools for this codebase. Use them to find real answers — never guess a file path or claim a symbol is dead without checking.",
+    )
+    print(f"iterations: {result.iterations_used}  gave_up: {result.gave_up}")
+    for tc in result.tool_calls_made:
+        print(f"  called {tc.name}({tc.arguments}) -> {str(tc.result)[:200]}")
+    print()
+    print(result.final_text if result.final_text is not None else "(gave up without a final answer)")
     return 0
 
 

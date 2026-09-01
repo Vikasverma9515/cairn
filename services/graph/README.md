@@ -697,6 +697,58 @@ end-to-end against the real Groq and Deepgram providers as described
 above. Cartesia/ElevenLabs have no equivalent live dogfood yet — see the
 confidence-level note above.
 
+## Agent loop (Month 9, first slice) — the LLM actually executes tools now
+
+`agent_loop.py` closes the exact gap `voice_pipeline.py` found live:
+asked "where is the highlight function defined," the LLM gave a
+genuinely good reply — but it never actually searched, it explained that
+it *would* need to. `run_agent_loop` gives an LLM real tools and
+actually calls them, closing that gap for real. Real dogfood, real
+repo, real Groq: asked the identical question with a real
+`search_symbols` tool wired to the real cairn repo, it now correctly
+answers `highlightElement` — `packages/sdk/src/element-ladder.ts:36` —
+because it actually ran the search, not because it guessed right.
+
+Not built against `providers.LLMProvider` — plain text completion is the
+wrong shape for a structured tool-call decision, so this talks to the
+real Groq SDK's tool-calling API directly, same "don't force one
+interface to do two jobs" principle as everything else here.
+
+**A real bug found live, with a real fix, not a workaround papered
+over.** A genuine multi-turn tool-calling round trip against this
+project's real Groq account — message schema confirmed correct against
+Groq's own type definitions (`ChatCompletionToolMessageParam`,
+`ChatCompletionAssistantMessageParam`) before suspecting anything else —
+still had the model *re-call the same tool with the same arguments*
+instead of recognizing the result it was just handed. Confirmed this
+wasn't one model's quirk: two different real models
+(`openai/gpt-oss-120b`, `qwen/qwen3.8-27b`) both did it. Confirmed the
+fix live: forcing `tool_choice="none"` once a repeated `(name,
+arguments)` pair is detected reliably produces a real, correct final
+answer using the tool result already gathered. This is the actual
+defense in the loop — a `max_iterations` cap alone would just burn the
+whole budget re-asking the same question, and both are tested directly
+(`test_repeated_identical_tool_call_forces_tool_choice_none_on_the_next_call`,
+`test_gives_up_honestly_after_max_iterations_instead_of_looping_forever`
+— the latter uses a client that never repeats itself, proving
+`max_iterations` is a real independent safety net, not the only thing
+standing between this and an infinite loop).
+
+A tool that raises feeds a real error back into the loop instead of
+crashing it (the model gets to react to "that failed," same as a human
+operator would); a call to an unknown tool name gets a clear error, not
+a silent no-op. 9 tests (`test_agent_loop.py`) against a scripted fake
+client matching Groq's real response shape — no network call in the
+automated suite; the real tool-calling round trip (including the repeat-
+call bug and its fix) was verified live against the real account before
+any of this was written, not assumed.
+
+**What this is not yet**: Month 9's full ask (task decomposition into a
+parallel/ordered plan, real sub-agent handoff, a human-reviewable plan
+before execution). This is the prerequisite underneath that — one agent
+that can actually use its scoped tools for real, verified working,
+before anything gets layered on top of it as multiple agents.
+
 ## Voice pipeline (Month 8, first slice) — the real loop, for the first time
 
 `voice_pipeline.py` connects four pieces that had each been real and
