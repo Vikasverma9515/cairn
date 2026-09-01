@@ -10,3 +10,4 @@ CAIRN_DOCS.md
 .DS_Store
 *.tsbuildinfo
 examples/demo-app/data/
+.vercel

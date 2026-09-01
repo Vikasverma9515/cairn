@@ -212,14 +212,39 @@ def log_action(
     risk: str,
     outcome: str,
     customer_id: str | None = None,
-) -> None:
+) -> int:
     """Called for every gated-action decision, whether it ran or stopped
     for approval — commits immediately (not batched) since actions happen
-    one at a time, unlike the bulk build/upsert path in this module."""
-    conn.execute(
+    one at a time, unlike the bulk build/upsert path in this module.
+    Returns the new row's id — a "needs_approval" row's id becomes the
+    request_id a caller must echo back to actually get approval honored;
+    see `get_pending_action`/`resolve_action` below."""
+    cursor = conn.execute(
         "INSERT INTO action_log (tool_name, description, risk, outcome, customer_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (tool_name, description, risk, outcome, customer_id, time.time()),
     )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_pending_action(conn: sqlite3.Connection, request_id: int) -> ActionLogEntry | None:
+    """Looks up a specific logged decision by id — used to verify an
+    `approved=true` retry actually references a real prior
+    `needs_approval` response instead of a guessed or reused id."""
+    row = conn.execute(
+        "SELECT id, tool_name, description, risk, outcome, customer_id, created_at FROM action_log WHERE id = ?",
+        (request_id,),
+    ).fetchone()
+    return ActionLogEntry(*row) if row else None
+
+
+def resolve_action(conn: sqlite3.Connection, request_id: int, outcome: str) -> None:
+    """Flips a pending row to its resolved outcome in place, rather than
+    inserting a second row — one request_id, one final state, so a
+    duplicate approval attempt against an already-resolved id fails the
+    "still pending" check in `get_pending_action`'s caller instead of
+    silently re-running the action."""
+    conn.execute("UPDATE action_log SET outcome = ? WHERE id = ?", (outcome, request_id))
     conn.commit()
 
 

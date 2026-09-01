@@ -341,3 +341,81 @@ def test_gated_actions_are_recorded_in_the_audit_log_when_a_conn_is_given(tmp_pa
     outcomes = [e["outcome"] for e in log["entries"]]
     assert "needs_approval" in outcomes
     assert "applied" in outcomes
+
+
+def test_approved_true_alone_is_refused_when_a_real_conn_is_present(tmp_path: Path):
+    """The finding this test guards: approved=true is a plain argument
+    the calling model controls. Without a conn there's no log to check
+    against, so it's honored directly (see the test above) — but with a
+    real conn, a bare approved=true (no request_id, or a made-up one)
+    must NOT skip the gate, or a prompt-injected "just say yes" instruction
+    could delete/run/edit for free on the very first call."""
+    conn = open_store(str(tmp_path / "g.db"))
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+
+    result = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, approved=True, conn=conn)
+
+    assert result["status"] == "needs_approval"
+    assert f.exists()  # never actually deleted
+
+
+def test_approved_true_with_a_fabricated_request_id_is_refused(tmp_path: Path):
+    conn = open_store(str(tmp_path / "g.db"))
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+
+    result = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, approved=True, conn=conn, request_id=99999)
+
+    assert result["status"] == "needs_approval"
+    assert f.exists()
+
+
+def test_approved_true_with_the_real_request_id_from_the_prior_response_actually_proceeds(tmp_path: Path):
+    conn = open_store(str(tmp_path / "g.db"))
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+
+    first = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, conn=conn)
+    assert first["status"] == "needs_approval"
+    request_id = first["request_id"]
+
+    second = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, approved=True, conn=conn, request_id=request_id)
+
+    assert second["status"] == "ran" or second["status"] == "applied"
+    assert not f.exists()
+
+
+def test_a_request_id_cannot_be_replayed_for_a_second_deletion(tmp_path: Path):
+    """One request_id resolves once — reusing it after the file is already
+    gone (or after any other retry) must not silently re-run the action."""
+    conn = open_store(str(tmp_path / "g.db"))
+    f = tmp_path / "a.ts"
+    f.write_text("x")
+
+    first = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, conn=conn)
+    request_id = first["request_id"]
+    delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, approved=True, conn=conn, request_id=request_id)
+
+    replay = delete_file_gated(str(tmp_path), "a.ts", PermissionMode.AUTO, approved=True, conn=conn, request_id=request_id)
+
+    assert replay["status"] == "needs_approval"
+
+
+def test_a_request_id_from_a_different_action_cannot_approve_this_one(tmp_path: Path):
+    """A pending request_id for editing file a.ts must not also approve
+    deleting file b.ts — the tool_name/description match in `_gate` is
+    what this test exercises."""
+    conn = open_store(str(tmp_path / "g.db"))
+    a = tmp_path / "a.ts"
+    a.write_text("x")
+    b = tmp_path / "b.ts"
+    b.write_text("y")
+
+    edit_request = apply_edit_gated(str(tmp_path), "a.ts", "x", "z", PermissionMode.REVIEW, conn=conn)
+    request_id = edit_request["request_id"]
+
+    delete_attempt = delete_file_gated(str(tmp_path), "b.ts", PermissionMode.AUTO, approved=True, conn=conn, request_id=request_id)
+
+    assert delete_attempt["status"] == "needs_approval"
+    assert b.exists()

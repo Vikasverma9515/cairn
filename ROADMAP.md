@@ -218,9 +218,17 @@ syntactically valid.
 ## Phase 4 — open-source polish (partial)
 
 Done: CI (`.github/workflows/ci.yml` — typecheck, test, determinism check,
-builds `@cairn/indexer`, installs Chromium for `crawl.test.ts`) and
-`CONTRIBUTING.md`.
+builds `@cairn/indexer`, installs Chromium for `crawl.test.ts`),
+`CONTRIBUTING.md`, GitHub issue templates (`.github/ISSUE_TEMPLATE/`), and
+a real landing page (`site/index.html`, deployed at
+[cairn-phi-flame.vercel.app](https://cairn-phi-flame.vercel.app)).
 
-Still open: issue templates, a real docs site, and — the actual point of
-open-sourcing this — community-contributed scaffolders/crawlers for
-frameworks beyond whatever's built in.
+Still open, and not something a single session can finish alone:
+- **A dedicated docs site** beyond the README/landing page — nice-to-have,
+  not blocking; the README already covers install, API, and CLI in full.
+- **`npm publish`** — everything up to `npm publish --dry-run` is done;
+  actually publishing is a one-way, externally-visible action that needs
+  explicit go-ahead, not something to do unprompted.
+- **Community-contributed scaffolders/crawlers for frameworks beyond
+  Next.js** — the actual point of open-sourcing this. By definition this
+  needs outside contributors showing up, not more solo engineering.

@@ -18,6 +18,7 @@
   "files": [
     "dist",
     "src",
+    "!src/**/*.test.ts",
     "LICENSE"
   ],
   "scripts": {

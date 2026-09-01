@@ -52,7 +52,7 @@ from cairn_graph.dashboard import assemble_dashboard_data, generate_narrative, r
 from cairn_graph.dependencies import dependency_summary, file_dependencies, file_dependents
 from cairn_graph.memory import open_memory_store, recall, recent_history, record_turn, remember
 from cairn_graph.reachability import compute_dead_symbols
-from cairn_graph.store import list_action_log, log_action, open_store, stats
+from cairn_graph.store import get_pending_action, list_action_log, log_action, open_store, resolve_action, stats
 from cairn_graph.vectors import build_vector_index, search_semantic
 
 
@@ -124,16 +124,52 @@ def _gate(
     applied_status: str,
     conn: sqlite3.Connection | None = None,
     customer_id: str | None = None,
+    request_id: int | None = None,
 ) -> dict[str, Any]:
     """The one place every gated tool below funnels through: decide, log
     the decision either way, then either stop or actually do the thing.
     `conn` is optional so the plain action functions stay testable without
-    a graph db — production calls (from `build_server`) always pass one."""
+    a graph db — production calls (from `build_server`) always pass one.
+
+    **`approved=true` alone proves nothing** — it's a plain argument the
+    calling model controls, so a prompt-injected instruction (or a client
+    that doesn't actually wait for a human) could set it on the very
+    first call and skip the gate entirely. When a real `conn` is present,
+    approval must reference the exact `request_id` a prior
+    `needs_approval` response returned: the pending row has to exist,
+    still be unresolved, and describe the *same* action being retried.
+    Without a matching `request_id`, `approved=true` is refused, not
+    trusted — the caller gets a fresh `needs_approval` instead of a free
+    pass. (With no `conn` — the unit-test path — there's no log to check
+    against, so `approved` is honored directly, same as before.)"""
     decision = decide(action, mode)
-    if decision is Decision.NEEDS_APPROVAL and not approved:
+    if decision is Decision.NEEDS_APPROVAL:
+        verified = approved
+        if approved and conn is not None:
+            verified = False
+            if request_id is not None:
+                pending = get_pending_action(conn, request_id)
+                if (
+                    pending is not None
+                    and pending.outcome == "needs_approval"
+                    and pending.tool_name == action.tool_name
+                    and pending.description == action.description
+                ):
+                    verified = True
+        if not verified:
+            new_id = None
+            if conn is not None:
+                new_id = log_action(conn, action.tool_name, action.description, action.risk.value, "needs_approval", customer_id)
+            response = {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
+            if new_id is not None:
+                response["request_id"] = new_id
+            return response
+        # verified: either a real, still-pending, matching approval (conn path — resolve that
+        # row instead of inserting a duplicate), or the no-conn unit-test path with nothing to log
+        result = execute()
         if conn is not None:
-            log_action(conn, action.tool_name, action.description, action.risk.value, "needs_approval", customer_id)
-        return {"status": "needs_approval", "risk": action.risk.value, "description": action.description}
+            resolve_action(conn, request_id, applied_status)
+        return {"status": applied_status, **result}
     result = execute()
     if conn is not None:
         log_action(conn, action.tool_name, action.description, action.risk.value, applied_status, customer_id)
@@ -148,12 +184,16 @@ def apply_edit_gated(
     mode: PermissionMode,
     approved: bool = False,
     conn: sqlite3.Connection | None = None,
+    request_id: int | None = None,
 ) -> dict[str, Any]:
     """`approved` is how the orchestrator answers its own popup on a
     second call — the same shape as this agent's own tool-permission
-    flow: ask once, then proceed once the human has said yes."""
+    flow: ask once, then proceed once the human has said yes. When `conn`
+    is a real connection, `approved=true` alone isn't enough — `request_id`
+    must match the pending row a prior `needs_approval` call created; see
+    `_gate`'s docstring for why."""
     action = build_apply_edit_action(root, file_path, old_text, new_text)
-    return _gate(action, mode, approved, lambda: apply_edit(root, file_path, old_text, new_text), "applied", conn)
+    return _gate(action, mode, approved, lambda: apply_edit(root, file_path, old_text, new_text), "applied", conn, request_id=request_id)
 
 
 def create_file_gated(
@@ -163,9 +203,10 @@ def create_file_gated(
     mode: PermissionMode,
     approved: bool = False,
     conn: sqlite3.Connection | None = None,
+    request_id: int | None = None,
 ) -> dict[str, Any]:
     action = build_create_file_action(root, file_path, content)
-    return _gate(action, mode, approved, lambda: create_file(root, file_path, content), "applied", conn)
+    return _gate(action, mode, approved, lambda: create_file(root, file_path, content), "applied", conn, request_id=request_id)
 
 
 def delete_file_gated(
@@ -174,9 +215,10 @@ def delete_file_gated(
     mode: PermissionMode,
     approved: bool = False,
     conn: sqlite3.Connection | None = None,
+    request_id: int | None = None,
 ) -> dict[str, Any]:
     action = build_delete_file_action(root, file_path)
-    return _gate(action, mode, approved, lambda: delete_file(root, file_path), "applied", conn)
+    return _gate(action, mode, approved, lambda: delete_file(root, file_path), "applied", conn, request_id=request_id)
 
 
 def run_command_gated(
@@ -185,13 +227,14 @@ def run_command_gated(
     mode: PermissionMode,
     approved: bool = False,
     conn: sqlite3.Connection | None = None,
+    request_id: int | None = None,
 ) -> dict[str, Any]:
     """CRITICAL tier means `decide()` returns NEEDS_APPROVAL here in every
     mode — the `mode` argument only exists to keep the same shape as the
     other gated functions; it never changes the outcome for a CRITICAL
     action, by design."""
     action = build_run_command_action(command)
-    return _gate(action, mode, approved, lambda: run_command(root, command), "ran", conn)
+    return _gate(action, mode, approved, lambda: run_command(root, command), "ran", conn, request_id=request_id)
 
 
 def audit_log(conn: sqlite3.Connection, limit: int = 50, customer_id: str | None = None) -> dict[str, Any]:
@@ -299,8 +342,10 @@ def build_server(
             "similarity ranked, not exact — treat both as strong hints, "
             "not proof. apply_edit_tool, create_file_tool, delete_file_tool, "
             "and run_command_tool are gated: a needs_approval response "
-            "means show the description to the human and call again with "
-            "approved=true only after they say yes — never on your own. "
+            "includes a request_id — show the description to the human and "
+            "call again with approved=true AND that exact request_id only "
+            "after they say yes, never on your own. approved=true without "
+            "the matching request_id is refused, not honored. "
             "delete_file_tool and run_command_tool always need approval, "
             "in either permission mode. audit_log_tool lists what's been "
             "attempted so far, applied or not. file_dependencies_tool/"
@@ -367,43 +412,48 @@ def build_server(
         return {"symbols_embedded": summary.symbols_embedded, "batches": summary.batches}
 
     @server.tool()
-    def apply_edit_tool(file_path: str, old_text: str, new_text: str, approved: bool = False) -> dict[str, Any]:
+    def apply_edit_tool(file_path: str, old_text: str, new_text: str, approved: bool = False, request_id: int | None = None) -> dict[str, Any]:
         """Replace one exact, unique occurrence of old_text with new_text in
         a file inside the indexed root. old_text must match exactly once —
         this refuses rather than guessing which occurrence you meant. May
-        return status="needs_approval" instead of editing anything; see the
-        server instructions for how to handle that."""
+        return status="needs_approval" plus a request_id instead of editing
+        anything — show the description to the human, and only call again
+        with approved=true AND that exact request_id once they say yes.
+        approved=true without the matching request_id is refused, not
+        trusted — it does not skip the gate."""
         with _lock:
-            return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved, conn)
+            return apply_edit_gated(root, file_path, old_text, new_text, permission_mode, approved, conn, request_id)
 
     @server.tool()
-    def create_file_tool(file_path: str, content: str, approved: bool = False) -> dict[str, Any]:
+    def create_file_tool(file_path: str, content: str, approved: bool = False, request_id: int | None = None) -> dict[str, Any]:
         """Create a new file inside the indexed root. Refuses if the file
-        already exists — use apply_edit_tool to modify one. May return
-        status="needs_approval"; same approval flow as apply_edit_tool."""
+        already exists — use apply_edit_tool to modify one. Same
+        needs_approval + request_id flow as apply_edit_tool."""
         with _lock:
-            return create_file_gated(root, file_path, content, permission_mode, approved, conn)
+            return create_file_gated(root, file_path, content, permission_mode, approved, conn, request_id)
 
     @server.tool()
-    def delete_file_tool(file_path: str, approved: bool = False) -> dict[str, Any]:
+    def delete_file_tool(file_path: str, approved: bool = False, request_id: int | None = None) -> dict[str, Any]:
         """Delete a file inside the indexed root. CRITICAL risk — always
-        returns status="needs_approval" on the first call, in either
-        permission mode."""
+        returns status="needs_approval" plus a request_id on the first
+        call, in either permission mode. Call again with approved=true and
+        that exact request_id only after a human has actually said yes."""
         with _lock:
-            return delete_file_gated(root, file_path, permission_mode, approved, conn)
+            return delete_file_gated(root, file_path, permission_mode, approved, conn, request_id)
 
     @server.tool()
-    def run_command_tool(command: list[str], approved: bool = False) -> dict[str, Any]:
+    def run_command_tool(command: list[str], approved: bool = False, request_id: int | None = None) -> dict[str, Any]:
         """Run a shell command (argv list, e.g. ["npm", "test"]) with cwd
         pinned to the indexed root. CRITICAL risk — always returns
-        status="needs_approval" on the first call, in either permission
-        mode; see the server instructions for the approval flow."""
+        status="needs_approval" plus a request_id on the first call, in
+        either permission mode; call again with approved=true and that
+        exact request_id only once a human has actually said yes."""
         # Held for the whole subprocess duration, so a long-running command
         # blocks other tool calls until it (or its timeout) finishes — an
         # accepted tradeoff for a rare, always-gated action, not something
         # worth a real work queue over yet.
         with _lock:
-            return run_command_gated(root, command, permission_mode, approved, conn)
+            return run_command_gated(root, command, permission_mode, approved, conn, request_id)
 
     @server.tool()
     def audit_log_tool(limit: int = 50) -> dict[str, Any]:

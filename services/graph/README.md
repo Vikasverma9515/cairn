@@ -502,6 +502,28 @@ response shape, mirroring this agent's own tool-permission flow: a
 caller shows it to a person and calls again with `approved=true` only
 after they say yes — the tool never decides that for itself.
 
+**A real gap, found by self-review, since fixed**: `approved` was a
+plain boolean argument the *calling model* controlled — nothing
+server-side checked that it actually followed a human's yes. A
+prompt-injected instruction (or any client that doesn't genuinely wait
+for a person) could set `approved=true` on the very first call and the
+gate would just... comply. Fixed by having a `needs_approval` response
+carry a `request_id` (the pending row's own id in `action_log`); a
+retry with `approved=true` is only honored when `request_id` points at
+a row that's real, still `needs_approval`, and describes the *exact*
+same action — otherwise it's refused and a fresh `needs_approval` comes
+back, same as if `approved` had never been sent. One id resolves once
+(a replay after resolution fails the "still pending" check), and an id
+from a *different* pending action can't approve this one (the
+tool_name + description match in `_gate` blocks that). Five new tests
+in `test_mcp_server.py` exercise exactly this: a bare `approved=true`,
+a fabricated `request_id`, a real one that works, a replay of an
+already-resolved one, and a request_id borrowed from an unrelated
+action — all refused except the one legitimate case. (When no `conn` is
+given — the plain-function unit-test path — there's no audit log to
+correlate against, so `approved` is still honored directly; every real
+deployment through `build_server` always passes a `conn`.)
+
 Two more actions round out basic file CRUD:
 
 - **`create_file`** (REVIEW) — refuses to overwrite an existing file
@@ -1133,11 +1155,20 @@ minutes, a smaller improvement than the CPU number, because this
 specific run measured at 7% CPU utilization — almost the entire
 wall-clock time was spent waiting, not computing, which lines up with
 this dev machine's disk being 97% full at the time (a known cause of
-degraded macOS I/O). Reporting both numbers rather than just the
-flattering one: the fix demonstrably removed the computational
-bottleneck; whether wall-clock time improves further on hardware with
-normal free disk space is a real open question this measurement can't
-answer on its own, and shouldn't be papered over.
+degraded macOS I/O). At the time, whether wall-clock time would improve
+further on hardware with normal free disk space was flagged as a real
+open question rather than papered over.
+
+**Re-measured again, disk headroom this time (23GB free, not 97%
+full)**: `build` cold dropped to **46.88s** (from 418.5s — the same
+13,104 files), and `dead` dropped to **48.877s wall-clock** (11.71s
+user + 5.66s system, 35% CPU utilization) — down from 6.7 minutes on
+the cramped disk, and the original 23.5 minutes before the algorithmic
+fix. Confirms the earlier hypothesis directly: the 6.7-minute number
+really was disk-I/O-bound by environment, not a limit of the fix. Both
+numbers are reported here rather than only the final flattering one, on
+purpose — that's the whole point of not papering over an open question
+until it's actually re-measured.
 
 Every generated file (the clone, the 500MB+ structure-graph db) was
 deleted after this test — this section is the only trace of it, by
@@ -1173,10 +1204,25 @@ what was actually true, not to keep a giant external repo checked in.
   verified against the real installed SDKs, but never actually called
   against a live account (no credentials in this environment). Test both
   for real the moment credentials exist.
-- **Confirming dead-code detection's wall-clock time on a machine with
-  normal free disk space** — see "External stress test" below: the
-  algorithmic fix cut real CPU work 76x (1015.75s → 13.32s), but the
-  re-measurement ran on a dev machine at 97% disk capacity, at 7% CPU
-  utilization — wall-clock (23.5min → 6.7min) is a real improvement but
-  likely still I/O-bound by environment, not algorithm. Re-run on a
-  machine with headroom before calling wall-clock time solved.
+- ~~Confirming dead-code detection's wall-clock time on a machine with
+  normal free disk space~~ — **done.** Re-run against a fresh
+  `microsoft/vscode` clone once disk headroom was actually available
+  (23GB free, not 97% full): cold `build` dropped to **46.88s** (from
+  418.5s), and `dead` dropped to **48.877s wall-clock** (11.71s user +
+  5.66s system CPU, 35% utilization) — down from 6.7 minutes on the
+  cramped disk, and the original 23.5 minutes pre-fix. Confirms the
+  earlier wall-clock number really was I/O-bound by environment, not the
+  algorithm — the algorithmic fix holds at real scale either way.
+- **The multi-agent orchestrator's tool-scoping isn't wired into the MCP
+  server yet** — found by self-review, not a design change to rush.
+  `orchestrator.py` correctly *computes* which tool names a request's
+  specialist owns (`route_request()`), but `build_server()` registers
+  all 22 tools unconditionally — nothing today stops an MCP client from
+  calling `delete_file_tool` directly regardless of what routing would
+  have scoped it to. The permission gate (above) still catches the
+  destructive cases at the action layer, so this isn't a hole in *that*
+  protection, but the orchestrator's stated goal — "a read-only request
+  never even sees delete_file_tool as an option" — isn't actually true
+  yet at the transport level. Needs a real integration decision (e.g.
+  per-session dynamic tool lists, or a routing proxy in front of the MCP
+  server), not a quick patch.
