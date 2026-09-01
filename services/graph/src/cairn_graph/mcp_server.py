@@ -48,6 +48,7 @@ from cairn_graph.actions import (
 )
 from cairn_graph.analytics import action_summary, approval_rate, customer_overview, daily_activity, top_tools
 from cairn_graph.build import build_graph
+from cairn_graph.dashboard import assemble_dashboard_data, generate_narrative, render_dashboard_html
 from cairn_graph.dependencies import dependency_summary, file_dependencies, file_dependents
 from cairn_graph.memory import open_memory_store, recall, recent_history, record_turn, remember
 from cairn_graph.reachability import compute_dead_symbols
@@ -225,6 +226,27 @@ def get_dependency_summary(conn: sqlite3.Connection, top_n: int = 10) -> dict[st
     return dependency_summary(conn, top_n)
 
 
+def get_dashboard(
+    conn: sqlite3.Connection,
+    memory_conn: sqlite3.Connection,
+    customer_id: str | None = None,
+    llm_provider=None,
+    title: str = "Cairn Dashboard",
+) -> dict[str, Any]:
+    """Assembles the real data, asks `llm_provider` for a grounded read of
+    it (skipped — narrative says so plainly — if no provider is given),
+    and renders the self-contained HTML page. `llm_provider` is injected
+    so this stays testable without a network call; production callers
+    pass a real one loaded via `providers.load_provider`."""
+    data = assemble_dashboard_data(conn, memory_conn, customer_id)
+    narrative = (
+        generate_narrative(data, llm_provider)
+        if llm_provider is not None
+        else "No LLM provider configured for this dashboard — showing raw data only."
+    )
+    return {"narrative": narrative, "html": render_dashboard_html(data, narrative, title)}
+
+
 def semantic_search(vector_dir: str, query: str, limit: int = 10, embed_fn=None) -> dict[str, Any]:
     """Find code by what it does, not what it's named — the complement to
     `search_symbols`'s substring match. Returns an empty list, not an
@@ -258,6 +280,7 @@ def build_server(
     vector_dir: str = ".cairn-graph-vectors",
     permission_mode: PermissionMode = PermissionMode.REVIEW,
     memory_db: str = ".cairn-graph-memory.db",
+    dashboard_llm_provider_name: str | None = None,
 ):
     """Constructs the MCPServer with tools bound to one open connection —
     factored out from `main()` so tests can construct a server against a
@@ -283,7 +306,10 @@ def build_server(
             "attempted so far, applied or not. file_dependencies_tool/"
             "file_dependents_tool/dependency_summary_tool answer "
             "file-level questions (only relative imports resolve to an "
-            "internal edge — a package import is reported as external)."
+            "internal edge — a package import is reported as external). "
+            "dashboard_tool returns a full HTML report plus a grounded, "
+            "LLM-generated read of the real data — never present its "
+            "narrative as containing anything beyond what the data shows."
         ),
     )
     conn = open_store(db_path)
@@ -474,6 +500,24 @@ def build_server(
         with _lock:
             return get_dependency_summary(conn, top_n)
 
+    @server.tool()
+    def dashboard_tool(customer_id: str | None = None) -> dict[str, Any]:
+        """A company-facing analytics dashboard as a self-contained HTML
+        page (open directly in a browser), plus the standalone narrative
+        text. Includes an LLM-generated read of what this codebase/company
+        seems to be building and how they're using the agent, grounded in
+        the real collected data — never invented. Omit customer_id for a
+        company-wide view. Uses the LLM provider this server was
+        configured with (`--dashboard-llm-provider`); if none is
+        configured, the narrative says so plainly instead of guessing."""
+        from cairn_graph.providers import llm_registry, load_provider
+
+        provider = None
+        if dashboard_llm_provider_name is not None:
+            provider = load_provider(llm_registry, "CAIRN_LLM_PROVIDER", "echo", provider_name=dashboard_llm_provider_name)
+        with _lock:
+            return get_dashboard(conn, memory_conn, customer_id, provider)
+
     return server
 
 
@@ -487,9 +531,10 @@ def main() -> None:
     parser.add_argument("--memory-db", default=".cairn-graph-memory.db")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"])
     parser.add_argument("--mode", default="review", choices=["review", "auto"], help="permission mode for mutating tools")
+    parser.add_argument("--dashboard-llm-provider", default=None, help="LLM provider name (e.g. groq) for dashboard_tool's narrative")
     args = parser.parse_args()
 
-    server = build_server(args.db, args.root, args.vectors, PermissionMode(args.mode), args.memory_db)
+    server = build_server(args.db, args.root, args.vectors, PermissionMode(args.mode), args.memory_db, args.dashboard_llm_provider)
     server.run(transport=args.transport)
 
 

@@ -53,6 +53,13 @@ def main(argv: list[str] | None = None) -> int:
     deps_p.add_argument("--db", default=".cairn-graph.db")
     deps_p.add_argument("--top", type=int, default=10)
 
+    dash_p = sub.add_parser("dashboard", help="write a company-facing analytics dashboard as a self-contained HTML file")
+    dash_p.add_argument("--db", default=".cairn-graph.db")
+    dash_p.add_argument("--memory-db", default=".cairn-graph-memory.db")
+    dash_p.add_argument("--customer", default=None, help="scope to one customer id; omit for a company-wide view")
+    dash_p.add_argument("--llm-provider", default=None, help="LLM provider name (e.g. groq) for the narrative; omit to skip it")
+    dash_p.add_argument("--out", default="cairn-dashboard.html")
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -73,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_doctor()
     if args.command == "deps":
         return _run_deps(args.db, args.top)
+    if args.command == "dashboard":
+        return _run_dashboard(args.db, args.memory_db, args.customer, args.llm_provider, args.out)
     return 1
 
 
@@ -207,6 +216,31 @@ def _run_deps(db: str, top_n: int) -> int:
         print(f"\n{summary['cycle_count']} import cycle(s) found:")
         for cycle in summary["cycles"]:
             print("  " + " -> ".join(cycle))
+    return 0
+
+
+def _run_dashboard(db: str, memory_db: str, customer_id: str | None, llm_provider_name: str | None, out: str) -> int:
+    from cairn_graph.dashboard import assemble_dashboard_data, generate_narrative, render_dashboard_html
+    from cairn_graph.memory import open_memory_store
+    from cairn_graph.store import open_store
+
+    conn = open_store(db)
+    memory_conn = open_memory_store(memory_db)
+    data = assemble_dashboard_data(conn, memory_conn, customer_id)
+
+    if llm_provider_name is not None:
+        from cairn_graph.providers import llm_registry, load_provider
+
+        provider = load_provider(llm_registry, "CAIRN_LLM_PROVIDER", "echo", provider_name=llm_provider_name)
+        narrative = generate_narrative(data, provider)
+    else:
+        narrative = "No --llm-provider given — showing raw data only."
+
+    html = render_dashboard_html(data, narrative)
+    with open(out, "w") as f:
+        f.write(html)
+    print(f"wrote {out}")
+    print(f"narrative: {narrative}")
     return 0
 
 

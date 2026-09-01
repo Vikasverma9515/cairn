@@ -730,11 +730,10 @@ in a codebase that genuinely has none.
 
 `analytics.py` is pillar 7 — "helps the company analyze the customer,
 write the analytics, makes a dashboard to help company know their
-product more." Deliberately the data layer only, not a rendered
-dashboard (a real dashboard UI is a separate frontend concern) — real
-SQL aggregations over data this service already collects (`action_log`
-from `store.py`, `conversation_turns` from `memory.py`), returned as
-plain dicts.
+product more." Real SQL aggregations over data this service already
+collects (`action_log` from `store.py`, `conversation_turns` from
+`memory.py`), returned as plain dicts — the data layer `dashboard.py`
+(below) renders into an actual page.
 
 - **`action_summary`** — counts by outcome and by risk tier, optionally
   windowed by `since_days`. The two numbers a company evaluating this
@@ -755,6 +754,64 @@ Every function is scoped by an optional `customer_id` — omit for a
 company-wide view, pass one for a single customer's usage, same
 multi-tenant shape as `memory.py`. Wired into the MCP server as
 `analytics_tool` and `customer_overview_tool`.
+
+## Dashboard — smart, not just charts
+
+`dashboard.py` renders `analytics.py`'s data into a real, self-contained
+HTML page — and, given an `LLMProvider`, writes a short narrative
+grounded in the real collected data: what this codebase/company seems
+to be building, and how they're actually using the agent, not a canned
+template.
+
+```bash
+python -m cairn_graph.cli dashboard --db .cairn-graph.db --memory-db .cairn-graph-memory.db \
+  --customer acme-widgets --llm-provider groq --out dashboard.html
+```
+
+The narrative prompt hands the model real numbers and real conversation
+text — file count, symbol count, the most-depended-on files (by
+basename, a real signal of what the codebase is actually about), the
+most-used agent actions, the approval rate, any import cycles, and up to
+the last 10 turns of real conversation with that customer — and
+instructs it explicitly to characterize the data, never invent a fact
+not present in it. **Dogfooded live against the real cairn monorepo**,
+with realistic seeded activity (search/edit/test/delete-with-approval
+actions, a real two-turn conversation about embedding the voice widget
+without React) and the real Groq provider — the generated narrative:
+
+> "This codebase appears to be a TypeScript-based application building
+> an embeddable AI voice widget that supports both standalone HTML via a
+> web component and React integration. The engineering team has utilized
+> their AI coding agent for a brief assist, focusing specifically on
+> clarifying user-facing documentation and verifying that the widget
+> functions correctly without a React dependency."
+
+That's accurate — genuinely inferred from the real seeded data (the
+actual product this monorepo builds, and the actual two things the
+seeded conversation asked about), not a hallucinated guess. Without a
+configured provider, `dashboard_tool`/the CLI say so plainly
+("No LLM provider configured...") instead of silently faking a
+narrative or crashing.
+
+Design notes, since this is a real visual deliverable: the palette is a
+cool slate/blue dev-tool scheme (Inter for text, IBM Plex Mono for every
+number — tabular figures line up), deliberately *not* the
+warm-cream-serif-terracotta look that reads as generic AI-generated
+design. All three theme states (light, dark, explicit override) are
+handled per the artifact-design skill's token discipline. Every
+data-derived string (customer IDs, tool names, conversation content,
+file paths) is HTML-escaped before insertion — a dedicated test proves a
+narrative containing `<script>` renders as inert text, not a live tag,
+since conversation content and an LLM's own output are both untrusted
+input by the time they reach a rendering function.
+
+Wired into the MCP server as `dashboard_tool` (returns both the HTML and
+the standalone narrative text) and the CLI's `dashboard` subcommand. 8
+tests (`test_dashboard.py`) using a deterministic fake `LLMProvider` —
+the narrative-generation *plumbing* (what gets put in the prompt, that
+the system instruction forbids inventing facts, that escaping works) is
+unit-tested without a network call; the actual narrative quality is the
+live-verified result quoted above.
 
 9 tests (`test_analytics.py`) plus 2 more in `test_mcp_server.py`
 exercising both tools through the real compiled server. Dogfooded live:

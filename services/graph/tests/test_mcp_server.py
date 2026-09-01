@@ -164,6 +164,7 @@ def test_build_server_registers_all_expected_tools(tmp_path: Path):
         "file_dependencies_tool",
         "file_dependents_tool",
         "dependency_summary_tool",
+        "dashboard_tool",
     } <= tool_names
 
 
@@ -293,6 +294,17 @@ def test_dependency_summary_tool_reports_no_cycles_for_this_fixture(tmp_path: Pa
 
     assert result["cycle_count"] == 0
     assert result["most_depended_on"][0]["file"] == str(tmp_path / "b.ts")
+
+
+def test_dashboard_tool_without_a_configured_provider_says_so_plainly(tmp_path: Path):
+    _, db = _built(tmp_path)
+    server = build_server(str(db), str(tmp_path), str(tmp_path / "vectors"), memory_db=str(tmp_path / "memory.db"))
+
+    result = _call(server, "dashboard_tool", {})
+
+    assert "No LLM provider configured" in result["narrative"]
+    assert "<title>" in result["html"]
+    assert result["narrative"] in result["html"]
 
 
 def test_analytics_tool_reflects_a_real_gated_action_through_the_compiled_server(tmp_path: Path):
