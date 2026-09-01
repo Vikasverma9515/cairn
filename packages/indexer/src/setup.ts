@@ -1,6 +1,7 @@
 // `cairn setup` — the one-command onboarding path: install what's
-// needed, ask only for what's actually optional (skippable), scaffold
-// the backend, wire the widget into the real layout file, build the
+// needed, ask only for what's actually optional (skippable, and picked
+// from a real numbered menu rather than typed free text), scaffold the
+// backend, wire the widget into the real layout file, build the
 // manifest once now, and leave a `prebuild` hook so it rebuilds itself
 // on every future `npm run build` without another manual step.
 //
@@ -8,23 +9,33 @@
 // `init` stays the safe, deterministic, non-interactive primitive
 // (never touches an existing file, never installs anything, never
 // prompts); `setup` is the opinionated wizard built from those same
-// primitives plus the two things `init` intentionally doesn't do:
-// install dependencies and edit an existing layout file.
+// primitives plus the things `init` intentionally doesn't do: install
+// dependencies, edit an existing layout file, and actually build.
 
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { runInit } from "./init";
 import { injectWidget } from "./inject-widget";
-import { ask, askOptional, askYesNo, closePrompts } from "./prompt";
+import { askOptional, closePrompts, selectFromList } from "./prompt";
 import { scanL1 } from "./l1-scan";
 import { computeL2 } from "./l2-reachability";
 import { describeAll } from "./l3-describe";
 import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { ManifestSchema } from "@cairnvibe/core";
+import { Spinner, bold, classifyError, dim, green, red, yellow } from "./ui";
 
 const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexer"];
+
+// Lower than cairn build's own default (6) — a first-time setup is exactly
+// the scenario most likely to be running on a free-tier key with a tight
+// per-minute token budget; found live, not theoretical (a real `cairn
+// setup` run against Groq's on-demand tier hit a 429-retry cascade at the
+// default concurrency on a small handful of pages).
+const SETUP_BUILD_CONCURRENCY = 3;
+
+type Provider = "anthropic" | "groq";
 
 function readPackageJson(absDir: string): Record<string, any> | null {
   const p = path.join(absDir, "package.json");
@@ -42,14 +53,111 @@ function alreadyInstalled(pkg: Record<string, any> | null): boolean {
   return PACKAGES.every((p) => !!deps[p]);
 }
 
+/** One build attempt — spinner-driven, quiet on individual retries (they
+ * update the same line instead of scrolling the terminal), and honest
+ * about failure instead of throwing a raw stack trace at the user. */
+async function attemptBuild(dir: string, provider: Provider, key: string): Promise<{ ok: true; pageCount: number } | { ok: false; error: unknown }> {
+  if (provider === "anthropic") process.env.ANTHROPIC_API_KEY = key;
+  if (provider === "groq") process.env.GROQ_API_KEYS = key;
+
+  const spinner = new Spinner(`Building the manifest (${provider}) ...`);
+  spinner.start();
+  try {
+    const client = provider === "anthropic" ? new AnthropicDescribeClient() : new GroqDescribeClient();
+    const facts = scanL1(dir);
+    const l2 = computeL2(dir, facts);
+    const l3 = await describeAll(dir, facts, client, SETUP_BUILD_CONCURRENCY, (info) => {
+      spinner.update(
+        `Building the manifest (${provider}) ... rate-limited, retrying in ${Math.round(info.delayMs / 1000)}s (attempt ${info.attempt}/${info.maxAttempts})`,
+      );
+    });
+    const manifest = ManifestSchema.parse(assembleManifest(dir, facts, l2, l3));
+    fs.writeFileSync(path.join(path.resolve(dir), "ui-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    spinner.stop(green(`✓ wrote ui-manifest.json (${manifest.pages.length} page(s))`));
+    return { ok: true, pageCount: manifest.pages.length };
+  } catch (err) {
+    spinner.stop(red("✗ build failed"));
+    return { ok: false, error: err };
+  }
+}
+
+/** Runs after a failed build: explains what actually went wrong in plain
+ * English, then offers real next actions instead of just dying. Loops
+ * until the user picks something that resolves (a successful retry) or
+ * explicitly chooses to skip. */
+async function recoverFromBuildFailure(
+  dir: string,
+  provider: Provider,
+  key: string,
+  err: unknown,
+): Promise<{ provider: Provider; key: string } | null> {
+  const classified = classifyError(err);
+  console.log("");
+  console.log(yellow(`Here's what happened: ${classified.summary}`));
+
+  const options =
+    classified.kind === "rate_limit"
+      ? [
+          { label: "Try again in a bit (same provider)", value: "retry" },
+          { label: "Switch to the other provider and try that instead", value: "switch" },
+          { label: "Skip for now — I'll run `npx cairn build .` later", value: "skip" },
+        ]
+      : classified.kind === "auth"
+        ? [
+            { label: "Paste the key again (I probably mistyped it)", value: "rekey" },
+            { label: "Switch to the other provider instead", value: "switch" },
+            { label: "Skip for now — I'll run `npx cairn build .` later", value: "skip" },
+          ]
+        : [
+            { label: "Try again", value: "retry" },
+            { label: "Switch to the other provider instead", value: "switch" },
+            { label: "Skip for now — I'll run `npx cairn build .` later", value: "skip" },
+          ];
+
+  for (;;) {
+    const choice = await selectFromList("What do you want to do?", options, 0);
+
+    if (choice === "skip") return null;
+
+    let nextProvider = provider;
+    let nextKey = key;
+
+    if (choice === "switch") {
+      nextProvider = provider === "anthropic" ? "groq" : "anthropic";
+      const pasted = await askOptional(nextProvider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ");
+      if (!pasted) {
+        console.log(dim("No key given — back to the menu."));
+        continue;
+      }
+      nextKey = pasted;
+    } else if (choice === "rekey") {
+      const pasted = await askOptional(provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ");
+      if (!pasted) {
+        console.log(dim("No key given — back to the menu."));
+        continue;
+      }
+      nextKey = pasted;
+    }
+    // choice === "retry" falls through with the same provider/key.
+
+    const result = await attemptBuild(dir, nextProvider, nextKey);
+    if (result.ok) return { provider: nextProvider, key: nextKey };
+
+    console.log("");
+    console.log(yellow(`Still failing: ${classifyError(result.error).summary}`));
+    // loop back to the menu rather than recursing — keeps this one flat retry
+    // loop instead of a call stack that grows with every attempt
+  }
+}
+
 export async function runSetup(dir: string): Promise<void> {
   const absDir = path.resolve(dir);
-  console.log(`cairn setup: looking at ${absDir}\n`);
+  console.log(`${bold("cairn setup")} — looking at ${absDir}\n`);
 
   // 1. Scaffold what init already safely can — framework detection, the
   // backend route, .env.example. Never overwrites anything that exists.
   const init = runInit(dir);
-  console.log(`Detected: ${init.framework}`);
+  console.log(`Detected: ${bold(init.framework)}`);
   for (const f of init.filesWritten) console.log(`  wrote   ${path.relative(absDir, f) || f}`);
   for (const f of init.filesSkipped) console.log(`  skipped ${path.relative(absDir, f) || f} (already exists)`);
   console.log("");
@@ -67,34 +175,52 @@ export async function runSetup(dir: string): Promise<void> {
   // cleanly if already present (e.g. re-running setup after a partial run).
   const pkg = readPackageJson(absDir);
   if (!alreadyInstalled(pkg)) {
-    console.log(`Installing ${PACKAGES.join(", ")} ...`);
+    const spinner = new Spinner(`Installing ${PACKAGES.join(", ")} ...`);
+    spinner.start();
     try {
-      execSync(`npm install ${PACKAGES.join(" ")}`, { cwd: absDir, stdio: "inherit" });
+      execSync(`npm install ${PACKAGES.join(" ")}`, { cwd: absDir, stdio: "pipe" });
+      spinner.stop(green(`✓ installed ${PACKAGES.join(", ")}`));
     } catch {
-      console.error("\nnpm install failed — install these yourself and re-run `cairn setup`:");
-      console.error(`  npm install ${PACKAGES.join(" ")}`);
+      spinner.stop(red("✗ npm install failed"));
+      console.error(`Install these yourself and re-run \`cairn setup\`:\n  npm install ${PACKAGES.join(" ")}`);
       return;
     }
   } else {
-    console.log("Dependencies already installed — skipping.\n");
+    console.log(dim("Dependencies already installed — skipping."));
   }
 
-  // 3. Ask only what's actually needed, everything skippable.
-  console.log("\nA couple of quick questions — press enter to skip anything you'll add later.\n");
+  // 3. Ask only what's actually needed, everything skippable, picked from a
+  // real menu rather than typed free text.
+  console.log(`\n${bold("A couple of quick questions")} — press enter to skip anything you'll add later.\n`);
 
-  let provider: "anthropic" | "groq" | null = null;
+  let provider: Provider | null = null;
   let providerKey: string | null = null;
-  const wantsLLM = await askYesNo("Set up an LLM provider now? (needed for the agent to actually answer anything)", true);
-  if (wantsLLM) {
-    const choice = (await ask("Anthropic or Groq? [anthropic] ")).toLowerCase();
-    provider = choice.startsWith("g") ? "groq" : "anthropic";
-    providerKey = await askOptional(
-      provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ",
-    );
+  const llmChoice = await selectFromList(
+    "Set up an LLM provider now? (needed for the agent to actually answer anything)",
+    [
+      { label: "Anthropic (Claude)", value: "anthropic" },
+      { label: "Groq", value: "groq" },
+      { label: "Skip — I'll add one to .env later", value: "skip" },
+    ],
+    0,
+  );
+  if (llmChoice !== "skip") {
+    provider = llmChoice as Provider;
+    providerKey = await askOptional(provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ");
   }
 
-  const wantsVoice = await askYesNo("Set up voice (Deepgram — speech in/out) now?", false);
-  const deepgramKey = wantsVoice ? await askOptional("Paste your DEEPGRAM_API_KEY: ") : null;
+  // Honest about what's actually implemented here — Deepgram is the only
+  // voice provider this SDK wires up today, so this is "on or off," not a
+  // real multi-provider menu dressed up as one.
+  const voiceChoice = await selectFromList(
+    "Set up voice now?",
+    [
+      { label: "Deepgram (speech in + out)", value: "deepgram" },
+      { label: "Skip — no voice for now", value: "skip" },
+    ],
+    1,
+  );
+  const deepgramKey = voiceChoice === "deepgram" ? await askOptional("Paste your DEEPGRAM_API_KEY: ") : null;
 
   closePrompts();
 
@@ -118,34 +244,29 @@ export async function runSetup(dir: string): Promise<void> {
   const framework = init.framework as "next-app-router" | "next-pages-router";
   const inject = injectWidget(dir, framework);
   if (inject.injected) {
-    console.log(`wired <Copilot/> into ${path.relative(absDir, inject.filePath!)}`);
+    console.log(green(`✓ wired <Copilot/> into ${path.relative(absDir, inject.filePath!)}`));
   } else {
     console.log(`\n<Copilot/> not auto-wired (${inject.reason}). Add it yourself:`);
     console.log('  import { Copilot } from "@cairnvibe/sdk";');
     console.log("  <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />");
   }
 
-  // 6. Build the manifest once now, if we actually have a usable key —
-  // no point trying (and failing loudly) with nothing to call.
-  const haveUsableKey = (provider === "anthropic" && providerKey) || (provider === "groq" && providerKey);
-  if (haveUsableKey) {
-    console.log(`\nBuilding the manifest (${provider}) ...`);
-    try {
-      // Reuse the same env-var-driven construction `cairn build` uses, rather
-      // than duplicating each client's options shape here — the .env written
-      // above already has this exact value, this just makes it live for the
-      // rest of this process too.
-      if (provider === "anthropic") process.env.ANTHROPIC_API_KEY = providerKey!;
-      if (provider === "groq") process.env.GROQ_API_KEYS = providerKey!;
-      const client = provider === "anthropic" ? new AnthropicDescribeClient() : new GroqDescribeClient();
-      const facts = scanL1(dir);
-      const l2 = computeL2(dir, facts);
-      const l3 = await describeAll(dir, facts, client);
-      const manifest = ManifestSchema.parse(assembleManifest(dir, facts, l2, l3));
-      fs.writeFileSync(path.join(absDir, "ui-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
-      console.log(`wrote ui-manifest.json (${manifest.pages.length} page(s))`);
-    } catch (err) {
-      console.error(`manifest build failed (${(err as Error).message}) — run \`npx cairn build .\` yourself once your key is confirmed working.`);
+  // 6. Build the manifest once now, if we actually have a usable key — no
+  // point trying (and failing loudly) with nothing to call. On failure,
+  // don't just print a stack trace and give up: classify what went wrong
+  // and offer real next steps (retry / switch provider / skip).
+  if (provider && providerKey) {
+    console.log("");
+    let result = await attemptBuild(dir, provider, providerKey);
+    if (!result.ok) {
+      const recovered = await recoverFromBuildFailure(dir, provider, providerKey, result.error);
+      if (recovered) {
+        provider = recovered.provider;
+        providerKey = recovered.key;
+      }
+      // else: user chose to skip — fall through with the original provider/key
+      // still recorded for the prebuild script below; ui-manifest.json is
+      // simply not written yet.
     }
   } else {
     console.log("\nNo key given yet — skipping the first build. Run `npx cairn build .` once you've added one to .env.");
@@ -162,10 +283,10 @@ export async function runSetup(dir: string): Promise<void> {
       ? `${fresh.scripts.prebuild} && cairn build . --provider ${providerFlag} --if-configured`
       : `cairn build . --provider ${providerFlag} --if-configured`;
     fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
-    console.log('added a "prebuild" script — the manifest regenerates automatically on every `npm run build`.');
-    console.log("(--if-configured means a build with no key set yet skips this step instead of failing the whole build —");
-    console.log(" set the same key as an environment variable on whatever platform you deploy to.)");
+    console.log('\nadded a "prebuild" script — the manifest regenerates automatically on every `npm run build`.');
+    console.log(dim("(--if-configured means a build with no key set yet skips this step instead of failing the whole build —"));
+    console.log(dim(" set the same key as an environment variable on whatever platform you deploy to.)"));
   }
 
-  console.log("\nDone. `npm run dev` and ask it something.");
+  console.log(`\n${bold("Done.")} \`npm run dev\` and ask it something.`);
 }

@@ -6,7 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { RawElement, RawFacts, RawPage } from "./types";
 import type { DescribeClient, ElementDescription, PageDescription } from "./llm";
-import { mapWithConcurrency, withRetry } from "./concurrency";
+import { mapWithConcurrency, withRetry, type RetryInfo } from "./concurrency";
 
 const CACHE_DIR = ".cairn-cache";
 const GLOBAL_ROUTE_LABEL = "(present on every page — layout/framework elements)";
@@ -30,6 +30,7 @@ export async function describeAll(
   facts: RawFacts,
   client: DescribeClient,
   concurrency = DEFAULT_DESCRIBE_CONCURRENCY,
+  onRetry?: (info: RetryInfo) => void,
 ): Promise<L3Result> {
   const absRoot = path.resolve(rootDir);
   const cacheDir = path.join(absRoot, CACHE_DIR);
@@ -62,13 +63,15 @@ export async function describeAll(
     let description: PageDescription;
     let succeeded = true;
     try {
-      description = await withRetry(() =>
-        client.describePage({
-          route: page.route,
-          file: page.file,
-          source,
-          elements: page.elements.map(toDescribeElementInput),
-        }),
+      description = await withRetry(
+        () =>
+          client.describePage({
+            route: page.route,
+            file: page.file,
+            source,
+            elements: page.elements.map(toDescribeElementInput),
+          }),
+        { onRetry },
       );
     } catch (err) {
       // One page permanently failing (retries exhausted, or a
@@ -107,13 +110,15 @@ export async function describeAll(
       let description: PageDescription;
       let succeeded = true;
       try {
-        description = await withRetry(() =>
-          client.describePage({
-            route: GLOBAL_ROUTE_LABEL,
-            file: files.join(", "),
-            source,
-            elements: facts.frameworkElements.map(toDescribeElementInput),
-          }),
+        description = await withRetry(
+          () =>
+            client.describePage({
+              route: GLOBAL_ROUTE_LABEL,
+              file: files.join(", "),
+              source,
+              elements: facts.frameworkElements.map(toDescribeElementInput),
+            }),
+          { onRetry },
         );
       } catch (err) {
         console.error(`[cairn] describing framework elements failed after retries — degrading:`, err);

@@ -39,9 +39,16 @@ export async function mapWithConcurrency<T, R>(
  * provider's Retry-After header when present (both the Anthropic and Groq
  * SDKs expose one on a 429), falls back to exponential backoff otherwise.
  */
+export interface RetryInfo {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  message: string;
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  opts?: { maxAttempts?: number; baseDelayMs?: number },
+  opts?: { maxAttempts?: number; baseDelayMs?: number; onRetry?: (info: RetryInfo) => void },
 ): Promise<T> {
   const maxAttempts = opts?.maxAttempts ?? 4;
   const baseDelayMs = opts?.baseDelayMs ?? 1000;
@@ -54,7 +61,15 @@ export async function withRetry<T>(
       lastErr = err;
       if (!isRetryable(err) || attempt === maxAttempts) throw err;
       const delayMs = retryAfterMs(err) ?? baseDelayMs * 2 ** (attempt - 1);
-      console.error(`[cairn] retryable error (attempt ${attempt}/${maxAttempts}), waiting ${Math.round(delayMs)}ms:`, errorMessage(err));
+      const message = errorMessage(err);
+      // Default behavior (plain `cairn build`, unchanged): log every attempt directly.
+      // A caller that wants something quieter/nicer (`cairn setup`'s spinner) passes
+      // its own onRetry instead of getting this raw per-attempt line.
+      if (opts?.onRetry) {
+        opts.onRetry({ attempt, maxAttempts, delayMs: Math.round(delayMs), message });
+      } else {
+        console.error(`[cairn] retryable error (attempt ${attempt}/${maxAttempts}), waiting ${Math.round(delayMs)}ms:`, message);
+      }
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }

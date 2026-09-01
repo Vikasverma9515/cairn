@@ -37,3 +37,33 @@ export async function askOptional(question: string): Promise<string | null> {
   const answer = await ask(question);
   return answer.length > 0 ? answer : null;
 }
+
+export interface SelectOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * A numbered menu instead of free text — the actual fix for "I had to
+ * type the exact provider name." Prints the choices, accepts a number,
+ * and (for anyone who prefers typing) also accepts the label/value text
+ * itself, case-insensitively. Empty answer takes `defaultIndex`.
+ */
+export async function selectFromList(question: string, options: SelectOption[], defaultIndex = 0): Promise<string> {
+  console.log(question);
+  options.forEach((o, i) => {
+    const marker = i === defaultIndex ? " (default)" : "";
+    console.log(`  ${i + 1}. ${o.label}${marker}`);
+  });
+  const answer = await ask(`Choose [1-${options.length}]: `);
+  if (!answer) return options[defaultIndex].value;
+
+  const asNumber = Number(answer);
+  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= options.length) {
+    return options[asNumber - 1].value;
+  }
+  const byText = options.find(
+    (o) => o.value.toLowerCase() === answer.toLowerCase() || o.label.toLowerCase().includes(answer.toLowerCase()),
+  );
+  return byText ? byText.value : options[defaultIndex].value;
+}
