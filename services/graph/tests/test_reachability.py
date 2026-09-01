@@ -266,6 +266,78 @@ def test_go_reachability_end_to_end(tmp_path: Path):
     assert "unusedHelper" in dead_names
 
 
+def test_by_parent_propagation_is_scoped_to_framework_roots_not_every_reachable_class(tmp_path: Path):
+    # Regression guard for a real bug found dogfooding Java: this rule
+    # used to fire for *any* reachable class, marking every one of its
+    # methods reachable unconditionally — including a genuinely unused
+    # private helper on an ordinary, non-framework class, exactly the
+    # pattern dead-code detection exists to catch. It must stay scoped to
+    # classes registered via a framework convention (customElements.define
+    # and friends), where a method really can be invoked with no call
+    # edge anywhere in source.
+    write(
+        tmp_path / "a.ts",
+        """
+        export class Widget {
+          used() { return 1; }
+          neverCalled() { return 2; }
+        }
+        export function entry() {
+          const w = new Widget();
+          return w.used();
+        }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "neverCalled" in dead_names
+    assert "used" not in dead_names
+
+
+def test_java_reachability_end_to_end(tmp_path: Path):
+    write(
+        tmp_path / "Widget.java",
+        """
+        public class Widget {
+            public Widget() {}
+
+            public static Widget create() {
+                Widget w = new Widget();
+                w.render();
+                return w;
+            }
+
+            public String render() {
+                return helper();
+            }
+
+            private String helper() {
+                return "hi";
+            }
+
+            private String unusedHelper() {
+                return "never called";
+            }
+        }
+        """,
+    )
+    db = tmp_path / "graph.db"
+    build_graph(str(tmp_path), str(db))
+
+    conn = open_store(str(db))
+    result = compute_dead_symbols(conn)
+    dead_names = {s.name for s in result.dead}
+
+    assert "helper" not in dead_names
+    assert "render" not in dead_names
+    assert "unusedHelper" in dead_names
+
+
 def test_genuinely_isolated_file_is_entirely_dead(tmp_path: Path):
     write(tmp_path / "used.ts", "export function entry() { return 1; }")
     write(tmp_path / "orphan.ts", "function orphanFn() { return helperNoOneCalls(); }\nfunction helperNoOneCalls() { return 2; }")

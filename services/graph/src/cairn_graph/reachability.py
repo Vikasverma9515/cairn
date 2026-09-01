@@ -80,15 +80,25 @@ def compute_dead_symbols(conn: sqlite3.Connection) -> ReachabilityResult:
     while queue:
         current = queue.pop()
 
-        # A reachable class exposes its own methods regardless of whether
-        # any call edge inside this codebase invokes them directly — true
-        # by construction for a class instantiated by a framework (a
-        # lifecycle method like connectedCallback is only ever invoked by
-        # the runtime, never by a literal call_expression anywhere in
-        # source) and the conservative direction to be wrong in generally:
-        # a class that's genuinely in use very rarely has a truly-dead
-        # method sitting on it.
-        if current.kind == "class":
+        # A class *registered with a framework* exposes its own methods
+        # regardless of whether any call edge inside this codebase invokes
+        # them directly — true by construction there: a lifecycle method
+        # like connectedCallback is only ever invoked by the runtime,
+        # never by a literal call_expression anywhere in source.
+        #
+        # Deliberately narrow to framework_root_names, not "every reachable
+        # class" — found live, dogfooding Java: an ordinary exported class
+        # with a genuinely unused private helper method (ordinary OOP, no
+        # runtime magic involved) had that helper read as reachable purely
+        # because the class itself was reachable, for every method on it,
+        # unconditionally. That's the opposite of useful for exactly the
+        # pattern — a private helper nobody calls anymore — this feature
+        # exists to catch. Every existing test this broader rule was meant
+        # to cover (the customElements.define case) only actually needs
+        # the framework-root-scoped version; a plain "new Widget(); then
+        # this.wire()" chain is already reachable through ordinary
+        # name-based call edges, no propagation needed.
+        if current.kind == "class" and current.name in framework_root_names:
             for method in by_parent.get(current.name, ()):
                 if method.id not in reachable_ids:
                     reachable_ids.add(method.id)

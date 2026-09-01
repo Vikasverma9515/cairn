@@ -107,6 +107,8 @@ def extract(root: Node, source: bytes, language: str = "typescript") -> ExtractR
         _walk_python(root, source, result, enclosing=None, skip=skip)
     elif language == "go":
         _walk_go(root, source, result, enclosing=None, skip=skip)
+    elif language == "java":
+        _walk_java(root, source, result, enclosing=None, skip=skip)
     else:
         _walk(root, source, result, enclosing=None, skip=skip)
     return result
@@ -531,6 +533,102 @@ def _extract_go_import(node: Node, source: bytes, out: ExtractResult) -> None:
                 found_spec = True
     if not found_spec:
         return  # malformed/empty import_declaration — nothing to record
+
+
+def _java_has_modifier(node: Node, modifier: str) -> bool:
+    # `modifiers` is a real child of class_declaration/method_declaration/
+    # constructor_declaration/field_declaration when present — but not a
+    # *named* field (verified live: child_by_field_name("modifiers")
+    # returns None even though the node is right there positionally), so
+    # it has to be found by scanning children for the type, not asked for
+    # by name.
+    modifiers_node = next((c for c in node.children if c.type == "modifiers"), None)
+    if modifiers_node is None:
+        return False
+    return any(c.type == modifier for c in modifiers_node.children)
+
+
+def _java_is_public(node: Node) -> bool:
+    # Interface members are implicitly public with no modifier at all —
+    # `String greet();` inside `interface Greeter` needs no `public`
+    # keyword to be part of the interface's contract.
+    if node.parent is not None and node.parent.type == "interface_body":
+        return True
+    return _java_has_modifier(node, "public")
+
+
+def _walk_java(node: Node, source: bytes, out: ExtractResult, enclosing: str | None, skip: set[tuple[int, int]]) -> None:
+    next_enclosing = enclosing
+
+    if node.type == "import_declaration":
+        _extract_java_import(node, source, out)
+    elif node.type in ("class_declaration", "interface_declaration", "enum_declaration", "record_declaration"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="interface" if node.type == "interface_declaration" else "class",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_java_is_public(node),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type in ("method_declaration", "constructor_declaration"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            name = _text(name_node, source)
+            skip.add((name_node.start_byte, name_node.end_byte))
+            out.symbols.append(
+                Symbol(
+                    kind="method",
+                    name=name,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    exported=_java_is_public(node),
+                    parent=enclosing,
+                )
+            )
+            next_enclosing = name
+    elif node.type == "method_invocation":
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=_text(name_node, source), line=node.start_point[0] + 1))
+    elif node.type == "object_creation_expression":
+        # `new Widget(...)` — same reasoning as JS's new_expression: without
+        # this, a class only ever instantiated (never called as a bare
+        # function, which Java has no syntax for anyway) reads as entirely
+        # dead. The callee name matches both the class symbol and its
+        # constructor symbol (constructors are named after their class in
+        # this grammar), reaching both together — the desired outcome.
+        type_node = node.child_by_field_name("type")
+        if type_node is not None:
+            out.calls.append(CallEdge(caller=enclosing, callee=_text(type_node, source), line=node.start_point[0] + 1))
+    elif node.type in ("identifier", "type_identifier") and (node.start_byte, node.end_byte) not in skip:
+        # Same deliberately loose catch-all as the other walkers — see
+        # Reference's docstring.
+        out.references.append(Reference(referrer=enclosing, name=_text(node, source), line=node.start_point[0] + 1))
+
+    for child in node.children:
+        _walk_java(child, source, out, next_enclosing, skip)
+
+
+def _extract_java_import(node: Node, source: bytes, out: ExtractResult) -> None:
+    if any(c.type == "asterisk" for c in node.children):
+        return  # `import java.util.*;` — a wildcard binds no single name, nothing to record
+    is_static = any(c.type == "static" for c in node.children)
+    scoped = next((c for c in node.children if c.type in ("scoped_identifier", "identifier")), None)
+    if scoped is None:
+        return
+    full_path = _text(scoped, source)
+    segments = full_path.split(".")
+    local_name = segments[-1]
+    source_path = ".".join(segments[:-1]) if is_static and len(segments) > 1 else full_path
+    out.imports.append(ImportRecord(source=source_path, names=(local_name,), is_relative=False, line=node.start_point[0] + 1))
 
 
 def _extract_import(node: Node, source: bytes, out: ExtractResult) -> None:
