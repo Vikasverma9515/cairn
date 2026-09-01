@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Shared manifest/verb schema for Cairn — the runtime contract the indexer writes and the SDK validates against.",
   "license": "MIT",
+  "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "git+https://github.com/Vikasverma9515/cairn.git", "directory": "packages/core" },
   "homepage": "https://github.com/Vikasverma9515/cairn#readme",
   "bugs": "https://github.com/Vikasverma9515/cairn/issues",
