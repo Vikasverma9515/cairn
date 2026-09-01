@@ -98,6 +98,18 @@ letting it guess.
   just plans what it would do.
 - **Month 10.** Cost control — real rate limits and cost ceilings,
   enforced before a call goes out.
+- **Post-Month-10 verification pass.** A full build/test/self-review
+  sweep across both tracks, not tied to a specific month: found and
+  fixed a real packaging bug (Track A — `npm publish` was shipping raw
+  test files inside `src/`), found and fixed a real security gap (Track
+  B — `approved=true` on a gated action was an unauthenticated boolean
+  the calling model controlled; now requires a matching `request_id`
+  tied to a real, still-pending, same-action prior approval), documented
+  (not silently fixed) that the multi-agent orchestrator's tool-scoping
+  isn't actually wired into the MCP server's registered toolset yet, and
+  closed the Month 7 open question on dead-code detection's wall-clock
+  time — 48.877s on a machine with real disk headroom, confirming the
+  earlier 6.7-minute number was environment-bound, not algorithmic.
 
 Full detail: [services/graph/README.md](./services/graph/README.md).
 
