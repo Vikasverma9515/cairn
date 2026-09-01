@@ -56,8 +56,11 @@ headless-browser crawl instead of reading source. See
 [DEVELOPMENT.md](./DEVELOPMENT.md) for the full build history, phase by
 phase.
 
-Not published to npm yet — install via a `file:` path pointing at this
-repo (see Quick start) until that changes.
+Published on npm as `@cairnvibe/core`, `@cairnvibe/indexer`, and
+`@cairnvibe/sdk` — `npm install @cairnvibe/core @cairnvibe/indexer @cairnvibe/sdk`
+works in any project. The Quick start below builds from this repo
+directly instead, since that's what you want if you're developing Cairn
+itself or running the example app.
 
 ## How it works
 
@@ -81,7 +84,7 @@ clicks the wrong thing.
 
 ```bash
 npm install
-npm run build -w @cairn/indexer -w @cairn/sdk   # compiles the cairn CLI + sdk's server/CLI entry points — needed once
+npm run build -w @cairnvibe/indexer -w @cairnvibe/sdk   # compiles the cairn CLI + sdk's server/CLI entry points — needed once
 npm install                                     # re-run once so npm links the `cairn`/`cairn-realtime` bins now that dist/ exists
 cp .env.example .env                            # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
 
@@ -99,7 +102,7 @@ doesn't yet.
 
 ```jsx
 // app/layout.tsx
-import { Copilot } from "@cairn/sdk";
+import { Copilot } from "@cairnvibe/sdk";
 
 <Copilot
   registeredActions={["archiveInvoice"]}
@@ -111,7 +114,7 @@ import { Copilot } from "@cairn/sdk";
 
 ```ts
 // app/api/copilot/route.ts — your own route, your own API key, your own auth
-import { createCopilotHandler } from "@cairn/sdk/server";
+import { createCopilotHandler } from "@cairnvibe/sdk/server";
 import manifest from "../../../ui-manifest.json";
 
 const handler = createCopilotHandler(manifest, {
@@ -204,9 +207,9 @@ markdown, never say an internal element id out loud.
 
 ```
 packages/
-  core/      @cairn/core    — manifest + verb schemas (zod)
-  indexer/   @cairn/indexer — the `cairn` CLI: scan, reachability, describe, diff, docs
-  sdk/       @cairn/sdk     — <Copilot/> (React) and <cairn-widget> (any framework),
+  core/      @cairnvibe/core    — manifest + verb schemas (zod)
+  indexer/   @cairnvibe/indexer — the `cairn` CLI: scan, reachability, describe, diff, docs
+  sdk/       @cairnvibe/sdk     — <Copilot/> (React) and <cairn-widget> (any framework),
                                verb executor, server handler, realtime voice, dashboard
 examples/demo-app/          — a real Next.js app exercising all of the above
 services/graph/              — a separate Python service — see DEVELOPMENT.md before assuming

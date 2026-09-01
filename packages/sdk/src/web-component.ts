@@ -21,7 +21,7 @@
 // barge-in heuristic. See ROADMAP.md Phase 1 for how this was staged (a
 // typed-Q&A-only MVP shipped first, live-verified, before this).
 
-import type { HistoryTurn as HistoryEntry, TourStep } from "@cairn/core";
+import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";

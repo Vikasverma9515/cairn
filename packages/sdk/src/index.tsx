@@ -14,7 +14,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import type { HistoryTurn as HistoryEntry, TourStep } from "@cairn/core";
+import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
@@ -36,11 +36,11 @@ export interface CopilotProps {
    * progressively. Hidden automatically if the browser has no mic access.
    */
   transcribeEndpoint?: string;
-  /** If set, the widget speaks each explain/highlight answer aloud (Deepgram TTS via `@cairn/sdk/speak-server`). */
+  /** If set, the widget speaks each explain/highlight answer aloud (Deepgram TTS via `@cairnvibe/sdk/speak-server`). */
   speakEndpoint?: string;
   /**
    * If set, shows a "start conversation" control that opens a live
-   * WebSocket to a `@cairn/sdk/realtime-server` relay (run via
+   * WebSocket to a `@cairnvibe/sdk/realtime-server` relay (run via
    * `cairn-realtime`) for a real-time voice conversation: streaming
    * transcription, verbs executed as soon as they're resolved, and the
    * answer spoken back — all without you touching the keyboard.

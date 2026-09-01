@@ -18,23 +18,23 @@ jobs:
 
       - run: npm ci
 
-      # Explicit, dependency-ordered build for @cairn/sdk — found live,
+      # Explicit, dependency-ordered build for @cairnvibe/sdk — found live,
       # not theoretical: npm's workspace "prepare" lifecycle fires for
       # every workspace during `npm ci`/`npm install`, but does NOT
       # reliably order *sibling* workspaces by their actual dependency
-      # graph. @cairn/sdk depends on @cairn/core; when sdk also had its
+      # graph. @cairnvibe/sdk depends on @cairnvibe/core; when sdk also had its
       # own "prepare" script, a plain `npm ci` genuinely failed here with
       # sdk's prepare build racing ahead of core's ("Cannot find module
-      # '@cairn/core'") — not just in a local repro, a real CI failure.
-      # Fixed two ways together: @cairn/sdk's "prepare" script was
+      # '@cairnvibe/core'") — not just in a local repro, a real CI failure.
+      # Fixed two ways together: @cairnvibe/sdk's "prepare" script was
       # removed (nothing currently depends on it firing — cairn-dashboard,
       # the one real file:-based external consumer tested this session,
       # shares this same physical dist/ via the file: symlink, already
-      # built by the step below) and @cairn/core keeps its own "prepare"
+      # built by the step below) and @cairnvibe/core keeps its own "prepare"
       # safely, since core has zero workspace-sibling dependencies of its
       # own to race against. This explicit step is what actually builds
-      # @cairn/sdk's dist now.
-      - run: npm run build -w @cairn/sdk
+      # @cairnvibe/sdk's dist now.
+      - run: npm run build -w @cairnvibe/sdk
 
       # crawl.test.ts (packages/indexer) launches a real headless Chromium
       # to crawl a local test server — needs the browser binary installed,
@@ -48,7 +48,7 @@ jobs:
       # The `cairn` CLI ships as compiled JS (packages/indexer/dist) so it
       # runs standalone for real consumers without a TS loader — build it
       # before anything that shells out to `npx cairn`.
-      - run: npm run build -w @cairn/indexer
+      - run: npm run build -w @cairnvibe/indexer
 
       - name: Determinism check (L1 scan is a pure function — no API key needed)
         run: npm run determinism

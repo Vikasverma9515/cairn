@@ -1,5 +1,5 @@
 {
-  "name": "@cairn/sdk",
+  "name": "@cairnvibe/sdk",
   "version": "0.1.0",
   "description": "In-app AI copilot — <Copilot/> for React/Next.js, <cairn-widget> for any framework — plus the server handlers and realtime voice relay behind them.",
   "license": "MIT",
@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
-    "@cairn/core": "^0.1.0",
+    "@cairnvibe/core": "^0.1.0",
     "better-sqlite3": "^13.0.3",
     "groq-sdk": "^1.6.0",
     "lucide-react": "^1.37.0",

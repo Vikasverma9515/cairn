@@ -4,18 +4,18 @@
 
 ```bash
 npm install
-npm run build --workspaces --if-present   # @cairn/core, @cairn/sdk, @cairn/indexer — in that order, needed before anything else typechecks
+npm run build --workspaces --if-present   # @cairnvibe/core, @cairnvibe/sdk, @cairnvibe/indexer — in that order, needed before anything else typechecks
 ```
 
-Run the explicit build, don't rely on `npm install` alone — `@cairn/core`
+Run the explicit build, don't rely on `npm install` alone — `@cairnvibe/core`
 has a `prepare` script (safe: it has no workspace-sibling dependencies of
-its own), but `@cairn/sdk` deliberately doesn't, even though it depends on
-`@cairn/core`. Found live, a real CI failure not just a local repro: npm's
+its own), but `@cairnvibe/sdk` deliberately doesn't, even though it depends on
+`@cairnvibe/core`. Found live, a real CI failure not just a local repro: npm's
 workspace `prepare` fan-out during a plain `npm ci`/`npm install` doesn't
 reliably order *sibling* workspaces by their actual dependency graph — with
-`@cairn/sdk` also carrying a `prepare` script, it sometimes ran before
-`@cairn/core`'s had finished, failing with "Cannot find module
-'@cairn/core'". `.github/workflows/ci.yml` builds `@cairn/sdk` as its own
+`@cairnvibe/sdk` also carrying a `prepare` script, it sometimes ran before
+`@cairnvibe/core`'s had finished, failing with "Cannot find module
+'@cairnvibe/core'". `.github/workflows/ci.yml` builds `@cairnvibe/sdk` as its own
 explicit step for the same reason.
 
 `npx playwright install chromium` once, if you're touching crawl mode
@@ -36,7 +36,7 @@ npm run determinism   # L1's static scan must be byte-identical across two runs 
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same three, plus building
-`@cairn/indexer` (the `cairn` CLI ships as compiled JS so it runs
+`@cairnvibe/indexer` (the `cairn` CLI ships as compiled JS so it runs
 standalone — see the comment in that workflow for why).
 
 An LLM-calling change (anything touching `l3-describe.ts`, `crawl.ts`,
@@ -56,7 +56,7 @@ voice relay).
 
 ## What this project cares about, concretely
 
-- **The verb contract never gets loosened casually.** `@cairn/core`'s
+- **The verb contract never gets loosened casually.** `@cairnvibe/core`'s
   `VerbResponseSchema` is the one thing standing between an LLM output and
   a real DOM action — see `resolveVerb` in `packages/sdk/src/server.ts`
   and its tests for what "never trust the client alone" actually means in

@@ -1,4 +1,4 @@
-import { createSpeakHandler } from "@cairn/sdk/speak-server";
+import { createSpeakHandler } from "@cairnvibe/sdk/speak-server";
 
 const handler = createSpeakHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
 

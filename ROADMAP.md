@@ -7,19 +7,22 @@ crawl), and run (`<cairn-widget>` or `<Copilot/>`, full voice parity
 either way) all work outside Next.js now, each live-verified, not just
 planned, and both the crawler and `cairn init` now have real automated
 test coverage (not just the live manual runs that originally proved them).
-What's left (Phase 4) is open-source project health — CI exists and
-`CONTRIBUTING.md` is written, but issue templates, a docs site, and
-community-contributed scaffolders for frameworks beyond what's built in
-are still open — plus the smaller honest gaps called out inline below
-(crawl mode's auth/SPA limits, not yet published to npm).
+What's left (Phase 4) is open-source project health — CI, issue templates,
+`CONTRIBUTING.md`, and a real landing page all exist now, but a dedicated
+docs site and community-contributed scaffolders for frameworks beyond
+what's built in are still open — plus the smaller honest gaps called out
+inline below (crawl mode's auth/SPA limits).
 
 ## Phase 0 — real, installable package ✅
 
-Real npm packaging: each package builds to `dist/`, `npm publish --dry-run`
-clean, versions bumped to `0.1.0` and linked with proper semver ranges
-instead of exact pins. Framework scope stays Next.js-only here — this
-phase is packaging hygiene, not new capability. (Not yet actually published
-to the npm registry — that's a deliberate separate step.)
+Real npm packaging: each package builds to `dist/`, versions bumped to
+`0.1.0` and linked with proper semver ranges instead of exact pins.
+Framework scope stays Next.js-only here — this phase is packaging
+hygiene, not new capability. **Published for real** as `@cairnvibe/core`,
+`@cairnvibe/indexer`, `@cairnvibe/sdk` (the original `@cairn` scope was
+already claimed on npm by the time of publishing — `@cairnvibe` was
+picked instead, which happens to fit the "vibe using" positioning on the
+landing page).
 
 ## Phase 1 — framework-agnostic widget ✅
 
@@ -70,7 +73,7 @@ Next.js source-reader's fallback ids are, so a crawled element without
 latent gap here — worth fixing there too, not done as part of this phase).
 Feeds each page's visible text + element list to the same LLM description
 step (`DescribeClient`) that already produces `ui-manifest.json` — same
-output shape, so `@cairn/core`'s schema and the runtime widget needed zero
+output shape, so `@cairnvibe/core`'s schema and the runtime widget needed zero
 changes, exactly as planned.
 
 **Live-verified, the full pipeline, not just typechecked:** built and
@@ -206,7 +209,7 @@ layout file, an app entry point).
 against a fake Next.js App Router project and a fake plain project,
 confirmed the right files got scaffolded for each. For the non-Next path,
 actually `npm install`ed the generated `cairn-server.cjs`'s real
-dependencies (Express, `@cairn/sdk`/`@cairn/core` via `file:`), ran it for
+dependencies (Express, `@cairnvibe/sdk`/`@cairnvibe/core` via `file:`), ran it for
 real, and `curl`ed `/api/copilot` — got back a correct (degraded-to-
 explain, since the manifest was empty) response from a real Groq call
 through the actual generated file, not a hand-written stand-in. Now backed
@@ -218,17 +221,17 @@ syntactically valid.
 ## Phase 4 — open-source polish (partial)
 
 Done: CI (`.github/workflows/ci.yml` — typecheck, test, determinism check,
-builds `@cairn/indexer`, installs Chromium for `crawl.test.ts`),
-`CONTRIBUTING.md`, GitHub issue templates (`.github/ISSUE_TEMPLATE/`), and
-a real landing page (`site/index.html`, deployed at
-[cairn-phi-flame.vercel.app](https://cairn-phi-flame.vercel.app)).
+builds `@cairnvibe/indexer`, installs Chromium for `crawl.test.ts`),
+`CONTRIBUTING.md`, GitHub issue templates (`.github/ISSUE_TEMPLATE/`), a
+real landing page (`site/index.html`, deployed at
+[cairn-phi-flame.vercel.app](https://cairn-phi-flame.vercel.app)), and
+**`npm publish`** itself — `@cairnvibe/core`, `@cairnvibe/indexer`, and
+`@cairnvibe/sdk` are live on the registry, verified with a real install
+into a fresh empty directory (not just a dry-run).
 
 Still open, and not something a single session can finish alone:
 - **A dedicated docs site** beyond the README/landing page — nice-to-have,
   not blocking; the README already covers install, API, and CLI in full.
-- **`npm publish`** — everything up to `npm publish --dry-run` is done;
-  actually publishing is a one-way, externally-visible action that needs
-  explicit go-ahead, not something to do unprompted.
 - **Community-contributed scaffolders/crawlers for frameworks beyond
   Next.js** — the actual point of open-sourcing this. By definition this
   needs outside contributors showing up, not more solo engineering.

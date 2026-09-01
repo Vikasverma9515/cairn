@@ -1,7 +1,7 @@
 // "What changed" between two manifest builds — e.g. CI comparing the
 // current build against the last one on main. Pure comparison, no I/O.
 
-import type { Element, Manifest, Page } from "@cairn/core";
+import type { Element, Manifest, Page } from "@cairnvibe/core";
 
 export interface ElementChange {
   id: string;

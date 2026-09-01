@@ -12,7 +12,7 @@ import {
   type HistoryTurn,
   type Manifest,
   type VerbResponse,
-} from "@cairn/core";
+} from "@cairnvibe/core";
 import { KeyRotator } from "./key-rotator";
 
 const VERB_TOOL_NAME = "respond_with_verb";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Manifest } from "@cairn/core";
+import type { Manifest } from "@cairnvibe/core";
 import { generateDocsMarkdown } from "./docs";
 
 const manifest: Manifest = {

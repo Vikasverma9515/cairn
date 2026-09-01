@@ -448,19 +448,11 @@
     <h2>Wire it into your app in about ten minutes.</h2>
     <p class="lede">Next.js is the only framework the source-reading analyzer understands today — the runtime (voice, action execution, element finding) is already framework-agnostic, and crawl mode covers everything else in the meantime.</p>
 
-    <div class="install-note">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0; margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-      <span>Not published to npm yet — install via a <code>file:</code> path pointing at a local clone (below), or as a git dependency, until it is.</span>
-    </div>
-
     <div class="copybox">
       <div class="term">
         <div class="term-bar"><i></i><i></i><i></i><span>bash</span></div>
-        <pre id="install-cmd"><span class="c1"># 1. clone and build the CLI + SDK once</span>
-<span class="c2">git clone</span> https://github.com/Vikasverma9515/cairn.git
-<span class="c2">cd</span> cairn &amp;&amp; <span class="c2">npm install</span>
-<span class="c2">npm run build</span> -w @cairn/indexer -w @cairn/sdk
-<span class="c2">npm install</span>                <span class="c1"># re-run so npm links the cairn / cairn-realtime bins</span>
+        <pre id="install-cmd"><span class="c1"># 1. install the published packages</span>
+<span class="c2">npm install</span> @cairnvibe/core @cairnvibe/indexer @cairnvibe/sdk
 
 <span class="c1"># 2. point it at your Next.js app</span>
 <span class="c2">cp</span> .env.example .env       <span class="c1"># fill in ANTHROPIC_API_KEY or GROQ_API_KEYS</span>

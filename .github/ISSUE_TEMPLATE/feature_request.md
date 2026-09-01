@@ -19,6 +19,6 @@ labels: enhancement
 - Something new entirely
 
 If you have a rough idea of the implementation, sketch it — this project
-has a fixed-verb-enum safety invariant (see `@cairn/core`'s
+has a fixed-verb-enum safety invariant (see `@cairnvibe/core`'s
 `VerbResponseSchema`) that most feature ideas need to fit inside, not
 work around.

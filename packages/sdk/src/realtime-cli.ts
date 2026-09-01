@@ -4,7 +4,7 @@
 // `cairn build` already works) plus an optional `--port` flag.
 import fs from "node:fs";
 import path from "node:path";
-import { ManifestSchema } from "@cairn/core";
+import { ManifestSchema } from "@cairnvibe/core";
 import { createRealtimeServer } from "./realtime-server";
 import type { CapabilityTier } from "./server";
 

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { createCopilotHandler } from "@cairn/sdk/server";
-import { ManifestSchema, type Manifest } from "@cairn/core";
+import { createCopilotHandler } from "@cairnvibe/sdk/server";
+import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");

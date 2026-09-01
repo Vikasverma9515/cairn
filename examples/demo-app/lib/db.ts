@@ -1,5 +1,5 @@
 // Single shared SQLite connection for the demo app — invoices and the
-// failure-dashboard misses (via @cairn/sdk/dashboard-sqlite) both live in
+// failure-dashboard misses (via @cairnvibe/sdk/dashboard-sqlite) both live in
 // this one file, so restarting the dev server no longer loses either.
 import fs from "node:fs";
 import path from "node:path";

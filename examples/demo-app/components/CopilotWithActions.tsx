@@ -1,6 +1,6 @@
 "use client";
 
-import { Copilot } from "@cairn/sdk";
+import { Copilot } from "@cairnvibe/sdk";
 
 // Small client wrapper so app/layout.tsx (a server component, for metadata
 // etc.) never has to pass a function prop across the server/client boundary.

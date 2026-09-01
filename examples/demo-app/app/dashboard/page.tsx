@@ -1,5 +1,5 @@
 import { TriangleAlert } from "lucide-react";
-import { summarizeMisses } from "@cairn/sdk/dashboard";
+import { summarizeMisses } from "@cairnvibe/sdk/dashboard";
 import { missesStore } from "../../lib/misses-store";
 
 // Reads mutable in-memory state per request — never statically prerender this.

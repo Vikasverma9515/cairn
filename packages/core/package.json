@@ -1,5 +1,5 @@
 {
-  "name": "@cairn/core",
+  "name": "@cairnvibe/core",
   "version": "0.1.0",
   "description": "Shared manifest/verb schema for Cairn — the runtime contract the indexer writes and the SDK validates against.",
   "license": "MIT",

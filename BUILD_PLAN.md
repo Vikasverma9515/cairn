@@ -276,7 +276,7 @@ curl -s localhost:3000/api/copilot -H 'content-type: application/json' \
 
 - [ ] README with a 30-second install
 - [ ] 90-second demo video
-- [ ] MIT license, publish `@cairn/indexer` + `@cairn/sdk` to npm
+- [ ] MIT license, publish `@cairnvibe/indexer` + `@cairnvibe/sdk` to npm
 - [ ] Landing page: one sentence, one video, no gradients
 - [ ] Show HN, r/reactjs, r/SaaS, dev.to, Product Hunt
 

@@ -27,7 +27,7 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { HistoryTurn, Manifest, VerbResponse } from "@cairn/core";
+import type { HistoryTurn, Manifest, VerbResponse } from "@cairnvibe/core";
 import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 

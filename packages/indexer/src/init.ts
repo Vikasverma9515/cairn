@@ -69,7 +69,7 @@ export function runInit(dir: string): InitResult {
     result.nextSteps.push(
       "1. cp .env.example .env and fill in your key(s).",
       "2. Add the widget to app/layout.tsx:",
-      '   import { Copilot } from "@cairn/sdk";',
+      '   import { Copilot } from "@cairnvibe/sdk";',
       '   <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />',
       "3. npx cairn build .   (scans this Next.js app's source)",
       "4. npm run dev, then ask it a question.",
@@ -79,7 +79,7 @@ export function runInit(dir: string): InitResult {
     result.nextSteps.push(
       "1. cp .env.example .env and fill in your key(s).",
       "2. Add the widget to pages/_app.tsx:",
-      '   import { Copilot } from "@cairn/sdk";',
+      '   import { Copilot } from "@cairnvibe/sdk";',
       '   <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />',
       "3. npx cairn build .   (scans this Next.js app's source)",
       "4. npm run dev, then ask it a question.",
@@ -88,13 +88,13 @@ export function runInit(dir: string): InitResult {
     writeIfAbsent(path.join(absDir, "cairn-server.cjs"), STANDALONE_SERVER, result);
     result.nextSteps.push(
       "1. cp .env.example .env and fill in your key(s).",
-      "2. npm install express @cairn/sdk @cairn/core   (@cairn/sdk isn't on npm yet — see README.md's Quick start for the file: install path)",
+      "2. npm install express @cairnvibe/sdk @cairnvibe/core   (@cairnvibe/sdk isn't on npm yet — see README.md's Quick start for the file: install path)",
       "3. Start your app, then: npx cairn build http://localhost:PORT   (crawls the running app — works for any framework)",
       "4. node cairn-server.cjs   (the copilot backend, separate from your app's own server)",
       "5. Add this to your HTML, pointed at wherever cairn-server.cjs is running:",
       '   <script src="/cairn-widget.js"></script>',
       '   <cairn-widget endpoint="http://localhost:4000/api/copilot"></cairn-widget>',
-      "   (copy node_modules/@cairn/sdk/dist/cairn-widget.js into your app's static assets as cairn-widget.js)",
+      "   (copy node_modules/@cairnvibe/sdk/dist/cairn-widget.js into your app's static assets as cairn-widget.js)",
     );
   }
 
@@ -104,8 +104,8 @@ export function runInit(dir: string): InitResult {
 const NEXT_APP_ROUTE = `import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { createCopilotHandler } from "@cairn/sdk/server";
-import { ManifestSchema, type Manifest } from "@cairn/core";
+import { createCopilotHandler } from "@cairnvibe/sdk/server";
+import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");
@@ -132,8 +132,8 @@ export async function POST(request: Request) {
 const NEXT_PAGES_API_ROUTE = `import fs from "node:fs";
 import path from "node:path";
 import type { NextApiRequest, NextApiResponse } from "next";
-import { createCopilotHandler } from "@cairn/sdk/server";
-import { ManifestSchema, type Manifest } from "@cairn/core";
+import { createCopilotHandler } from "@cairnvibe/sdk/server";
+import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");
@@ -164,8 +164,8 @@ require("dotenv").config();
 const express = require("express");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createCopilotHandler } = require("@cairn/sdk/server");
-const { ManifestSchema } = require("@cairn/core");
+const { createCopilotHandler } = require("@cairnvibe/sdk/server");
+const { ManifestSchema } = require("@cairnvibe/core");
 
 function loadManifest() {
   const manifestPath = path.join(__dirname, "ui-manifest.json");
@@ -191,7 +191,7 @@ app.post("/api/copilot", async (req, res) => {
 });
 
 if (process.env.DEEPGRAM_API_KEY) {
-  const { createSpeakHandler } = require("@cairn/sdk/speak-server");
+  const { createSpeakHandler } = require("@cairnvibe/sdk/speak-server");
   const speak = createSpeakHandler({ apiKey: process.env.DEEPGRAM_API_KEY });
   app.post("/api/copilot/speak", async (req, res) => {
     const result = await speak(req.body?.text ?? "");

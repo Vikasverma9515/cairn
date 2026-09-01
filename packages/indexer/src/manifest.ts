@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { Element, Manifest, Page } from "@cairn/core";
+import type { Element, Manifest, Page } from "@cairnvibe/core";
 import type { RawElement, RawFacts } from "./types";
 import type { L2Result } from "./l2-reachability";
 import type { ElementDescription } from "./llm";

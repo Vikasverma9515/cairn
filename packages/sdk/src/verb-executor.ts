@@ -5,7 +5,7 @@
 // explain — never guess, never wrong-click"). The server (`server.ts`)
 // enforces the same schema independently — never trust the client alone.
 
-import { VerbResponseSchema, type TourStep, type VerbResponse } from "@cairn/core";
+import { VerbResponseSchema, type TourStep, type VerbResponse } from "@cairnvibe/core";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 
 export interface VerbExecutorOptions {

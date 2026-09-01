@@ -1,7 +1,7 @@
 // Turns a manifest into human-readable Markdown docs. The content already
 // exists in the manifest — this is just formatting, no LLM call.
 
-import type { Manifest } from "@cairn/core";
+import type { Manifest } from "@cairnvibe/core";
 
 export function generateDocsMarkdown(manifest: Manifest): string {
   const sections: string[] = [

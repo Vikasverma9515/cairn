@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createTranscribeHandler } from "@cairn/sdk/transcribe-server";
+import { createTranscribeHandler } from "@cairnvibe/sdk/transcribe-server";
 
 const handler = createTranscribeHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
 

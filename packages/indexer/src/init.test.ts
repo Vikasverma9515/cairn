@@ -92,14 +92,14 @@ describe("runInit", () => {
     const src = fs.readFileSync(path.join(tmpDir, "app", "api", "copilot", "route.ts"), "utf8");
     expect(src).toContain("export async function POST(");
     expect(src).toContain("createCopilotHandler");
-    expect(src).toContain("@cairn/sdk/server");
+    expect(src).toContain("@cairnvibe/sdk/server");
   });
 
   it("gives Next.js next steps that mention the widget import and Pages/App-appropriate mount point", () => {
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
     fs.mkdirSync(path.join(tmpDir, "app"));
     const result = runInit(tmpDir);
-    expect(result.nextSteps.join("\n")).toContain("@cairn/sdk");
+    expect(result.nextSteps.join("\n")).toContain("@cairnvibe/sdk");
     expect(result.nextSteps.join("\n")).toContain("layout.tsx");
   });
 });

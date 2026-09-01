@@ -1,5 +1,5 @@
 {
-  "name": "@cairn/indexer",
+  "name": "@cairnvibe/indexer",
   "version": "0.1.0",
   "description": "Cairn's analyzer and installer (the `cairn` CLI) — scans Next.js source or crawls any running app, and scaffolds the backend either way.",
   "license": "MIT",
@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
-    "@cairn/core": "^0.1.0",
+    "@cairnvibe/core": "^0.1.0",
     "groq-sdk": "^1.6.0",
     "playwright": "^1.62.1",
     "ts-morph": "^23.0.0"

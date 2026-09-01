@@ -6,7 +6,7 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { Project, ts } from "ts-morph";
-import type { Conflict } from "@cairn/core";
+import type { Conflict } from "@cairnvibe/core";
 import type { RawFacts } from "./types";
 
 export interface L2Result {

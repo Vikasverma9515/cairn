@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Manifest } from "@cairn/core";
+import type { Manifest } from "@cairnvibe/core";
 import { diffManifests, formatDiffAsText } from "./diff";
 
 function page(overrides: Partial<Manifest["pages"][number]> = {}): Manifest["pages"][number] {

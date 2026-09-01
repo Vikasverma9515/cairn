@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cairn/core": "^0.1.0",
-    "@cairn/sdk": "^0.1.0",
+    "@cairnvibe/core": "^0.1.0",
+    "@cairnvibe/sdk": "^0.1.0",
     "better-sqlite3": "^13.0.3",
     "lucide-react": "^1.37.0",
     "next": "^14.2.5",
