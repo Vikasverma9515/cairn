@@ -445,21 +445,19 @@
 <section id="install">
   <div class="wrap">
     <p class="kicker">Install</p>
-    <h2>Wire it into your app in about ten minutes.</h2>
+    <h2>One command. It asks, it doesn't demand.</h2>
     <p class="lede">Next.js is the only framework the source-reading analyzer understands today — the runtime (voice, action execution, element finding) is already framework-agnostic, and crawl mode covers everything else in the meantime.</p>
 
     <div class="copybox">
       <div class="term">
         <div class="term-bar"><i></i><i></i><i></i><span>bash</span></div>
-        <pre id="install-cmd"><span class="c1"># 1. install the published packages</span>
-<span class="c2">npm install</span> @cairnvibe/core @cairnvibe/indexer @cairnvibe/sdk
+        <pre id="install-cmd"><span class="c1"># run this inside your existing Next.js app</span>
+<span class="c2">npx @cairnvibe/indexer setup</span>
 
-<span class="c1"># 2. point it at your Next.js app</span>
-<span class="c2">cp</span> .env.example .env       <span class="c1"># fill in ANTHROPIC_API_KEY or GROQ_API_KEYS</span>
-<span class="c2">npx cairn build</span> ./your-app --provider groq
-
-<span class="c1"># 3. register the actions the agent can take, mount the widget</span>
-<span class="c2">npx cairn init</span> ./your-app   <span class="c1"># scaffolds the backend route + .env.example</span></pre>
+<span class="c1"># it installs the packages, asks a couple of skippable questions —</span>
+<span class="c1"># which LLM provider and key, whether you want voice — wires the</span>
+<span class="c1"># widget into your real layout file, and builds once. Ship it, and</span>
+<span class="c1"># every future `npm run build` regenerates the manifest on its own.</span></pre>
       </div>
       <button class="copy-btn" data-copy-target="install-cmd">copy</button>
     </div>
@@ -469,10 +467,11 @@
 <section id="cli">
   <div class="wrap">
     <p class="kicker">CLI reference</p>
-    <h2>Six commands, that's the whole surface.</h2>
+    <h2>Seven commands, that's the whole surface.</h2>
     <table class="cli">
       <tr><th style="width:1%;">Command</th><th class="desc">What it does</th></tr>
-      <tr><td><code>cairn init &lt;dir&gt;</code></td><td class="desc">Scaffolds the backend route + <code>.env.example</code> — detects your framework, never overwrites existing files.</td></tr>
+      <tr><td><code>cairn setup [dir]</code></td><td class="desc">The one-command path — installs, asks skippable questions, wires the widget into your real layout, builds once, sets up auto-rebuild.</td></tr>
+      <tr><td><code>cairn init &lt;dir&gt;</code></td><td class="desc">The manual version of the same scaffolding — no prompts, no installs, no file edits beyond new files.</td></tr>
       <tr><td><code>cairn scan &lt;dir&gt;</code></td><td class="desc">L1 only — deterministic, no LLM call, no API key needed.</td></tr>
       <tr><td><code>cairn build &lt;dir&gt;</code></td><td class="desc">Full pipeline against Next.js source — writes <code>ui-manifest.json</code>.</td></tr>
       <tr><td><code>cairn build &lt;url&gt;</code></td><td class="desc">Crawl mode — points at a running app instead of source, works on any framework.</td></tr>

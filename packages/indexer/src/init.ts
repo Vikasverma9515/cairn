@@ -88,7 +88,7 @@ export function runInit(dir: string): InitResult {
     writeIfAbsent(path.join(absDir, "cairn-server.cjs"), STANDALONE_SERVER, result);
     result.nextSteps.push(
       "1. cp .env.example .env and fill in your key(s).",
-      "2. npm install express @cairnvibe/sdk @cairnvibe/core   (@cairnvibe/sdk isn't on npm yet — see README.md's Quick start for the file: install path)",
+      "2. npm install express @cairnvibe/sdk @cairnvibe/core",
       "3. Start your app, then: npx cairn build http://localhost:PORT   (crawls the running app — works for any framework)",
       "4. node cairn-server.cjs   (the copilot backend, separate from your app's own server)",
       "5. Add this to your HTML, pointed at wherever cairn-server.cjs is running:",

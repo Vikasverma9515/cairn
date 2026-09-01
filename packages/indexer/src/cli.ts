@@ -12,6 +12,7 @@ import { assembleManifest } from "./manifest";
 import { diffManifests, formatDiffAsText } from "./diff";
 import { generateDocsMarkdown } from "./docs";
 import { runInit } from "./init";
+import { runSetup } from "./setup";
 
 function parseArgs(rest: string[]): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = [];
@@ -41,12 +42,21 @@ async function main(): Promise<void> {
 
   if (command === "build") {
     const provider = flags.provider === "groq" ? "groq" : "anthropic";
+    const keyMissing = provider === "anthropic" ? !process.env.ANTHROPIC_API_KEY : !process.env.GROQ_API_KEYS;
 
-    if (provider === "anthropic" && !process.env.ANTHROPIC_API_KEY) {
+    if (keyMissing && "if-configured" in flags) {
+      // Used by the prebuild hook `cairn setup` wires in: a deploy with no key
+      // set yet (e.g. the very first one, before env vars are configured on the
+      // hosting platform) skips this step instead of failing the whole build —
+      // the app still builds and runs, just without an updated manifest.
+      console.error(`cairn build --if-configured: no key set for ${provider} — skipping, leaving any existing ui-manifest.json as-is.`);
+      return;
+    }
+    if (provider === "anthropic" && keyMissing) {
       console.error("cairn build: ANTHROPIC_API_KEY is not set. Export it, or pass --provider groq, and re-run.");
       process.exit(1);
     }
-    if (provider === "groq" && !process.env.GROQ_API_KEYS) {
+    if (provider === "groq" && keyMissing) {
       console.error("cairn build --provider groq: GROQ_API_KEYS is not set (comma-separated). Export it and re-run.");
       process.exit(1);
     }
@@ -103,6 +113,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "setup") {
+    await runSetup(dir);
+    return;
+  }
+
   if (command === "init") {
     const result = runInit(dir);
     console.error(`cairn init: detected ${result.framework}.`);
@@ -140,7 +155,8 @@ async function main(): Promise<void> {
   }
 
   console.error("usage:");
-  console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework)");
+  console.error("  cairn setup [dir]   (the one-command path: installs deps, asks for keys — skippable, wires the widget in, builds once, auto-rebuilds on future `npm run build`)");
+  console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)");
   console.error("  cairn scan <dir>");
   console.error("  cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)");
   console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   (any framework — crawls a running app; --storage-state replays a saved logged-in session for auth-gated apps)");

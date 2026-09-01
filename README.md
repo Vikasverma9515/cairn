@@ -57,10 +57,35 @@ headless-browser crawl instead of reading source. See
 phase.
 
 Published on npm as `@cairnvibe/core`, `@cairnvibe/indexer`, and
-`@cairnvibe/sdk` — `npm install @cairnvibe/core @cairnvibe/indexer @cairnvibe/sdk`
-works in any project. The Quick start below builds from this repo
-directly instead, since that's what you want if you're developing Cairn
-itself or running the example app.
+`@cairnvibe/sdk`. The Quick start below builds from this repo directly
+instead, since that's what you want if you're developing Cairn itself
+or running the example app — for installing into *your own* Next.js
+app, see "Install into your own project" right below.
+
+## Install into your own project
+
+One command, in an existing Next.js app:
+
+```bash
+npx @cairnvibe/indexer setup
+```
+
+This installs the three packages, asks a couple of quick
+yes/skippable questions (which LLM provider and key — or skip and add
+one later; voice, on request), scaffolds the backend route, wires
+`<Copilot/>` into your real `app/layout.tsx` or `pages/_app.tsx`
+automatically (a real AST edit, not a blind string splice — it never
+touches a file it can't confidently parse, and falls back to printing
+the two-line manual instruction instead of guessing), builds the
+manifest once if a key was given, and adds a `prebuild` script so the
+manifest regenerates itself on every future `npm run build` — build
+and redeploy, and it stays current with no extra step. A build with no
+key configured yet (e.g. before you've set env vars on your hosting
+platform) skips that step cleanly instead of failing the whole build.
+
+Prefer full manual control instead? `cairn init <dir>` does the
+non-interactive, no-installs, no-prompts version of the same
+scaffolding — see the CLI reference below.
 
 ## How it works
 
@@ -196,7 +221,8 @@ markdown, never say an internal element id out loud.
 
 | Command | What it does |
 |---|---|
-| `cairn init <dir>` | Scaffolds the backend + `.env.example` — detects your framework, never overwrites existing files. |
+| `cairn setup [dir]` | The one-command path — installs dependencies, asks skippable questions, wires the widget into your real layout file, builds once, and sets up auto-rebuild on future builds. |
+| `cairn init <dir>` | The manual-control version of the same scaffolding — no prompts, no installs, no file edits beyond new files. Detects your framework, never overwrites existing files. |
 | `cairn scan <dir>` | L1 only, deterministic, no LLM call. |
 | `cairn build <dir>` | Full pipeline against Next.js source. |
 | `cairn build <url>` | Crawl mode — any framework, from a running app. |
