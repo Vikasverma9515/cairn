@@ -124,6 +124,55 @@ real `/api/copilot` with the exact crashing question now returns a real
 tour; a direct POST to the newly-scaffolded `/api/copilot/speak`
 returns real MP3 audio (14.5KB) from a real Deepgram call.
 
+**Real-time voice actually wired up, plus two more real bugs, found by
+hands-on testing against VOXERA (`@cairnvibe/sdk` 0.2.2 → 0.2.5):**
+- Full realtime voice conversation (not just push-to-talk) was
+  unreachable even after `realtimeUrl` was set on the widget, because
+  nothing was ever listening on that port — `cairn-realtime` is a
+  separate, persistent relay process nobody started. Fixed with a new
+  `--with "<command>"` flag on `cairn-realtime` itself: it spawns the
+  given dev command as a child (mutual shutdown wiring — either process
+  exiting takes the other down) and degrades gracefully — a missing key
+  or manifest logs a warning and starts the companion anyway, never
+  blocks the dev server — instead of the old hard-exit. `cairn setup`
+  now rewrites the project's own `dev` script to
+  `cairn-realtime --port 3010 --with "<original dev command>"` when
+  voice was chosen, so one `npm run dev` is enough.
+- That `--with` flag immediately surfaced a second, real bug: run as
+  the *outer* process of its own `--with` pattern, `cairn-realtime`
+  never saw Next.js's `.env`/`.env.local` auto-loading — that loading is
+  scoped to Next's own process, not whatever spawned it. A real
+  `DEEPGRAM_API_KEY` sitting in VOXERA's `.env` was invisible
+  (`cairn-realtime: DEEPGRAM_API_KEY is not set.`) even though the exact
+  same key worked fine for Next's own API routes a moment later. Fixed
+  with a small, dependency-free `.env`/`.env.local` parser now called at
+  the top of `main()` (never overrides a real, already-set
+  `process.env` value — file contents only fill a gap). Caught on the
+  first attempt that the parser function was written but never actually
+  *called* — a real second bug in the same fix, found by re-running the
+  same live repro rather than trusting the diff.
+- The widget's caption UI held exactly one "current" exchange, silently
+  overwritten the instant a new question started — reported live as
+  "the next time I'm speaking is hiding." Fixed with a persistent,
+  auto-scrolling transcript: the outgoing exchange is archived (faded,
+  scrolled up) the moment a new one begins, instead of just vanishing.
+  First version double-archived the tour-triggering question (a stray
+  archive call at the top of `runTour` re-captured what `ask()`/the
+  realtime "final" handler had already archived a moment earlier) —
+  caught live in the browser, not by code review, and fixed by removing
+  the redundant call.
+- Tour steps with a `route` field (a walkthrough that spans more than
+  one page) were suspected broken based on an earlier voice-testing
+  report ("the guide only speaks, doesn't navigate"). Live testing found
+  the opposite: both the LLM (a real multi-page tour request against
+  VOXERA correctly returned steps with `route: "/admin/sessions"`,
+  `route: "/admin/agents"`, etc.) and the client's `router.push` +
+  highlight logic already worked — confirmed twice, driving a real
+  browser through a real cross-page tour (`/` → `/demo`, tab title and
+  URL changing on cue). The original report most likely predates the
+  realtime-relay fix above: with nothing listening on `realtimeUrl`, a
+  voice tour had no working path to test in the first place.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 

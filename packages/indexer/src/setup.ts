@@ -319,5 +319,25 @@ export async function runSetup(dir: string): Promise<void> {
     console.log(dim(" set the same key as an environment variable on whatever platform you deploy to.)"));
   }
 
+  // 8. Wire the realtime voice relay into the normal dev workflow — the
+  // other real half of "voice was completely unwired." realtimeUrl on the
+  // widget (wired above) just fails to connect if nothing's actually
+  // listening on that port; found live, and indistinguishable from "voice
+  // doesn't work" with zero indication that a whole separate process needs
+  // to be running. `cairn-realtime --with "<original dev command>"` runs
+  // both from the one command a project's dev workflow already uses,
+  // instead of a second terminal nobody remembers to open. Wraps whatever
+  // `dev` already does (a custom server, Turbopack, anything) rather than
+  // replacing it — the realtime relay runs alongside it, not instead of it.
+  if (wantsVoice && pkg?.scripts?.dev && !pkg.scripts.dev.includes("cairn-realtime")) {
+    const pkgPath = path.join(absDir, "package.json");
+    const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    const originalDev = fresh.scripts.dev as string;
+    fresh.scripts.dev = `cairn-realtime --port 3010 --with ${JSON.stringify(originalDev)}`;
+    fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
+    console.log(green('✓ wired the realtime voice relay into `npm run dev` — it now starts alongside your app automatically.'));
+    console.log(dim("(a missing/invalid Deepgram key skips voice only, never blocks your app's own dev server from starting.)"));
+  }
+
   console.log(`\n${bold("Done.")} \`npm run dev\` and ask it something.`);
 }

@@ -106,6 +106,7 @@ describe("injectWidget", () => {
     const wrapperText = fs.readFileSync(result.wrapperPath!, "utf8");
     expect(wrapperText).toContain('speakEndpoint="/api/copilot/speak"');
     expect(wrapperText).toContain('transcribeEndpoint="/api/copilot/transcribe"');
+    expect(wrapperText).toContain('realtimeUrl="ws://localhost:3010"');
   });
 
   it("falls back to inserting after {children} when there's no literal <body> (a custom Providers wrapper)", () => {

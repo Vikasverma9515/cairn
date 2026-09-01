@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { Element, Manifest, Page } from "@cairnvibe/core";
+import type { ApiCall, Element, Manifest, Page } from "@cairnvibe/core";
 import type { RawElement, RawFacts } from "./types";
 import type { L2Result } from "./l2-reachability";
 import type { ElementDescription } from "./llm";
@@ -39,6 +39,27 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
   };
 }
 
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Turns l1-scan's traced `"POST /api/items/${id}"`-shaped string into
+ * structured, executable data — this is what lets a `do` action actually
+ * run (verb-executor.ts) instead of only ever describing itself. Only
+ * real mutating methods count as an action; `"navigate ..."` (a Link) and
+ * a bare GET aren't "do" material — see ApiCallSchema's doc comment in
+ * @cairnvibe/core for the safety reasoning (bounded to calls a human
+ * developer already wrote and shipped, nothing invented at runtime).
+ */
+function parseApiCall(handlerCall: string | null): ApiCall | null {
+  if (!handlerCall) return null;
+  const spaceIndex = handlerCall.indexOf(" ");
+  if (spaceIndex === -1) return null;
+  const method = handlerCall.slice(0, spaceIndex);
+  const url = handlerCall.slice(spaceIndex + 1);
+  if (!MUTATING_METHODS.has(method) || !url) return null;
+  return { method: method as ApiCall["method"], url };
+}
+
 function toManifestElement(el: RawElement, elDesc: ElementDescription | undefined, baseEvidence: string): Element {
   const evidence = [baseEvidence];
   if (el.handlerCall) evidence.push(`onClick calls ${el.handlerCall}`);
@@ -52,6 +73,7 @@ function toManifestElement(el: RawElement, elDesc: ElementDescription | undefine
     does: elDesc?.does ?? "Unknown — no description generated for this element.",
     confidence: elDesc?.confidence ?? 0,
     evidence,
+    apiCall: parseApiCall(el.handlerCall),
   };
 }
 

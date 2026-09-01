@@ -40,12 +40,17 @@ const WRAPPER_COMPONENT_NAME = "CairnCopilot";
 function wrapperSource(voice: boolean): string {
   // Real bug this closes: choosing voice during `cairn setup` used to save a
   // DEEPGRAM_API_KEY that nothing ever read — the generated wrapper never
-  // passed speakEndpoint/transcribeEndpoint, so the widget had no way to
-  // know voice existed regardless of whether a valid key was configured.
-  // These routes only exist when ensure-transpile.ts's sibling in setup.ts
-  // asked init.ts to scaffold them (voice: true) — never reference them here
-  // unwired to a real backend route.
-  const voiceProps = voice ? '\n      speakEndpoint="/api/copilot/speak"\n      transcribeEndpoint="/api/copilot/transcribe"' : "";
+  // passed speakEndpoint/transcribeEndpoint/realtimeUrl, so the widget had
+  // no way to know voice existed regardless of whether a valid key was
+  // configured. These routes only exist when setup.ts asked init.ts to
+  // scaffold them (voice: true) — never reference them here unwired to a
+  // real backend. realtimeUrl points at the port `cairn-realtime --with`
+  // (setup.ts rewrites the dev script to start it alongside next dev) —
+  // without that, a widget with realtimeUrl set just fails to connect,
+  // which reads as "voice doesn't work" with no clue why.
+  const voiceProps = voice
+    ? '\n      speakEndpoint="/api/copilot/speak"\n      transcribeEndpoint="/api/copilot/transcribe"\n      realtimeUrl="ws://localhost:3010"'
+    : "";
   return `"use client";
 
 import { Copilot } from "@cairnvibe/sdk";

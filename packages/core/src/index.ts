@@ -11,6 +11,23 @@ export type Verb = (typeof VERBS)[number];
 // Manifest (build-time output)
 // ---------------------------------------------------------------------------
 
+/**
+ * A real, mutating network call this element's own onClick/onSubmit
+ * handler already makes — traced statically at build time (l1-scan.ts's
+ * findApiCallIn), not invented at runtime. This is what makes a `do`
+ * action bounded rather than arbitrary: the agent can only ever trigger a
+ * call that a human developer already wrote and shipped as a real button
+ * in this app, through the browser's own session — never a call it
+ * thought up itself. GET is deliberately excluded (read-only calls aren't
+ * "actions" in the do-verb sense — see l1-scan.ts).
+ */
+export const ApiCallSchema = z.object({
+  method: z.enum(["POST", "PUT", "PATCH", "DELETE"]),
+  /** May contain the element's own dynamic template segments (e.g. "${id}") verbatim — see verb-executor.ts for how those get resolved against the real page at runtime. */
+  url: z.string(),
+});
+export type ApiCall = z.infer<typeof ApiCallSchema>;
+
 export const ElementSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -19,6 +36,8 @@ export const ElementSchema = z.object({
   does: z.string(),
   confidence: z.number().min(0).max(1),
   evidence: z.array(z.string()),
+  /** null when this element doesn't make a real mutating call (a pure nav link, a client-only toggle, etc.) — those elements can still be explained/highlighted, just never `do`-executed. */
+  apiCall: ApiCallSchema.nullable().optional(),
 });
 export type Element = z.infer<typeof ElementSchema>;
 

@@ -74,6 +74,21 @@ export function Copilot({
   // completion, so the exchange stays paired on screen the way a caption
   // track shows the current line, not a scrolling transcript.
   const [lastQuestion, setLastQuestion] = useState<string | null>(null);
+  // Persistent scroll-back log: previous exchanges get archived here (see
+  // archiveCurrentExchange below) the instant a new one starts, so they
+  // stay visible — scrolled up, not gone — instead of the old behavior of
+  // silently overwriting `answer`/`caption` with nothing left to look back
+  // at once the next question began.
+  const [transcript, setTranscript] = useState<{ id: number; role: "user" | "agent"; text: string }[]>([]);
+  const transcriptIdRef = useRef(0);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Mirror the values archiveCurrentExchange needs to read from inside
+  // stale closures (the realtime WebSocket's onmessage handler is created
+  // once per call and doesn't see later renders' state directly — same
+  // reason the rest of the realtime path already uses refs like
+  // rtStateRef instead of reading state).
+  const userCaptionRef = useRef<string>("");
+  const answerRef = useRef<string | null>(null);
   const [rtMicMuted, setRtMicMuted] = useState(false);
   const [rtSpeakerMuted, setRtSpeakerMuted] = useState(false);
   // Set while a "tour" verb's steps are being narrated/highlighted one at a
@@ -157,6 +172,39 @@ export function Copilot({
   const tourChip = touring ? caption : "";
   const userCaption = !touring && (recording || realtimeActive) ? caption : lastQuestion ?? "";
 
+  useEffect(() => {
+    userCaptionRef.current = userCaption;
+  }, [userCaption]);
+  useEffect(() => {
+    answerRef.current = answer;
+  }, [answer]);
+
+  // Auto-scroll to the newest content whenever the transcript grows or the
+  // live (not-yet-archived) bubble's text changes.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [transcript, answer, userCaption, busy]);
+
+  /**
+   * Moves whatever's currently showing as the "live" exchange into the
+   * permanent transcript log, right before it's about to be overwritten by
+   * a new turn — called at the start of ask(), at the start of each
+   * realtime "final" transcript, and at the start of a tour/tour step. Its
+   * effect is exactly "previous goes up, recent shows": the outgoing
+   * text becomes a fixed history entry the instant the incoming one starts
+   * replacing it, instead of just vanishing.
+   */
+  function archiveText(role: "user" | "agent", text: string) {
+    if (!text) return;
+    setTranscript((prev) => [...prev, { id: transcriptIdRef.current++, role, text }]);
+  }
+
+  function archiveCurrentExchange() {
+    archiveText("user", userCaptionRef.current);
+    archiveText("agent", answerRef.current ?? "");
+  }
+
   function setRtStatus(next: Status) {
     rtStateRef.current = next;
     setStatus(next);
@@ -206,6 +254,12 @@ export function Copilot({
     const wasRealtimeListening = realtimeActive;
     touringRef.current = true;
     if (wasRealtimeListening) setRtStatus("rt-speaking");
+    // No archiveCurrentExchange() here: whatever triggered this tour (a typed
+    // ask() or a realtime "final") already archived the exchange *before*
+    // this one — by the time a tour's "verb" message arrives, the triggering
+    // question is the CURRENT turn, still live in userCaption for the whole
+    // tour. Archiving it again here would just duplicate it (verified live —
+    // this used to show the triggering question twice).
     setAnswer(null);
     // Tracked locally rather than reading the component's `pathname` —
     // that's only current as of this render, and a step below can navigate
@@ -218,6 +272,9 @@ export function Copilot({
       for (let i = 0; i < steps.length; i++) {
         if (tourGenerationRef.current !== myGeneration) return; // superseded — e.g. widget closed or a new question came in
         const step = steps[i];
+        // Move the previous step's narration into history before this one replaces it —
+        // agent-only, since the tour's triggering question was already archived once, above.
+        if (i > 0) archiveText("agent", answerRef.current ?? "");
         setTourStep({ index: i, total: steps.length });
         setCaption(`Step ${i + 1} of ${steps.length}`);
         setAnswer(step.text);
@@ -269,6 +326,7 @@ export function Copilot({
   // ---------------------------------------------------------------------
 
   async function ask(q: string) {
+    archiveCurrentExchange();
     setStatus("asking");
     setAnswer(null);
     setLastQuestion(q);
@@ -453,6 +511,7 @@ export function Copilot({
     // which is exactly what "hearing the agent twice, in parallel" was.
     if (!realtimeUrl || !micSupported || realtimeActive || rtStartingRef.current) return;
     rtStartingRef.current = true;
+    archiveCurrentExchange(); // preserve whatever typed/mic exchange preceded switching into a live call
     setAnswer(null);
     setCaption("");
     setRtStatus("rt-connecting");
@@ -600,6 +659,7 @@ export function Copilot({
         if (msg.type === "interim") {
           setCaption(msg.text);
         } else if (msg.type === "final") {
+          archiveCurrentExchange(); // the previous turn's pair is complete — move it into history before this one starts overwriting caption/answer
           setCaption(msg.text);
           setRtStatus("rt-thinking");
           armThinkingWatchdog();
@@ -743,10 +803,18 @@ export function Copilot({
         {open ? <X size={22} /> : <CairnMark />}
       </button>
       {open && (
-        <div className="cairn-panel" role="dialog" aria-label={`${persona} help panel`}>
+        <div className="cairn-panel" role="dialog" aria-label={`${persona} help panel`} ref={panelRef}>
 
-          {(userCaption || answer || busy) && (
+          {(transcript.length > 0 || userCaption || answer || busy) && (
             <div className="cairn-stack">
+              {transcript.map((entry) => (
+                <div
+                  className={entry.role === "user" ? "cairn-bubble cairn-bubble-user cairn-bubble-past" : "cairn-bubble cairn-bubble-agent cairn-bubble-past"}
+                  key={entry.id}
+                >
+                  {entry.role === "agent" ? <span className="cairn-bubble-text">{entry.text}</span> : entry.text}
+                </div>
+              ))}
               {userCaption && (
                 <div className="cairn-bubble cairn-bubble-user" key={`u-${userCaption}`}>
                   {userCaption}
@@ -1100,6 +1168,9 @@ const COPILOT_STYLES = `
 }
 .cairn-bubble-text {
   white-space: pre-wrap;
+}
+.cairn-bubble-past {
+  opacity: 0.55;
 }
 .cairn-word {
   display: inline-block;
