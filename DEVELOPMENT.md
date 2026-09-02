@@ -555,6 +555,67 @@ have needed).
   `live-12`, click it for real, and the card highlight with "Selected:
   KAI" appearing below the list.
 
+Last item on this pass: batched multi-action loop steps — the remaining
+piece from the original architecture plan (Layer 2's "batch of
+actions" idea, not attempted in the first pass). Modeled directly on
+Anthropic Computer Use's own move to batched multi-action turns:
+several sequential actions in one model response instead of one
+network round trip per action, when the model already knows what it
+needs to do without waiting to see each step's result first.
+
+- **A new `batch` verb** (`@cairnvibe/core`) carries 2-5 of the
+  existing click/fill/read/call_tool shapes in one `actions` array —
+  continuing, not terminal, so it drops straight into the existing loop
+  architecture with zero changes to either loop driver's control flow
+  (`index.tsx`'s `runTypedAgentLoop`, `realtime-server.ts`'s
+  `finalizeTurn`): both already gate purely on `TERMINAL_VERBS.has(verb)`,
+  never on a specific verb name, so a brand new continuing verb "just
+  works" the moment `verb-executor.ts` knows how to execute it. That
+  turned out to be the real payoff of last pass's terminal/continuing
+  split — this is exactly the kind of extension it was built to absorb
+  without touching the loop itself.
+- **Caught before it shipped: the exact same flat-schema bug, one level
+  deeper.** `BatchActionSchema`'s own 4 variants were `.strict()` with
+  only their own real fields — the identical class of bug the top-level
+  `COMPANION_FIELDS` fix caught earlier this pass, just inside the new
+  `actions` array instead of at the top level. Caught by directly
+  testing the real flat shape Groq would actually send
+  (`{verb:"click", target:"...", value:null, name:null, args:null}`)
+  before ever running it live — fixed the same way, a
+  `BATCH_ACTION_COMPANION_FIELDS` spread scoped to what the wire schema
+  actually declares for a batch action.
+- **Execution stops at the first failure** rather than continuing to
+  act on a page state the model's plan didn't actually anticipate —
+  each action's target/tool-name is validated up front too
+  (`resolveVerb`), against the SAME real state check click/fill/read
+  already use, so a batch with one invented target refuses the whole
+  turn instead of guessing which of the rest were "safe enough" to run.
+- **A stale doc bug fixed in passing:** the system prompt still told the
+  model liveElements "only covers what's currently visible in the
+  viewport" — no longer true since the viewport-ranking fix earlier
+  this pass. Corrected to describe the real, current behavior (ranked
+  by distance, not filtered).
+- **Verified live:** asked the widget (over real Groq) to select two
+  agent cards in sequence on a page with no dependency between the two
+  clicks — the model genuinely emitted a real `batch` with both clicks,
+  executed for real (confirmed the transcript rendering "(2 steps:
+  click, click)" and the second card ending up correctly selected, the
+  real intended outcome). One honest, non-code-level nuance surfaced in
+  the same test: the model itself sometimes doesn't recognize the task
+  as done right after a batch and keeps looping until the iteration cap
+  — the batch mechanism executed correctly either way, and the cap's
+  existing safety net degraded honestly rather than hanging, exactly as
+  designed; this reads as a model-reasoning/prompt-tuning question, not
+  a mechanism defect, and is left as a known nuance rather than chased
+  further this pass.
+
+This closes out every item from the original "whats pending" list
+except Cairn as a WebMCP *producer* (Layer 4 — scaffolding real
+`registerTool()` calls into a target app's own source), which the
+approved plan explicitly deferred as separate future work, and the two
+items that need the user directly (real microphone audio, VOXERA's own
+admin-gated click-through).
+
 ---
 
 ## Track B — the structure graph, phase by phase

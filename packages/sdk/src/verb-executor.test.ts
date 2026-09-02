@@ -359,6 +359,100 @@ describe("executeVerbResponse", () => {
     }
   });
 
+  // Unlike withWindowStub (synchronous-only — it tears the stub down the
+  // instant the wrapped callback returns), a batch keeps running asynchronously
+  // (executeBatchActions' .then()) after executeVerbResponse itself returns,
+  // and click/fill actions inside it still need window.setTimeout (via
+  // highlightElement) for that whole duration — so these tests stub/unstub
+  // around the awaited result instead.
+  it("batch: executes each action in order and reports one combined observation", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const input = fakeInput();
+      const liveElements = new Map([
+        ["invoice-table", el],
+        ["client-name", input],
+      ]);
+      executeVerbResponse(
+        {
+          verb: "batch",
+          actions: [
+            { verb: "read", target: "invoice-table" },
+            { verb: "fill", target: "client-name", value: "Acme Co." },
+          ],
+        },
+        "/invoices",
+        { ...opts, liveElements },
+      );
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(input.value).toBe("Acme Co.");
+      const result = opts.onToolStep.mock.calls[0][0];
+      expect(result.verb).toBe("batch");
+      expect(result.ok).toBe(true);
+      expect(result.observation).toContain('Typed "Acme Co." into it.');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("batch: stops at the first failure instead of continuing to act on a plan that no longer holds", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["real-target", el]]);
+      executeVerbResponse(
+        {
+          verb: "batch",
+          actions: [
+            { verb: "click", target: "does-not-exist" },
+            { verb: "click", target: "real-target" },
+          ],
+        },
+        "/invoices",
+        { ...opts, liveElements },
+      );
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      // The second action never ran — its target was never clicked.
+      expect(el.click).not.toHaveBeenCalled();
+      const result = opts.onToolStep.mock.calls[0][0];
+      expect(result.ok).toBe(false);
+      expect(result.observation).toContain("Could not find that element on the page.");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("batch: a call_tool step inside the batch calls the real WebMCP tool", async () => {
+    const executeTool = vi.fn().mockResolvedValue("3 overdue invoices");
+    vi.stubGlobal("document", { modelContext: { getTools: async () => [{ name: "count-overdue-invoices" }], executeTool } });
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["archive-btn", el]]);
+      executeVerbResponse(
+        {
+          verb: "batch",
+          actions: [
+            { verb: "call_tool", name: "count-overdue-invoices", args: {} },
+            { verb: "click", target: "archive-btn" },
+          ],
+        },
+        "/invoices",
+        { ...opts, liveElements },
+      );
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(executeTool).toHaveBeenCalled();
+      expect(el.click).toHaveBeenCalledTimes(1);
+      expect(opts.onToolStep.mock.calls[0][0].ok).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("executeToolStep: resolves with the real observation for a synchronous step (click)", async () => {
     vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
     try {

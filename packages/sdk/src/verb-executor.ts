@@ -5,18 +5,19 @@
 // explain — never guess, never wrong-click"). The server (`server.ts`)
 // enforces the same schema independently — never trust the client alone.
 
-import { VerbResponseSchema, type ApiCall, type TourStep, type VerbResponse } from "@cairnvibe/core";
+import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
 import { findElement, fillElement, highlightElement, logMiss, readElement, type MissContext } from "./element-ladder";
 import { executeWebMcpTool } from "./webmcp-client";
 
-/** The real result of one agent-loop step (click/fill/read/call_tool) —
- * fed back to the model as its next turn's "observation" so it can decide
- * what to do next instead of acting blind. The loop that drives this lives
- * on the caller's side, not here: index.tsx's runTypedAgentLoop for the
- * HTTP path, realtime-server.ts's finalizeTurn for the realtime one — this
- * module only ever executes one step at a time. */
+/** The real result of one agent-loop step (click/fill/read/call_tool, or a
+ * batch of several) — fed back to the model as its next turn's
+ * "observation" so it can decide what to do next instead of acting blind.
+ * The loop that drives this lives on the caller's side, not here:
+ * index.tsx's runTypedAgentLoop for the HTTP path, realtime-server.ts's
+ * finalizeTurn for the realtime one — this module only ever executes one
+ * step (or one batch of steps) at a time. */
 export interface ToolStepResult {
-  verb: "click" | "fill" | "read" | "call_tool";
+  verb: "click" | "fill" | "read" | "call_tool" | "batch";
   target?: string;
   ok: boolean;
   observation: string;
@@ -228,6 +229,75 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         options.onToolStep?.({ verb: "call_tool", target: verb.name, ok: result.ok, observation: result.observation });
       });
       return;
+    }
+
+    // Several click/fill/read/call_tool steps in one round trip instead of
+    // one each — server.ts's resolveVerb already validated every action's
+    // target/name against real state before this ever arrived. Runs in
+    // order (never parallel — a later step may depend on an earlier one's
+    // DOM change) and stops at the first failure, reporting one combined
+    // observation back — a batch that stops partway is still a real,
+    // informative result for the model's next turn, not a silent partial
+    // success.
+    case "batch": {
+      if (verb.text) options.onExplain(verb.text);
+      void executeBatchActions(verb.actions, route, options).then((result) => {
+        options.onToolStep?.({ verb: "batch", ok: result.ok, observation: result.observation });
+      });
+      return;
+    }
+  }
+}
+
+async function executeBatchActions(
+  actions: BatchAction[],
+  route: string,
+  options: VerbExecutorOptions,
+): Promise<{ ok: boolean; observation: string }> {
+  const steps: string[] = [];
+  for (const action of actions) {
+    const result = await executeOneBatchAction(action, route, options);
+    steps.push(`${action.verb} ${"target" in action ? action.target : action.name}: ${result.observation}`);
+    if (!result.ok) return { ok: false, observation: steps.join(" | ") };
+  }
+  return { ok: true, observation: steps.join(" | ") };
+}
+
+async function executeOneBatchAction(action: BatchAction, route: string, options: VerbExecutorOptions): Promise<{ ok: boolean; observation: string }> {
+  switch (action.verb) {
+    case "click": {
+      const el = findElement(action.target, options.liveElements);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "Could not find that element on the page." };
+      }
+      highlightElement(el);
+      el.click();
+      return { ok: true, observation: "Clicked it." };
+    }
+    case "fill": {
+      const el = findElement(action.target, options.liveElements);
+      if (!el || !fillElement(el, action.value)) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return {
+          ok: false,
+          observation: el ? "That element isn't a real form field — can't type into it." : "Could not find that element on the page.",
+        };
+      }
+      highlightElement(el);
+      return { ok: true, observation: `Typed "${action.value}" into it.` };
+    }
+    case "read": {
+      const el = findElement(action.target, options.liveElements);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "Could not find that element on the page." };
+      }
+      return { ok: true, observation: readElement(el) };
+    }
+    case "call_tool": {
+      const result = await executeWebMcpTool(action.name, action.args);
+      return { ok: result.ok, observation: result.observation };
     }
   }
 }

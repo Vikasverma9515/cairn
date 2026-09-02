@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool"] as const;
+export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch"] as const;
 export type Verb = (typeof VERBS)[number];
 
 /**
@@ -13,7 +13,9 @@ export type Verb = (typeof VERBS)[number];
  * (server.ts's runAgentLoop): each one executes for real, its real result
  * gets fed back to the model, and the model picks another step or ends the
  * turn with a terminal verb — this is what lets one question turn into
- * "check something, then decide, then act" instead of one guess.
+ * "check something, then decide, then act" instead of one guess. batch is
+ * also continuing — see BatchActionSchema below — it just carries several
+ * of those steps in one round trip instead of one.
  */
 export const TERMINAL_VERBS = new Set<Verb>(["explain", "highlight", "open", "navigate", "do", "tour"]);
 
@@ -160,7 +162,54 @@ const COMPANION_FIELDS = {
   name: optionalString(),
   args: optionalRecord(),
   steps: optionalUnknownArray(),
+  actions: optionalUnknownArray(),
 };
+
+// Same companion-field reasoning as COMPANION_FIELDS above, scoped to just
+// what a batch action's own flat wire shape declares (buildVerbToolSchema's
+// actions.items) — target/value/name/args, shared across all 4 action
+// verbs. Without this, a real flat action response
+// (`{verb:"click", target:"...", value:null, name:null, args:null}`) hits
+// the exact same "unrecognized keys" failure COMPANION_FIELDS was built to
+// fix at the top level — this is that same bug, one level deeper.
+const BATCH_ACTION_COMPANION_FIELDS = {
+  target: optionalString(),
+  value: optionalString(),
+  name: optionalString(),
+  args: optionalRecord(),
+};
+
+/**
+ * One step of a "batch" turn — the same click/fill/read/call_tool shapes
+ * the loop already executes one at a time, minus their own `text` (a batch
+ * speaks once for the whole group, via the outer verb's text, not once per
+ * step — see the "batch" variant below). Modeled directly on Anthropic
+ * Computer Use's move to batched multi-action turns: several sequential
+ * actions in one model response instead of one network round trip per
+ * action, when the model already knows what it needs to do without waiting
+ * to see each step's result first.
+ */
+export const BatchActionSchema = z.discriminatedUnion("verb", [
+  z.object({ ...BATCH_ACTION_COMPANION_FIELDS, verb: z.literal("click"), target: z.string().min(1) }).strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("fill"),
+      target: z.string().min(1),
+      value: z.string(),
+    })
+    .strict(),
+  z.object({ ...BATCH_ACTION_COMPANION_FIELDS, verb: z.literal("read"), target: z.string().min(1) }).strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("call_tool"),
+      name: z.string().min(1),
+      args: optionalRecord(),
+    })
+    .strict(),
+]);
+export type BatchAction = z.infer<typeof BatchActionSchema>;
 
 export const VerbResponseSchema = z.discriminatedUnion("verb", [
   z.object({ ...COMPANION_FIELDS, verb: z.literal("explain"), text: z.string().min(1) }).strict(),
@@ -270,6 +319,23 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       /** A tool name from this turn's webMcpTools list — never invented. */
       name: z.string().min(1),
       args: optionalRecord(),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("batch"),
+      /**
+       * 2-5 steps, executed in order, each a real target/tool the same as
+       * the standalone verbs above — never invented, same invariant. Capped
+       * lower than tour's 6 (these actually DO things to the page, not just
+       * narrate) and requires 2+ (a single step should just be that verb
+       * directly — batch exists to save round trips, not to wrap one step
+       * for no reason). One step failing stops the rest — see verb-
+       * executor.ts's batch case — rather than continuing to act on an app
+       * state the model's plan didn't actually anticipate.
+       */
+      actions: z.array(BatchActionSchema).min(2).max(5),
     })
     .strict(),
 ]);

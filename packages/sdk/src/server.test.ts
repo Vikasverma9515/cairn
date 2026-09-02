@@ -250,6 +250,74 @@ describe("createCopilotHandlerWithLLM", () => {
     expect((result.body as { verb: string }).verb).toBe("explain");
   });
 
+  it("batch: every action naming a real target/liveElements id passes through unchanged", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "read", target: "start-call" },
+          { verb: "click", target: "create-invoice" },
+        ],
+      }),
+    );
+    const result = await handler({ route: "/invoices", question: "check then click", visible: [] });
+    expect(result.body).toEqual({
+      verb: "batch",
+      actions: [
+        { verb: "read", target: "start-call" },
+        { verb: "click", target: "create-invoice" },
+      ],
+    });
+  });
+
+  it("batch: ANY one action naming an unknown target refuses the WHOLE batch, not just that step", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "read", target: "start-call" },
+          { verb: "click", target: "does-not-exist" },
+        ],
+      }),
+    );
+    const result = await handler({ route: "/invoices", question: "check then click", visible: [] });
+    expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("batch: a real liveElements id (a dynamically-rendered row, not in the static manifest) is accepted", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "read", target: "live-3" },
+          { verb: "click", target: "live-3" },
+        ],
+      }),
+    );
+    const result = await handler({
+      route: "/invoices",
+      question: "check then click",
+      visible: [],
+      liveElements: [{ id: "live-3", role: "button", label: "tel-jBU07k_CX74V" }],
+    });
+    expect((result.body as { verb: string }).verb).toBe("batch");
+  });
+
+  it("capability 'act' is the only tier that allows batch — explain and guide refuse it, same as fill/call_tool", async () => {
+    for (const capability of ["explain", "guide"] as const) {
+      const handler = createCopilotHandlerWithLLM(
+        manifest,
+        fakeLLMReturning({ verb: "batch", actions: [{ verb: "read", target: "start-call" }, { verb: "click", target: "create-invoice" }] }),
+        { capability },
+      );
+      const result = await handler({ route: "/invoices", question: "check then click", visible: [] });
+      expect((result.body as { verb: string }).verb).toBe("explain");
+    }
+  });
+
   it("capability 'explain' allows read (non-mutating) but refuses click", async () => {
     const readHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "read", target: "start-call" }), {
       capability: "explain",
@@ -613,6 +681,43 @@ describe("buildVerbToolSchema", () => {
     expect(VerbResponseSchema.safeParse(flat)).toEqual({
       success: true,
       data: { verb: "click", target: "archive-inv-3" },
+    });
+  });
+
+  it("declares an actions property for batch, with its own nullable sub-fields — same treatment as every top-level field", () => {
+    const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown; items?: { properties: Record<string, { type: unknown }> } } > };
+    expect(schema.properties.actions.type).toEqual(["array", "null"]);
+    const itemProps = schema.properties.actions.items?.properties;
+    expect(itemProps?.target.type).toEqual(["string", "null"]);
+    expect(itemProps?.value.type).toEqual(["string", "null"]);
+    expect(itemProps?.name.type).toEqual(["string", "null"]);
+  });
+
+  it("a genuinely flat batch action (every sibling field present as null) round-trips through VerbResponseSchema", () => {
+    const flatBatch = {
+      verb: "batch",
+      actions: [
+        { verb: "click", target: "archive-inv-3", value: null, name: null, args: null },
+        { verb: "fill", target: "note-field", value: "done", name: null, args: null },
+      ],
+      text: null,
+      target: null,
+      route: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(VerbResponseSchema.safeParse(flatBatch)).toEqual({
+      success: true,
+      data: {
+        verb: "batch",
+        actions: [
+          { verb: "click", target: "archive-inv-3" },
+          { verb: "fill", target: "note-field", value: "done" },
+        ],
+      },
     });
   });
 });

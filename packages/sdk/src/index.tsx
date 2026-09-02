@@ -1247,6 +1247,8 @@ function summarizeVerbForHistory(raw: unknown): string {
       return `(read ${String(v.target)})`;
     case "call_tool":
       return `(called ${String(v.name)})`;
+    case "batch":
+      return Array.isArray(v.actions) ? `(${v.actions.length} steps: ${v.actions.map((a: { verb?: string }) => a.verb).join(", ")})` : "(batch)";
     default:
       return "(no response)";
   }

@@ -185,19 +185,30 @@ export async function resolveVerb(
   // to be a real element from the current page's manifest or this exact
   // request's own liveElements, and call_tool's name has to be one this
   // exact request's own webMcpTools reported — never invented.
+  const pageElements = manifest.pages.find((p) => p.route === input.route)?.elements ?? [];
+  const isKnownTarget = (target: string) => pageElements.some((e) => e.id === target) || (input.liveElements ?? []).some((e) => e.id === target);
+  const isKnownTool = (name: string) => (input.webMcpTools ?? []).some((t) => t.name === name);
+
   if (parsedVerb.data.verb === "click" || parsedVerb.data.verb === "fill" || parsedVerb.data.verb === "read") {
-    const pageElements = manifest.pages.find((p) => p.route === input.route)?.elements ?? [];
-    const target = parsedVerb.data.target;
-    const known = pageElements.some((e) => e.id === target) || (input.liveElements ?? []).some((e) => e.id === target);
-    if (!known) {
+    if (!isKnownTarget(parsedVerb.data.target)) {
       return { verb: "explain", text: "I don't see that on this page right now." };
     }
   }
   if (parsedVerb.data.verb === "call_tool") {
-    const toolName = parsedVerb.data.name;
-    const known = (input.webMcpTools ?? []).some((t) => t.name === toolName);
-    if (!known) {
+    if (!isKnownTool(parsedVerb.data.name)) {
       return { verb: "explain", text: "That isn't something I can do here." };
+    }
+  }
+  if (parsedVerb.data.verb === "batch") {
+    // Every step validated up front, against the SAME real state — never
+    // partially execute a batch whose later step names something the
+    // model invented; refuse the whole turn instead of guessing which
+    // steps were "safe enough" to run.
+    const allKnown = parsedVerb.data.actions.every((action) =>
+      action.verb === "call_tool" ? isKnownTool(action.name) : isKnownTarget(action.target),
+    );
+    if (!allKnown) {
+      return { verb: "explain", text: "I don't see everything I'd need for that on this page right now." };
     }
   }
 
@@ -394,7 +405,7 @@ export function buildVerbToolSchema(registeredActions: string[]): Record<string,
       verb: { type: "string", enum: [...VERBS] },
       text: nullableString("Shown to the user. Required for explain. null (or omitted) if not applicable."),
       target: nullableString(
-        "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read. For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. null (or omitted) if not applicable.",
+        "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read. For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. Not used for batch — each of its own actions carries its own target instead. null (or omitted) if not applicable.",
       ),
       route: nullableString("A route from the manifest. Required for navigate. null (or omitted) if not applicable."),
       action: nullableString(
@@ -431,6 +442,26 @@ export function buildVerbToolSchema(registeredActions: string[]): Record<string,
             },
           },
           required: ["text"],
+          additionalProperties: false,
+        },
+      },
+      actions: {
+        type: ["array", "null"],
+        description:
+          "Required for batch, 2-5 items. Several click/fill/read/call_tool steps executed in order in ONE round trip, instead of one round trip each — use this when you already know several steps are needed and don't need to see one step's real result before choosing the next (e.g. filling three known fields, or clicking through a sequence you're already sure about). If a later step genuinely depends on what an earlier one turns up, use a single step instead and decide the next one once you see its real result. text (if any) is spoken once for the whole batch, not per step. null (or omitted) if not applicable.",
+        items: {
+          type: "object",
+          properties: {
+            verb: { type: "string", enum: ["click", "fill", "read", "call_tool"] },
+            target: nullableString("An id from currentPageElements or liveElements. Required for click/fill/read. null (or omitted) if not applicable."),
+            value: nullableString('Required for fill — the exact text to type into "target". null (or omitted) if not applicable.'),
+            name: nullableString("Required for call_tool — a tool name from this turn's webMcpTools list. null (or omitted) if not applicable."),
+            args: {
+              type: ["object", "null"],
+              description: "For call_tool — the arguments object, matching that tool's own inputSchema. null (or omitted) if the tool takes none.",
+            },
+          },
+          required: ["verb"],
           additionalProperties: false,
         },
       },
@@ -472,9 +503,12 @@ directory below plus three things attached to each request:
   dynamically-rendered list (a specific session, a specific row) that
   currentPageElements has no way to know about ahead of time, and what lets
   you describe what's really on screen instead of only what the page
-  generically does. It only covers what's currently visible in the
-  viewport — if the user means something scrolled out of view or not
-  loaded yet, say so rather than guessing.
+  generically does. It covers what's on screen now and what's just
+  scrolled out of view, ranked by nearest first — an entry further down
+  this list may need scrolling to before it's visible, which happens
+  automatically when you act on it. It won't include something not
+  rendered at all yet (behind a click, a different tab, not loaded) — say
+  so rather than guessing if the user means that.
 - "webMcpTools": real functions this exact page registered for you to call
   directly (name, description, and its own input schema) — when a real
   tool exists for what the user's asking, it's the most reliable way to do
@@ -551,6 +585,17 @@ All four require a real id/name from currentPageElements, liveElements, or
 webMcpTools — never invent one. You'll be shown the real result of each
 step and asked again what to do next; after a small number of steps,
 answer with a terminal verb even if incomplete, explaining what you found.
+
+- batch: 2-5 of the four steps above (click/fill/read/call_tool, each in
+  its own shape — no separate "text"), run in order, in "actions" — use
+  this INSTEAD of separate single steps when you already know every step
+  you need and none of them depends on seeing an earlier one's real result
+  first (e.g. filling three fields you can already see, or a known
+  sequence of clicks). If a later step needs to react to what an earlier
+  one turns up, or depends on something an earlier step's click would
+  newly reveal, use single steps instead — a batch only sees the page as
+  it is right now, not as an earlier step in the same batch leaves it. One
+  step failing stops the rest of that batch.
 
 Every "text" field (in explain, or per-step in tour, or the optional text on
 any other verb) is read aloud AND shown on screen, so it must sound like a

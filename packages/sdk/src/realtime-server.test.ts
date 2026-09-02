@@ -212,6 +212,49 @@ describe("handleDeepgramMessage", () => {
     ]);
   });
 
+  it("agent loop: batch is treated as a continuing verb too, generically — no special-casing needed for the loop to handle it", async () => {
+    const { client, sent } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async (_systemPrompt: string, userMessage: string) => {
+      call++;
+      if (call === 1) {
+        return {
+          verb: "batch",
+          actions: [
+            { verb: "read", target: "archive-btn" },
+            { verb: "click", target: "archive-btn" },
+          ],
+        };
+      }
+      const parsed = JSON.parse(userMessage);
+      expect(parsed.history.at(-1).text).toContain("Result: batch done");
+      return { verb: "explain", text: "Done, I archived it." };
+    });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("batch done");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the overdue invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(waitForToolResult).toHaveBeenCalledTimes(1);
+    const verbMessages = sent.filter((m: any) => m.type === "verb") as any[];
+    expect(verbMessages[0].verb.verb).toBe("batch");
+    expect(speakStreamed).toHaveBeenCalledWith("Done, I archived it.");
+  });
+
   it("Talker ack: a multi-step turn speaks a quick acknowledgment BEFORE the real answer, exactly twice — never more, even with several continuing steps", async () => {
     const { client } = fakeClient();
     let call = 0;

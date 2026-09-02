@@ -54,6 +54,56 @@ describe("safeParseVerbResponse", () => {
     );
   });
 
+  it("accepts a batch of 2-5 steps, rejects fewer than 2 or more than 5", () => {
+    const twoSteps = safeParseVerbResponse({
+      verb: "batch",
+      actions: [
+        { verb: "read", target: "invoice-table" },
+        { verb: "click", target: "archive-inv-3" },
+      ],
+    });
+    expect(twoSteps).toEqual({
+      verb: "batch",
+      actions: [
+        { verb: "read", target: "invoice-table" },
+        { verb: "click", target: "archive-inv-3" },
+      ],
+    });
+
+    expect(safeParseVerbResponse({ verb: "batch", actions: [{ verb: "click", target: "only-one" }] })).toBeNull();
+    const sixActions = Array.from({ length: 6 }, (_, i) => ({ verb: "click", target: `t-${i}` }));
+    expect(safeParseVerbResponse({ verb: "batch", actions: sixActions })).toBeNull();
+  });
+
+  it("batch is not a terminal verb — it's a continuing step like click/fill/read/call_tool", () => {
+    expect(TERMINAL_VERBS.has("batch")).toBe(false);
+  });
+
+  it("real bug this specifically guards against: a genuinely flat batch action (every sibling field present as null) still parses — the same companion-fields treatment as the top-level schema, one level deeper", () => {
+    const flatBatch = {
+      verb: "batch",
+      actions: [
+        { verb: "read", target: "invoice-table", value: null, name: null, args: null },
+        { verb: "click", target: "archive-inv-3", value: null, name: null, args: null },
+      ],
+      text: null,
+      target: null,
+      route: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(safeParseVerbResponse(flatBatch)).toEqual({
+      verb: "batch",
+      actions: [
+        { verb: "read", target: "invoice-table" },
+        { verb: "click", target: "archive-inv-3" },
+      ],
+    });
+  });
+
   it("TERMINAL_VERBS distinguishes the answer-ending verbs from the loop's continuing steps", () => {
     expect(TERMINAL_VERBS.has("explain")).toBe(true);
     expect(TERMINAL_VERBS.has("do")).toBe(true);
