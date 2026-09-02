@@ -2,11 +2,9 @@
 // the build-time manifest, and not limited to elements a developer
 // remembered to tag with data-ai. This is what lets the agent address a
 // dynamically-rendered row (a session card, a list item) it was never told
-// about ahead of time. Deliberately narrow in what counts as "interactive":
-// the same semantic-clickable set element-ladder.ts's own fallback search
-// already uses, plus anything carrying data-ai — a plain `<div onClick>`
-// with no semantic role is invisible to this, same limit the existing
-// ladder already has.
+// about ahead of time — AND a plain `<div onClick>` styled as a button (see
+// hasClickHandler below), which a selector alone could never catch, since
+// React never writes an "onclick" HTML attribute for a JSX onClick prop.
 
 import type { LiveElement } from "@cairnvibe/core";
 
@@ -85,10 +83,36 @@ function labelFor(el: HTMLElement): string {
   return trimmed.length > MAX_LABEL_LENGTH ? `${trimmed.slice(0, MAX_LABEL_LENGTH - 1)}…` : trimmed;
 }
 
-function roleFor(el: HTMLElement): string {
+function roleFor(el: HTMLElement, nonSemanticClickable = false): string {
   if (el.getAttribute("role")) return el.getAttribute("role")!;
   if (isFormField(el)) return "input";
+  // A real tag name ("div") tells the model nothing useful about a plain
+  // `<div onClick>` — "clickable" is what actually matters to it here.
+  if (nonSemanticClickable) return "clickable";
   return el.tagName.toLowerCase();
+}
+
+/**
+ * True for an element with a real click handler that CANDIDATE_SELECTOR's
+ * semantic tags/roles can't catch — a `<div onClick>` or similar, common in
+ * component libraries that style a div/span as a button instead of using a
+ * real <button>. `el.onclick` covers the plain-JS `el.onclick = fn` case;
+ * the __reactProps$/__reactEventHandlers$ scan covers React's synthetic
+ * `onClick` prop, which never appears as an "onclick" HTML attribute a CSS
+ * selector could match. `addEventListener`-only handlers (React-free code
+ * calling it directly) aren't introspectable from page JS at all — an
+ * honest, known gap, not attempted here. Whichever way it's wired,
+ * el.click() (verb-executor.ts's click execution) still fires it correctly
+ * either way — a real click() call dispatches a genuine bubbling
+ * MouseEvent, exactly what both a native `onclick` and React's delegated
+ * listener are listening for.
+ */
+function hasClickHandler(el: HTMLElement): boolean {
+  if (typeof (el as unknown as { onclick?: unknown }).onclick === "function") return true;
+  const reactPropsKey = Object.keys(el).find((k) => k.startsWith("__reactProps$") || k.startsWith("__reactEventHandlers$"));
+  if (!reactPropsKey) return false;
+  const props = (el as unknown as Record<string, { onClick?: unknown } | undefined>)[reactPropsKey];
+  return typeof props?.onClick === "function";
 }
 
 /**
@@ -108,7 +132,18 @@ export function scanInteractiveElements(root: ParentNode = document): LiveScan {
 
   if (typeof document === "undefined") return { elements, byId };
 
-  const candidates = Array.from(root.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR)).filter(isRendered);
+  const semanticCandidates = Array.from(root.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR)).filter(isRendered);
+  const semanticSet = new Set(semanticCandidates);
+  // A second pass, only over what the selector-based pass didn't already
+  // catch — a plain `<div onClick>`/`<span onClick>` with no semantic tag
+  // or role at all (see hasClickHandler's doc comment for why a selector
+  // alone can't find these).
+  const nonSemanticCandidates = Array.from(root.querySelectorAll<HTMLElement>("*")).filter(
+    (el) => !semanticSet.has(el) && isRendered(el) && hasClickHandler(el),
+  );
+  const nonSemanticSet = new Set(nonSemanticCandidates);
+
+  const candidates = [...semanticCandidates, ...nonSemanticCandidates];
   candidates.sort((a, b) => viewportDistance(a) - viewportDistance(b));
 
   for (const el of candidates) {
@@ -122,7 +157,7 @@ export function scanInteractiveElements(root: ParentNode = document): LiveScan {
     if (!label) continue; // nothing to address it by — skip rather than send an empty label
 
     byId.set(id, el);
-    elements.push({ id, role: roleFor(el), label });
+    elements.push({ id, role: roleFor(el, nonSemanticSet.has(el)), label });
   }
 
   return { elements, byId };

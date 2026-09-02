@@ -10,6 +10,7 @@ const AGENTS = [
 export default function AgentsPage() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
 
   return (
     <main className="mx-auto max-w-2xl px-8 py-16">
@@ -28,12 +29,24 @@ export default function AgentsPage() {
       <p className="mt-3 text-gray-600">Create custom voice agents with their own instructions and persona.</p>
       <div className="mt-8 flex flex-col gap-3">
         {AGENTS.map((a) => (
-          <div key={a.name} className="rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-sm">
+          // Deliberately a <div onClick>, not a <button> — no semantic tag,
+          // no role, no data-ai. The regression test for runtime-scan.ts's
+          // non-semantic-clickable detection: a card styled as a button, the
+          // real shape a lot of component libraries actually use, which a
+          // CSS-selector-only scan can never discover.
+          <div
+            key={a.name}
+            onClick={() => setSelected(a.name)}
+            className={`cursor-pointer rounded-xl border px-5 py-4 shadow-sm transition ${
+              selected === a.name ? "border-indigo-400 bg-indigo-50" : "border-gray-200 bg-white hover:border-gray-300"
+            }`}
+          >
             <div className="font-medium text-gray-800">{a.name}</div>
             <div className="text-sm text-gray-500">{a.desc}</div>
           </div>
         ))}
       </div>
+      {selected && <p className="mt-4 text-sm text-indigo-700">Selected: {selected}</p>}
       {creating && (
         <div className="mt-6 rounded-xl border border-indigo-200 bg-indigo-50 p-5">
           <h2 className="font-medium text-gray-800">New agent</h2>

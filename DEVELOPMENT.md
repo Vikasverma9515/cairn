@@ -525,6 +525,36 @@ both a lot more consequential than the feature itself.
   exchange to work; any single one missing would have broken it the same
   way it did on the first attempt.
 
+Next item: non-semantic clickable elements — a `<div onClick>` or
+`<span onClick>` styled as a button, with no `<button>` tag, no `role`,
+no `data-ai`. Common in component libraries, and exactly the shape
+behind VOXERA's original "Agent Builder's New Agent button does
+nothing" report from earlier this session (that one turned out to be a
+real button; this fix targets what a genuinely non-semantic one would
+have needed).
+
+- **`runtime-scan.ts` now finds these too**, via a second pass over
+  every element the CSS-selector pass didn't already catch, checking
+  each for a real click handler — `el.onclick` for the plain-JS case, or
+  React's own per-node `__reactProps$.../__reactEventHandlers$...` key
+  (every React-managed DOM node carries one) for a JSX `onClick` prop,
+  since React never writes an `onclick` HTML attribute a selector could
+  match. Reported with role `"clickable"` rather than a bare "div",
+  which tells the model nothing. Execution needed no changes at all —
+  `el.click()` (verb-executor.ts) already dispatches a real bubbling
+  `MouseEvent`, which fires a React synthetic handler exactly the same
+  as a real `<button>` would; discovery was the only actual gap, same
+  story as the viewport fix above. 5 new unit tests, including the
+  React-props-key detection and confirming a real `<button>` never gets
+  double-counted through the fallback pass.
+- **Verified live, the real way:** made `examples/demo-app`'s Agent
+  Builder cards genuinely non-semantic (`<div onClick>`, no button/role/
+  data-ai — confirmed via `Object.keys()` against the real page that
+  `__reactProps$b4wk4hapip8` really does carry a live `onClick`), asked
+  the widget "select the KAI agent," and watched it discover the card as
+  `live-12`, click it for real, and the card highlight with "Selected:
+  KAI" appearing below the list.
+
 ---
 
 ## Track B — the structure graph, phase by phase
