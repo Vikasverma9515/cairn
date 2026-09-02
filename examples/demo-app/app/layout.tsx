@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { Bot, Compass, FileText, MessageSquare, TriangleAlert } from "lucide-react";
+import { CairnWebMcpTools } from "../components/CairnWebMcpTools";
 import { CopilotWithActions } from "../components/CopilotWithActions";
 import "../components/WebMcpPolyfill"; // demo-only shim — see that file's doc comment
 import "./globals.css";
@@ -32,6 +33,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           </Link>
         </nav>
         {children}
+        <CairnWebMcpTools />
         <CopilotWithActions />
       </body>
     </html>

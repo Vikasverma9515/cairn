@@ -616,6 +616,49 @@ approved plan explicitly deferred as separate future work, and the two
 items that need the user directly (real microphone audio, VOXERA's own
 admin-gated click-through).
 
+**Layer 4, picked up next: Cairn as a WebMCP producer.** Everything
+above was Cairn *consuming* WebMCP tools a page already registered.
+This is the other half — `cairn build` already traces real, safe,
+mutating actions statically (l1-scan.ts's findApiCallIn: a real
+POST/PUT/PATCH/DELETE an element's own handler already makes, GET
+deliberately excluded, never invented) but never did anything with
+that beyond feeding Cairn's own runtime. A new `cairn webmcp <dir>`
+command turns that same traced set into real
+`document.modelContext.registerTool()` calls — so running Cairn's
+indexer also makes the app agent-ready for *any* future agent that
+understands the standard, not just Cairn, with zero Cairn lock-in (the
+generated file has no Cairn import at all).
+
+- **`packages/indexer/src/webmcp.ts` (new)** — pure codegen from an
+  already-built manifest (same shape as `docs.ts`'s
+  `generateDocsMarkdown`, no LLM call): one real, self-contained "use
+  client" component, one `registerTool()` call per apiCall-backed
+  element, named `<route>-<id>` for disambiguation. Wired into the CLI
+  as `cairn webmcp <dir>`, writing `components/CairnWebMcpTools.tsx` —
+  same "reads ui-manifest.json, writes a derived file" pattern `cairn
+  docs` already established.
+- **A real bug a unit test caught before it ever ran live:** element
+  ids are only unique WITHIN a page (l1-scan assigns them per-page), so
+  a first pass that deduped by id alone silently dropped any
+  apiCall-backed element whose id happened to collide with another
+  page's — confirmed by a test with two different pages each having
+  their own "archive" element and only one surviving. Fixed by deduping
+  on (id, method, url) together instead of id alone — that combination
+  is what actually distinguishes "the same global element, seen once
+  per page it's reachable from" (assembleManifest spreads framework-
+  level elements onto every page) from "two unrelated actions that
+  happen to share an id."
+- **Verified live, full round trip:** ran `cairn webmcp` against
+  `examples/demo-app`'s real manifest, wired the generated component
+  into its root layout, confirmed `document.modelContext.getTools()`
+  reported the real tool and calling it directly fired a real `POST
+  /api/invoices` (201) — then, separately, asked the widget itself
+  (Cairn's own *consumer* side, over real Groq) to create an invoice
+  and watched it independently discover and call the exact same
+  generated tool (`(called invoices-create-invoice)` in the transcript,
+  a new row appearing in the real UI) — producer and consumer
+  interoperating for real, not just compiling.
+
 ---
 
 ## Track B — the structure graph, phase by phase

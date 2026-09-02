@@ -11,6 +11,7 @@ import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { diffManifests, formatDiffAsText } from "./diff";
 import { generateDocsMarkdown } from "./docs";
+import { generateWebMcpComponent } from "./webmcp";
 import { runInit } from "./init";
 import { runSetup } from "./setup";
 
@@ -189,6 +190,30 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "webmcp") {
+    const manifestPath = path.join(path.resolve(dir), "ui-manifest.json");
+    if (!fs.existsSync(manifestPath)) {
+      console.error(`cairn webmcp: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
+      process.exit(1);
+    }
+    const manifest = ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
+    const component = generateWebMcpComponent(manifest);
+    if (!component) {
+      console.error("cairn webmcp: no real, traced actions (apiCall-backed elements) found in this manifest — nothing safe to register. Nothing written.");
+      return;
+    }
+    const outPath = path.join(path.resolve(dir), "components", "CairnWebMcpTools.tsx");
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, component);
+    console.error(`wrote ${outPath}`);
+    console.error("");
+    console.error("Next step: add it once, near your Copilot widget (e.g. app/layout.tsx):");
+    console.error('  import { CairnWebMcpTools } from "./components/CairnWebMcpTools";');
+    console.error("  <CairnWebMcpTools />");
+    console.error("Re-run `cairn webmcp` after a fresh `cairn build` whenever this app's real actions change.");
+    return;
+  }
+
   console.error("usage:");
   console.error("  cairn setup [dir]   (the one-command path: installs deps, asks for keys — skippable, wires the widget in, builds once, auto-rebuilds on future `npm run build`)");
   console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)");
@@ -197,6 +222,7 @@ async function main(): Promise<void> {
   console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   (any framework — crawls a running app; --storage-state replays a saved logged-in session for auth-gated apps)");
   console.error("  cairn diff <old-manifest.json> <new-manifest.json>");
   console.error("  cairn docs <dir>   (reads <dir>/ui-manifest.json, writes <dir>/CAIRN_DOCS.md)");
+  console.error("  cairn webmcp <dir>   (reads <dir>/ui-manifest.json, writes <dir>/components/CairnWebMcpTools.tsx — registers this app's real, traced actions as WebMCP tools any agent can call, not just Cairn)");
   process.exit(command ? 1 : 0);
 }
 
