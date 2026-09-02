@@ -4,8 +4,18 @@
 
 import { z } from "zod";
 
-export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour"] as const;
+export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool"] as const;
 export type Verb = (typeof VERBS)[number];
+
+/**
+ * explain/highlight/open/navigate/do/tour end the turn — the answer to the
+ * user's question. click/fill/read/call_tool are the agent LOOP's steps
+ * (server.ts's runAgentLoop): each one executes for real, its real result
+ * gets fed back to the model, and the model picks another step or ends the
+ * turn with a terminal verb — this is what lets one question turn into
+ * "check something, then decide, then act" instead of one guess.
+ */
+export const TERMINAL_VERBS = new Set<Verb>(["explain", "highlight", "open", "navigate", "do", "tour"]);
 
 // ---------------------------------------------------------------------------
 // Manifest (build-time output)
@@ -117,6 +127,9 @@ const optionalApiCall = () => z.preprocess((v) => (v === null ? undefined : v), 
 /** Same null-tolerance as optionalString, for tour steps' "click" field. */
 const optionalBoolean = () => z.preprocess((v) => (v === null ? undefined : v), z.boolean().optional());
 
+/** Same null-tolerance as optionalString, for call_tool's "args" field. */
+const optionalRecord = () => z.preprocess((v) => (v === null ? undefined : v), z.record(z.string(), z.unknown()).optional());
+
 export const VerbResponseSchema = z.discriminatedUnion("verb", [
   z.object({ verb: z.literal("explain"), text: z.string().min(1) }).strict(),
   z
@@ -191,6 +204,41 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
         .max(6),
     })
     .strict(),
+  // The agent loop's steps (server.ts's runAgentLoop) — see TERMINAL_VERBS'
+  // doc comment. Each targets a real, already-discovered id (the manifest,
+  // currentPageElements, or liveElements) or a real WebMCP tool name —
+  // never invented, same invariant every other verb already holds.
+  z
+    .object({
+      verb: z.literal("click"),
+      target: z.string().min(1),
+      text: optionalString(),
+    })
+    .strict(),
+  z
+    .object({
+      verb: z.literal("fill"),
+      target: z.string().min(1),
+      value: z.string(),
+      text: optionalString(),
+    })
+    .strict(),
+  z
+    .object({
+      verb: z.literal("read"),
+      target: z.string().min(1),
+      text: optionalString(),
+    })
+    .strict(),
+  z
+    .object({
+      verb: z.literal("call_tool"),
+      /** A tool name from this turn's webMcpTools list — never invented. */
+      name: z.string().min(1),
+      args: optionalRecord(),
+      text: optionalString(),
+    })
+    .strict(),
 ]);
 export type VerbResponse = z.infer<typeof VerbResponseSchema>;
 export type TourStep = Extract<VerbResponse, { verb: "tour" }>["steps"][number];
@@ -220,6 +268,24 @@ export const LiveElementSchema = z.object({
 });
 export type LiveElement = z.infer<typeof LiveElementSchema>;
 
+/**
+ * A real tool the page itself registered via the WebMCP standard
+ * (`document.modelContext.registerTool()` — see webmcp-client.ts) —
+ * discovered client-side, reported here so the model can call it by name.
+ * The highest-trust action source there is: a real function the app's own
+ * developer wrote, with a real typed input schema and a real return value,
+ * running in the user's own session — not a click simulated from static
+ * analysis. Absent entirely on the overwhelming majority of sites, which
+ * don't have WebMCP yet; call_tool simply never appears as an option then.
+ */
+export const WebMcpToolSchema = z.object({
+  name: z.string().max(200),
+  description: z.string().max(500),
+  /** The tool's own JSON Schema for its arguments, passed through as-is. */
+  inputSchema: z.record(z.string(), z.unknown()).optional(),
+});
+export type WebMcpTool = z.infer<typeof WebMcpToolSchema>;
+
 export const CopilotRequestSchema = z.object({
   route: z.string(),
   question: z.string().min(1),
@@ -228,6 +294,8 @@ export const CopilotRequestSchema = z.object({
   history: z.array(HistoryTurnSchema).optional(),
   /** What's actually on screen right now, from a live DOM scan — see LiveElementSchema. */
   liveElements: z.array(LiveElementSchema).max(60).optional(),
+  /** Real tools the page registered via WebMCP — see WebMcpToolSchema. */
+  webMcpTools: z.array(WebMcpToolSchema).max(30).optional(),
 });
 export type CopilotRequest = z.infer<typeof CopilotRequestSchema>;
 

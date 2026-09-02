@@ -27,7 +27,7 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { HistoryTurn, LiveElement, Manifest, VerbResponse } from "@cairnvibe/core";
+import { TERMINAL_VERBS, type HistoryTurn, type LiveElement, type Manifest, type VerbResponse, type WebMcpTool } from "@cairnvibe/core";
 import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 
@@ -107,17 +107,29 @@ export interface ConnectionDeps {
 }
 
 const MAX_HISTORY_TURNS = 8; // 4 exchanges — enough for "the first one"/"do that instead" without growing the prompt unbounded over a long call
+const MAX_LOOP_ITERATIONS = 6; // a hard cap on one turn's agent-loop steps, not a target — see finalizeTurn
 
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
-  // liveElements refreshes on every "context" resend (the client sends one
-  // on route changes and each time it's about to start listening again),
-  // so a live scan from several turns ago never lingers into a later one.
-  let context: { route: string; visible: string[]; liveElements: LiveElement[] } = { route: "/", visible: [], liveElements: [] };
+  // liveElements/webMcpTools refresh on every "context" resend (the client
+  // sends one on route changes and each time it's about to start listening
+  // again), so a live scan from several turns ago never lingers into a
+  // later one.
+  let context: { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[] } = {
+    route: "/",
+    visible: [],
+    liveElements: [],
+    webMcpTools: [],
+  };
   // Unlike the stateless HTTP path (which needs the client to resend
   // history every request), a realtime connection is already stateful —
   // one WebSocket per call — so this is accumulated here directly rather
   // than round-tripped through the client.
   const history: HistoryTurn[] = [];
+  // Resolves the agent loop's in-flight waitForToolResult() call once the
+  // client reports back what a click/fill/read/call_tool step actually
+  // did — same "a mutable pending-callback slot, resolved when the right
+  // message arrives" pattern onCurrentTurnFlushed already uses below.
+  let pendingToolResultResolve: ((observation: string) => void) | null = null;
 
   const dgUrl =
     `${DEEPGRAM_LIVE_URL}?model=${encodeURIComponent(deps.sttModel)}` +
@@ -205,13 +217,33 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
     });
   }
 
+  /**
+   * Pauses the agent loop (finalizeTurn, below) until the client reports
+   * back the real result of a click/fill/read/call_tool step it just sent
+   * out — the server can't execute a DOM action itself, so every
+   * continuing step needs a real round trip to the browser and back. A
+   * real timeout, not a hang: a client that never answers (closed tab,
+   * dropped connection) can't leave a turn stuck forever.
+   */
+  function waitForToolResult(): Promise<string> {
+    return new Promise((resolve) => {
+      pendingToolResultResolve = resolve;
+      setTimeout(() => {
+        if (pendingToolResultResolve === resolve) {
+          pendingToolResultResolve = null;
+          resolve("(no result — timed out waiting for the browser)");
+        }
+      }, 15000);
+    });
+  }
+
   // Accumulates Deepgram "Results" transcript segments across one utterance
   // — see handleDeepgramMessage for why this can't just react to every
   // is_final.
   const turnState = { buffer: "" };
 
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation);
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult);
   });
 
   dg.on("error", (err) => {
@@ -233,7 +265,14 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
           route: String(msg.route ?? "/"),
           visible: Array.isArray(msg.visible) ? msg.visible : [],
           liveElements: parseLiveElements(msg.liveElements),
+          webMcpTools: parseWebMcpTools(msg.webMcpTools),
         };
+      } else if (msg.type === "tool_result" && typeof msg.observation === "string") {
+        // The client finished executing a click/fill/read/call_tool step
+        // the agent loop sent it — this is what finalizeTurn's
+        // waitForToolResult() below is paused on.
+        pendingToolResultResolve?.(msg.observation);
+        pendingToolResultResolve = null;
       } else if (msg.type === "end") {
         client.close();
       } else if (msg.type === "barge_in") {
@@ -279,11 +318,12 @@ export async function handleDeepgramMessage(
   raw: string,
   client: WebSocket,
   deps: ConnectionDeps,
-  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[] },
+  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[] },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
   turnState: { buffer: string },
   getGeneration: () => number,
+  waitForToolResult: () => Promise<string>,
 ): Promise<void> {
   let msg: any;
   try {
@@ -297,7 +337,7 @@ export async function handleDeepgramMessage(
     // after utterance_end_ms of silence — a safety net for the rare case a
     // Results message never carries speech_final:true, so a turn can't get
     // permanently stuck with real transcript sitting in the buffer forever.
-    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration);
+    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult);
     return;
   }
 
@@ -326,7 +366,7 @@ export async function handleDeepgramMessage(
     return;
   }
 
-  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration);
+  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult);
 }
 
 /**
@@ -345,50 +385,88 @@ export async function handleDeepgramMessage(
  * happens while this turn is still "thinking" bumps the generation, and
  * without this check the now-stale response would still land on the
  * client after the user had already moved on to a new question.
+ *
+ * A continuing verb (click/fill/read/call_tool — TERMINAL_VERBS says which
+ * ones aren't) doesn't end the turn here: the server can't execute a DOM
+ * action itself, so it sends the step to the client, awaits its real
+ * result over waitForToolResult(), folds that into a *local* working copy
+ * of history, and calls resolveVerb again — repeat up to
+ * MAX_LOOP_ITERATIONS. The connection's real `history` only gets the
+ * user's real question plus the turn's final answer, committed once at
+ * the end — a turn that hits the cap mid-loop doesn't leave partial tool
+ * noise in the conversation's real memory, same discipline the HTTP
+ * path's runTypedAgentLoop (index.tsx) follows.
  */
 async function finalizeTurn(
   turnState: { buffer: string },
   client: WebSocket,
   deps: ConnectionDeps,
-  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[] },
+  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[] },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
   getGeneration: () => number,
+  waitForToolResult: () => Promise<string>,
 ): Promise<void> {
   const transcript = turnState.buffer;
   turnState.buffer = "";
   const myGeneration = getGeneration();
   safeSend(client, { type: "final", text: transcript });
 
+  let loopHistory = history;
+
   try {
-    const { route, visible, liveElements } = getContext();
-    const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
-      route,
-      question: transcript,
-      visible,
-      liveElements,
-      history,
-    });
+    for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
+      const { route, visible, liveElements, webMcpTools } = getContext();
+      const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
+        route,
+        question: transcript,
+        visible,
+        liveElements,
+        webMcpTools,
+        history: loopHistory,
+      });
 
-    if (myGeneration !== getGeneration()) return; // superseded by a barge-in while this turn was resolving
+      if (myGeneration !== getGeneration()) return; // superseded by a barge-in while this turn was resolving
 
-    // Sent immediately — before speech synthesis even starts — so
-    // highlight/navigate/do execute in the browser right away instead of
-    // waiting on audio. The agent visibly acts while it's still about to
-    // speak, not after.
-    safeSend(client, { type: "verb", verb });
+      // Sent immediately — before speech synthesis even starts — so
+      // highlight/navigate/do execute in the browser right away instead of
+      // waiting on audio. The agent visibly acts while it's still about to
+      // speak, not after.
+      safeSend(client, { type: "verb", verb });
 
-    history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
-    history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+      if (!TERMINAL_VERBS.has(verb.verb)) {
+        // A continuing step — no speech for it (keeps the loop fast;
+        // the client still shows it visually) — wait for its real result
+        // and go around again instead of ending the turn.
+        const observation = await waitForToolResult();
+        if (myGeneration !== getGeneration()) return;
+        loopHistory = [
+          ...loopHistory,
+          { role: "assistant" as const, text: `${summarizeVerbForHistory(verb)}. Result: ${observation}` },
+        ].slice(-MAX_HISTORY_TURNS);
+        continue;
+      }
 
-    // A verb with no spoken text (highlight/navigate/do often have none)
-    // still needs to unstick the client's "thinking" state and let the mic
-    // resume — turn_complete covers that with no audio path involved.
-    if ("text" in verb && verb.text) {
-      await speakStreamed(verb.text);
-    } else {
-      safeSend(client, { type: "turn_complete" });
+      history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
+      history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+
+      // A verb with no spoken text (highlight/navigate/do often have none)
+      // still needs to unstick the client's "thinking" state and let the mic
+      // resume — turn_complete covers that with no audio path involved.
+      if ("text" in verb && verb.text) {
+        await speakStreamed(verb.text);
+      } else {
+        safeSend(client, { type: "turn_complete" });
+      }
+      return;
     }
+
+    // Iteration cap hit with no terminal verb — degrade honestly instead
+    // of leaving the client waiting forever.
+    history.push({ role: "user", text: transcript }, { role: "assistant", text: "(gave up after too many steps)" });
+    history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+    safeSend(client, { type: "verb", verb: { verb: "explain", text: "I wasn't able to finish that — try asking again or breaking it into smaller steps." } });
+    await speakStreamed("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
   } catch (err) {
     console.error("[cairn realtime] failed to resolve/speak this turn:", err);
     if (myGeneration === getGeneration()) {
@@ -425,6 +503,20 @@ function parseLiveElements(raw: unknown): LiveElement[] {
   return elements;
 }
 
+/** Same defensive shape-check as parseLiveElements, for the client's
+ * self-reported WebMCP tool list. */
+function parseWebMcpTools(raw: unknown): WebMcpTool[] {
+  if (!Array.isArray(raw)) return [];
+  const tools: WebMcpTool[] = [];
+  for (const entry of raw) {
+    if (entry && typeof entry === "object" && typeof (entry as any).name === "string" && typeof (entry as any).description === "string") {
+      tools.push({ name: (entry as any).name, description: (entry as any).description, inputSchema: (entry as any).inputSchema });
+    }
+    if (tools.length >= 30) break;
+  }
+  return tools;
+}
+
 /** A short text form of any verb for the history log — not shown to the
  * user, just fed back to the model on later turns so it knows what it
  * already did/said. */
@@ -440,6 +532,14 @@ function summarizeVerbForHistory(verb: VerbResponse): string {
       return `(ran ${verb.action}${verb.target ? ` on ${verb.target}` : ""})`;
     case "tour":
       return verb.steps.map((s) => s.text).join(" ");
+    case "click":
+      return `(clicked ${verb.target})`;
+    case "fill":
+      return `(typed "${verb.value}" into ${verb.target})`;
+    case "read":
+      return `(read ${verb.target})`;
+    case "call_tool":
+      return `(called ${verb.name})`;
     default:
       return "(no response)";
   }

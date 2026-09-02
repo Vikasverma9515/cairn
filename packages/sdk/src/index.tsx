@@ -16,11 +16,12 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
+import { TERMINAL_VERBS, safeParseVerbResponse, type HistoryTurn as HistoryEntry, type TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { createLiveElementRegistry } from "./runtime-scan";
-import { executeVerbResponse } from "./verb-executor";
+import { discoverWebMcpTools } from "./webmcp-client";
+import { executeToolStep, executeVerbResponse } from "./verb-executor";
 
 export interface CopilotProps {
   /** Reserved for a future client-side manifest fetch. Not required — the server handler owns the manifest. */
@@ -74,7 +75,7 @@ export function Copilot({
   const pathnameRef = useRef(pathname);
   useEffect(() => {
     pathnameRef.current = pathname;
-    sendFreshContext(); // no-op if no realtime session is open
+    void sendFreshContext(); // no-op if no realtime session is open
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
   const router = useRouter();
@@ -258,13 +259,21 @@ export function Copilot({
    * `pathname`, so it's correct even called from a handler created once at
    * connection-open time.
    */
-  function sendFreshContext() {
+  async function sendFreshContext() {
     const ws = rtSocketRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const liveScan = liveRegistryRef.current.getSnapshot();
     liveMapRef.current = liveScan.byId;
+    const webMcpTools = await discoverWebMcpTools();
+    if (ws.readyState !== WebSocket.OPEN) return; // may have closed while awaiting discovery
     ws.send(
-      JSON.stringify({ type: "context", route: pathnameRef.current, visible: collectVisible(), liveElements: liveScan.elements }),
+      JSON.stringify({
+        type: "context",
+        route: pathnameRef.current,
+        visible: collectVisible(),
+        liveElements: liveScan.elements,
+        webMcpTools,
+      }),
     );
   }
 
@@ -407,6 +416,34 @@ export function Copilot({
     setLastQuestion(q);
     setQuestion("");
     try {
+      await runTypedAgentLoop(q);
+    } catch {
+      setAnswer("Something went wrong reaching the help service — try again in a moment.");
+    } finally {
+      setStatus("idle");
+    }
+  }
+
+  const MAX_LOOP_ITERATIONS = 6; // a hard cap, not a target — see runTypedAgentLoop
+
+  /**
+   * Drives the agent loop over the stateless HTTP path: ask the server,
+   * and if it comes back with a continuing step (click/fill/read/
+   * call_tool — TERMINAL_VERBS in @cairnvibe/core says which verbs end a
+   * turn), execute that step for real, fold the real result into this
+   * turn's own working history, and ask again — repeat until a terminal
+   * verb or the iteration cap, instead of the old one-call-one-answer
+   * shape. `question` stays the original ask on every call; only
+   * `history` grows with each step's real trace, so the model always
+   * still knows what it was actually asked. `historyRef` (the
+   * conversation's real memory) is only ever committed once, at the end —
+   * a turn that hits the cap mid-loop doesn't leave partial noise in it.
+   */
+  async function runTypedAgentLoop(q: string): Promise<void> {
+    let loopHistory = historyRef.current;
+    const webMcpTools = await discoverWebMcpTools();
+
+    for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
       const liveScan = liveRegistryRef.current.getSnapshot();
       liveMapRef.current = liveScan.byId;
       const res = await fetch(endpoint, {
@@ -416,26 +453,48 @@ export function Copilot({
           route: pathname,
           question: q,
           visible: collectVisible(),
-          history: historyRef.current,
+          history: loopHistory,
           liveElements: liveScan.elements,
+          webMcpTools,
         }),
       });
       const data = await res.json().catch(() => null);
-      handleVerb(data);
-      // Unlike the realtime relay (one persistent connection, memory lives
-      // server-side), each of these POSTs is stateless — the widget itself
-      // is what remembers, and resends it above so the model has context
-      // for "the first one" / "do that instead" on the next question.
-      historyRef.current = [
-        ...historyRef.current,
-        { role: "user", text: q } satisfies HistoryEntry,
-        { role: "assistant", text: summarizeVerbForHistory(data) } satisfies HistoryEntry,
+      const parsed = safeParseVerbResponse(data);
+
+      if (!parsed || TERMINAL_VERBS.has(parsed.verb)) {
+        handleVerb(data);
+        // Unlike the realtime relay (one persistent connection, memory
+        // lives server-side), each of these POSTs is stateless — the
+        // widget itself is what remembers, and resends it above so the
+        // model has context for "the first one" / "do that instead" on
+        // the next question.
+        historyRef.current = [
+          ...loopHistory,
+          { role: "user", text: q } satisfies HistoryEntry,
+          { role: "assistant", text: summarizeVerbForHistory(data) } satisfies HistoryEntry,
+        ].slice(-MAX_HISTORY_TURNS);
+        return;
+      }
+
+      // A continuing step — show it happening, execute it for real, and
+      // go around again with the real result instead of ending the turn.
+      setAnswer(summarizeVerbForHistory(data));
+      const stepResult = await executeToolStep(data, pathname, liveMapRef.current);
+      loopHistory = [
+        ...loopHistory,
+        {
+          role: "assistant",
+          text: `${summarizeVerbForHistory(data)}. Result: ${stepResult?.observation ?? "no result"}`,
+        } satisfies HistoryEntry,
       ].slice(-MAX_HISTORY_TURNS);
-    } catch {
-      setAnswer("Something went wrong reaching the help service — try again in a moment.");
-    } finally {
-      setStatus("idle");
     }
+
+    setAnswer("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
+    historyRef.current = [
+      ...loopHistory,
+      { role: "user", text: q } satisfies HistoryEntry,
+      { role: "assistant", text: "(gave up after too many steps)" } satisfies HistoryEntry,
+    ].slice(-MAX_HISTORY_TURNS);
   }
 
   /**
@@ -692,7 +751,7 @@ export function Copilot({
         }
         setRtStatus("rt-listening");
         setCaption("");
-        sendFreshContext(); // refresh before the user starts talking again, not after
+        void sendFreshContext(); // refresh before the user starts talking again, not after
       }
 
       function disarmThinkingWatchdog() {
@@ -769,6 +828,25 @@ export function Copilot({
           setRtStatus("rt-thinking");
           armThinkingWatchdog();
         } else if (msg.type === "verb") {
+          const parsedStep = safeParseVerbResponse(msg.verb);
+          if (parsedStep && !TERMINAL_VERBS.has(parsedStep.verb)) {
+            // A continuing agent-loop step (click/fill/read/call_tool) —
+            // the turn isn't over: execute it for real and report the
+            // result back so the server can decide the next step, instead
+            // of treating this like a normal answer (no
+            // disarmThinkingWatchdog/handleVerb — those are for when a
+            // turn actually ends). Shown visually so a multi-step turn
+            // reads as visible progress, not a silent pause; never spoken
+            // — the server's loop stays quiet between steps on purpose,
+            // to keep it fast.
+            setAnswer(summarizeVerbForHistory(msg.verb));
+            void executeToolStep(msg.verb, pathnameRef.current, liveMapRef.current).then((result) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "tool_result", observation: result?.observation ?? "no result" }));
+              }
+            });
+            return;
+          }
           disarmThinkingWatchdog();
           handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
@@ -1072,6 +1150,14 @@ function summarizeVerbForHistory(raw: unknown): string {
       return `(ran ${String(v.action)}${v.target ? ` on ${String(v.target)}` : ""})`;
     case "tour":
       return Array.isArray(v.steps) ? v.steps.map((s: { text?: string }) => s.text ?? "").join(" ") : "(tour)";
+    case "click":
+      return `(clicked ${String(v.target)})`;
+    case "fill":
+      return `(typed "${String(v.value)}" into ${String(v.target)})`;
+    case "read":
+      return `(read ${String(v.target)})`;
+    case "call_tool":
+      return `(called ${String(v.name)})`;
     default:
       return "(no response)";
   }

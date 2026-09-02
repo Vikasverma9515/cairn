@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeVerbResponse } from "./verb-executor";
+import { executeToolStep, executeVerbResponse } from "./verb-executor";
 
 function makeOptions() {
   return {
@@ -8,6 +8,7 @@ function makeOptions() {
     onDo: vi.fn(),
     onMiss: vi.fn(),
     onTour: vi.fn(),
+    onToolStep: vi.fn(),
   };
 }
 
@@ -240,6 +241,146 @@ describe("executeVerbResponse", () => {
       await vi.waitFor(() =>
         expect(fetchMock).toHaveBeenCalledWith("/api/invoices/inv-2/archive", { method: "POST", credentials: "same-origin" }),
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("click (agent loop): clicks the resolved target and reports a real observation, not a terminal explain", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const liveElements = new Map([["sessions-tab", el]]);
+      executeVerbResponse({ verb: "click", target: "sessions-tab" }, "/admin", { ...opts, liveElements });
+      expect(el.click).toHaveBeenCalledTimes(1);
+      expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "click", target: "sessions-tab", ok: true, observation: "Clicked it." });
+    });
+  });
+
+  it("click (agent loop): a miss reports a failed observation instead of a silent no-op", () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "click", target: "does-not-exist" }, "/admin", opts);
+    expect(opts.onToolStep).toHaveBeenCalledWith({
+      verb: "click",
+      target: "does-not-exist",
+      ok: false,
+      observation: "Could not find that element on the page.",
+    });
+    expect(opts.onMiss).toHaveBeenCalledWith({ attempted: "does-not-exist", route: "/admin" });
+  });
+
+  function fakeInput() {
+    let value = "";
+    return {
+      tagName: "INPUT",
+      get value() {
+        return value;
+      },
+      set value(v: string) {
+        value = v;
+      },
+      dispatchEvent: vi.fn(),
+      scrollIntoView: vi.fn(),
+      classList: { add: vi.fn(), remove: vi.fn() },
+    } as unknown as HTMLInputElement;
+  }
+
+  it("fill (agent loop): types into a real form field and reports the value back", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const input = fakeInput();
+      const liveElements = new Map([["client-name", input]]);
+      executeVerbResponse({ verb: "fill", target: "client-name", value: "Acme Co." }, "/invoices", { ...opts, liveElements });
+      expect(input.value).toBe("Acme Co.");
+      expect(opts.onToolStep).toHaveBeenCalledWith({
+        verb: "fill",
+        target: "client-name",
+        ok: true,
+        observation: 'Typed "Acme Co." into it.',
+      });
+    });
+  });
+
+  it("fill (agent loop): rejects a target that resolves but isn't a real form field", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const el = fakeElement(); // a plain button-shaped fake, not an HTMLInputElement
+      const liveElements = new Map([["not-an-input", el]]);
+      executeVerbResponse({ verb: "fill", target: "not-an-input", value: "hi" }, "/invoices", { ...opts, liveElements });
+      expect(opts.onToolStep).toHaveBeenCalledWith({
+        verb: "fill",
+        target: "not-an-input",
+        ok: false,
+        observation: "That element isn't a real form field — can't type into it.",
+      });
+    });
+  });
+
+  it("read (agent loop): a miss reports a failed observation", () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "read", target: "does-not-exist" }, "/invoices", opts);
+    expect(opts.onToolStep).toHaveBeenCalledWith({
+      verb: "read",
+      target: "does-not-exist",
+      ok: false,
+      observation: "Could not find that element on the page.",
+    });
+  });
+
+  it("call_tool (agent loop): calls the real WebMCP tool and reports its result", async () => {
+    const executeTool = vi.fn().mockResolvedValue("3 overdue invoices");
+    const tool = { name: "count-overdue-invoices" };
+    vi.stubGlobal("document", { modelContext: { getTools: async () => [tool], executeTool } });
+    try {
+      const opts = makeOptions();
+      executeVerbResponse({ verb: "call_tool", name: "count-overdue-invoices", args: {} }, "/invoices", opts);
+      await vi.waitFor(() =>
+        expect(opts.onToolStep).toHaveBeenCalledWith({
+          verb: "call_tool",
+          target: "count-overdue-invoices",
+          ok: true,
+          observation: "3 overdue invoices",
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("call_tool (agent loop): refuses a tool name not in this page's current WebMCP list", async () => {
+    vi.stubGlobal("document", { modelContext: { getTools: async () => [], executeTool: vi.fn() } });
+    try {
+      const opts = makeOptions();
+      executeVerbResponse({ verb: "call_tool", name: "delete-everything", args: {} }, "/invoices", opts);
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(opts.onToolStep.mock.calls[0][0].ok).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("executeToolStep: resolves with the real observation for a synchronous step (click)", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      const el = fakeElement();
+      const liveElements = new Map([["archive-btn", el]]);
+      const result = await executeToolStep({ verb: "click", target: "archive-btn" }, "/invoices", liveElements);
+      expect(result).toEqual({ verb: "click", target: "archive-btn", ok: true, observation: "Clicked it." });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("executeToolStep: resolves with the real observation for an async step (call_tool)", async () => {
+    vi.stubGlobal("document", {
+      modelContext: {
+        getTools: async () => [{ name: "search-products" }],
+        executeTool: async () => "3 results",
+      },
+    });
+    try {
+      const result = await executeToolStep({ verb: "call_tool", name: "search-products", args: {} }, "/invoices");
+      expect(result).toEqual({ verb: "call_tool", target: "search-products", ok: true, observation: "3 results" });
     } finally {
       vi.unstubAllGlobals();
     }

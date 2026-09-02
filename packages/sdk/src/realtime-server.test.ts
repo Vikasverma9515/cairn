@@ -35,7 +35,10 @@ function fakeDeps(respond: VerbLLM["respond"]): ConnectionDeps {
   };
 }
 
-const getContext = () => ({ route: "/", visible: [] as string[], liveElements: [] });
+const getContext = () => ({ route: "/", visible: [] as string[], liveElements: [], webMcpTools: [] });
+const neverCalledWaitForToolResult = () => {
+  throw new Error("waitForToolResult should not be called for a terminal-verb-only turn");
+};
 
 function resultsMessage(transcript: string, opts: { isFinal: boolean; speechFinal?: boolean }): string {
   return JSON.stringify({
@@ -63,6 +66,7 @@ describe("handleDeepgramMessage", () => {
       history,
       turnState,
       () => 0,
+      neverCalledWaitForToolResult,
     );
 
     expect(respond).toHaveBeenCalledTimes(1);
@@ -83,7 +87,7 @@ describe("handleDeepgramMessage", () => {
     const history: HistoryTurn[] = [];
     const turnState = { buffer: "" };
 
-    await handleDeepgramMessage(resultsMessage("hello", { isFinal: true, speechFinal: false }), client, deps, getContext, async () => {}, history, turnState, () => 0);
+    await handleDeepgramMessage(resultsMessage("hello", { isFinal: true, speechFinal: false }), client, deps, getContext, async () => {}, history, turnState, () => 0, neverCalledWaitForToolResult);
     expect(respond).not.toHaveBeenCalled();
     expect(sent.some((m: any) => m.type === "final")).toBe(false);
     expect(turnState.buffer).toBe("hello");
@@ -97,6 +101,7 @@ describe("handleDeepgramMessage", () => {
       history,
       turnState,
       () => 0,
+      neverCalledWaitForToolResult,
     );
 
     expect(respond).toHaveBeenCalledTimes(1);
@@ -113,10 +118,10 @@ describe("handleDeepgramMessage", () => {
     const history: HistoryTurn[] = [];
     const turnState = { buffer: "" };
 
-    await handleDeepgramMessage(resultsMessage("are you there", { isFinal: true, speechFinal: false }), client, deps, getContext, async () => {}, history, turnState, () => 0);
+    await handleDeepgramMessage(resultsMessage("are you there", { isFinal: true, speechFinal: false }), client, deps, getContext, async () => {}, history, turnState, () => 0, neverCalledWaitForToolResult);
     expect(respond).not.toHaveBeenCalled();
 
-    await handleDeepgramMessage(JSON.stringify({ type: "UtteranceEnd" }), client, deps, getContext, async () => {}, history, turnState, () => 0);
+    await handleDeepgramMessage(JSON.stringify({ type: "UtteranceEnd" }), client, deps, getContext, async () => {}, history, turnState, () => 0, neverCalledWaitForToolResult);
     expect(respond).toHaveBeenCalledTimes(1);
     expect(sent.filter((m: any) => m.type === "final")).toEqual([{ type: "final", text: "are you there" }]);
   });
@@ -145,6 +150,7 @@ describe("handleDeepgramMessage", () => {
       history,
       turnState,
       () => generation,
+      neverCalledWaitForToolResult,
     );
 
     expect(sent.some((m: any) => m.type === "verb")).toBe(false);
@@ -152,5 +158,83 @@ describe("handleDeepgramMessage", () => {
     // The user's own speech was still transcribed and shown — only the
     // (now-superseded) response is dropped.
     expect(sent.some((m: any) => m.type === "final")).toBe(true);
+  });
+
+  const getContextWithArchiveBtn = () => ({
+    route: "/",
+    visible: [] as string[],
+    liveElements: [{ id: "archive-btn", role: "button", label: "Archive" }],
+    webMcpTools: [],
+  });
+
+  it("agent loop: a continuing verb (click) is sent to the client, waits for its real result, then calls the model again to get the terminal answer", async () => {
+    const { client, sent } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async (_systemPrompt: string, userMessage: string) => {
+      call++;
+      if (call === 1) return { verb: "click", target: "archive-btn" };
+      // Second call — the loop should have folded the real click result into history.
+      const parsed = JSON.parse(userMessage);
+      expect(parsed.history.at(-1).text).toContain("Result: Archived, status now Archived");
+      return { verb: "explain", text: "Done, I archived it." };
+    });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("Archived, status now Archived");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the overdue invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(respond).toHaveBeenCalledTimes(2);
+    expect(waitForToolResult).toHaveBeenCalledTimes(1);
+    const verbMessages = sent.filter((m: any) => m.type === "verb");
+    expect(verbMessages).toEqual([
+      { type: "verb", verb: { verb: "click", target: "archive-btn" } },
+      { type: "verb", verb: { verb: "explain", text: "Done, I archived it." } },
+    ]);
+    expect(speakStreamed).toHaveBeenCalledWith("Done, I archived it.");
+    // Only the real final answer lands in the connection's own memory —
+    // not the intermediate click step.
+    expect(history).toEqual([
+      { role: "user", text: "archive the overdue invoice" },
+      { role: "assistant", text: "Done, I archived it." },
+    ]);
+  });
+
+  it("agent loop: hitting the iteration cap with no terminal verb degrades honestly instead of hanging", async () => {
+    const { client, sent } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "read", target: "archive-btn" });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("keep checking something", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    // Never loops unboundedly even though the model never terminates.
+    expect(respond.mock.calls.length).toBeLessThanOrEqual(6);
+    expect(speakStreamed).toHaveBeenCalledWith(expect.stringContaining("wasn't able to finish"));
   });
 });

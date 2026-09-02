@@ -1,5 +1,7 @@
 import { CreateInvoiceButton } from "../../components/CreateInvoiceButton";
 import { InvoiceList } from "../../components/InvoiceList";
+import { InvoiceWebMcpTools } from "../../components/InvoiceWebMcpTools";
+import { listInvoices } from "../../lib/invoices";
 
 export default function InvoicesPage() {
   return (
@@ -12,6 +14,7 @@ export default function InvoicesPage() {
       <div className="mt-6">
         <InvoiceList />
       </div>
+      <InvoiceWebMcpTools invoices={listInvoices()} />
     </main>
   );
 }

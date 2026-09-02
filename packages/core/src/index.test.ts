@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CopilotRequestSchema, ManifestSchema, safeParseVerbResponse } from "./index";
+import { CopilotRequestSchema, ManifestSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -33,6 +33,35 @@ describe("safeParseVerbResponse", () => {
     expect(safeParseVerbResponse({ verb: "highlight", target: "create-invoice" })).not.toBeNull();
     expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices" })).not.toBeNull();
     expect(safeParseVerbResponse({ verb: "do", action: "archiveInvoice" })).not.toBeNull();
+  });
+
+  it("accepts the agent loop's continuing verbs: click, fill, read, call_tool", () => {
+    expect(safeParseVerbResponse({ verb: "click", target: "archive-inv-2" })).toEqual({
+      verb: "click",
+      target: "archive-inv-2",
+    });
+    expect(safeParseVerbResponse({ verb: "fill", target: "client-name-input", value: "Acme Co." })).toEqual({
+      verb: "fill",
+      target: "client-name-input",
+      value: "Acme Co.",
+    });
+    expect(safeParseVerbResponse({ verb: "read", target: "invoice-table" })).toEqual({
+      verb: "read",
+      target: "invoice-table",
+    });
+    expect(safeParseVerbResponse({ verb: "call_tool", name: "search-products", args: { query: "laptops" } })).toEqual(
+      { verb: "call_tool", name: "search-products", args: { query: "laptops" } },
+    );
+  });
+
+  it("TERMINAL_VERBS distinguishes the answer-ending verbs from the loop's continuing steps", () => {
+    expect(TERMINAL_VERBS.has("explain")).toBe(true);
+    expect(TERMINAL_VERBS.has("do")).toBe(true);
+    expect(TERMINAL_VERBS.has("tour")).toBe(true);
+    expect(TERMINAL_VERBS.has("click")).toBe(false);
+    expect(TERMINAL_VERBS.has("fill")).toBe(false);
+    expect(TERMINAL_VERBS.has("read")).toBe(false);
+    expect(TERMINAL_VERBS.has("call_tool")).toBe(false);
   });
 
   it("accepts a do verb with an optional target naming what it applies to", () => {

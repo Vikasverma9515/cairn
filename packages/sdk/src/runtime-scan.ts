@@ -10,7 +10,13 @@
 
 import type { LiveElement } from "@cairnvibe/core";
 
-const CANDIDATE_SELECTOR = "[data-ai], button, a, [role='button'], input[type='submit'], input[type='button']";
+// Clickable elements, plus real fillable form fields (text/email/number/etc
+// inputs, textarea, select — NOT submit/button inputs, already covered by
+// the plain "button" role below) — the agent loop's fill/read steps need
+// these to be discoverable the same way a click target already is.
+const CANDIDATE_SELECTOR =
+  "[data-ai], button, a, [role='button'], input[type='submit'], input[type='button'], " +
+  "input:not([type='submit']):not([type='button']):not([type='hidden']), textarea, select";
 const MAX_ELEMENTS = 40;
 const MAX_LABEL_LENGTH = 80;
 const RESCAN_DEBOUNCE_MS = 250;
@@ -25,14 +31,38 @@ function isInViewport(el: Element): boolean {
   return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
 }
 
+/** A form field's own text content is always empty — its identity comes
+ * from an associated <label>, a placeholder, or its name attribute
+ * instead, in that order of how a real user would recognize the field. */
+function formFieldLabel(el: HTMLElement): string {
+  if (el.id) {
+    const labelled = el.ownerDocument?.querySelector(`label[for="${cssEscapeId(el.id)}"]`);
+    if (labelled?.textContent?.trim()) return labelled.textContent;
+  }
+  const wrappingLabel = el.closest("label");
+  if (wrappingLabel?.textContent?.trim()) return wrappingLabel.textContent;
+  return el.getAttribute("placeholder") || el.getAttribute("name") || "";
+}
+
+function cssEscapeId(id: string): string {
+  return id.replace(/["\\]/g, "\\$&");
+}
+
+// tagName, not instanceof — see element-ladder.ts's isFormField for why.
+function isFormField(el: HTMLElement): boolean {
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
+}
+
 function labelFor(el: HTMLElement): string {
-  const raw = el.getAttribute("aria-label") || el.textContent || "";
+  const raw = el.getAttribute("aria-label") || (isFormField(el) ? formFieldLabel(el) : el.textContent) || "";
   const trimmed = raw.replace(/\s+/g, " ").trim();
   return trimmed.length > MAX_LABEL_LENGTH ? `${trimmed.slice(0, MAX_LABEL_LENGTH - 1)}…` : trimmed;
 }
 
 function roleFor(el: HTMLElement): string {
-  return el.getAttribute("role") || el.tagName.toLowerCase();
+  if (el.getAttribute("role")) return el.getAttribute("role")!;
+  if (isFormField(el)) return "input";
+  return el.tagName.toLowerCase();
 }
 
 /**

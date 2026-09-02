@@ -6,7 +6,50 @@
 // enforces the same schema independently — never trust the client alone.
 
 import { VerbResponseSchema, type ApiCall, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
+import { findElement, fillElement, highlightElement, logMiss, readElement, type MissContext } from "./element-ladder";
+import { executeWebMcpTool } from "./webmcp-client";
+
+/** The real result of one agent-loop step (click/fill/read/call_tool) —
+ * fed back to the model as its next turn's "observation" so it can decide
+ * what to do next instead of acting blind. The loop that drives this lives
+ * on the caller's side, not here: index.tsx's runTypedAgentLoop for the
+ * HTTP path, realtime-server.ts's finalizeTurn for the realtime one — this
+ * module only ever executes one step at a time. */
+export interface ToolStepResult {
+  verb: "click" | "fill" | "read" | "call_tool";
+  target?: string;
+  ok: boolean;
+  observation: string;
+}
+
+/**
+ * Promise wrapper around executeVerbResponse for a continuing verb
+ * (click/fill/read/call_tool) — resolves once the real action has actually
+ * finished (synchronously for click/fill/read, after a real await for
+ * call_tool) with its real observation, instead of the fire-and-forget
+ * callback shape every other verb uses. This is what a loop driver awaits
+ * before deciding whether to call the model again.
+ */
+export function executeToolStep(raw: unknown, route: string, liveElements?: Map<string, HTMLElement>): Promise<ToolStepResult | null> {
+  return new Promise((resolve) => {
+    // executeVerbResponse only ever reaches onToolStep for a genuinely
+    // continuing verb — callers are only expected to call this after
+    // already confirming (via TERMINAL_VERBS) that the parsed verb is one,
+    // so this should always fire; a real timeout (not an immediate
+    // microtask — call_tool's own real network round trip needs the time)
+    // is the safety net for the case where it somehow doesn't, so a loop
+    // driver awaiting this can never hang forever.
+    const timer = setTimeout(() => resolve(null), 15000);
+    executeVerbResponse(raw, route, {
+      onExplain: () => {},
+      liveElements,
+      onToolStep: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+    });
+  });
+}
 
 export interface VerbExecutorOptions {
   onExplain: (text: string) => void;
@@ -19,6 +62,9 @@ export interface VerbExecutorOptions {
    * owns the UI (progress display) and, for voice, the TTS sequencing.
    */
   onTour?: (steps: TourStep[]) => void;
+  /** A click/fill/read/call_tool step finished — see ToolStepResult. Only
+   * called for the agent loop's continuing verbs, never the terminal ones. */
+  onToolStep?: (result: ToolStepResult) => void;
   /** Action ids the customer has actually wired up. "do" is rejected for anything else. */
   registeredActions?: string[];
   /**
@@ -126,6 +172,63 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         options.onExplain(verb.steps.map((s) => s.text).join(" "));
       }
       return;
+
+    // The agent loop's steps (server.ts's runAgentLoop) — each executes for
+    // real and reports a real observation back via onToolStep, instead of
+    // ending the turn the way every verb above does. `target` for these
+    // always came from the manifest/currentPageElements/liveElements this
+    // exact turn showed the model — never invented, same invariant as do.
+    case "click": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = findElement(verb.target, options.liveElements);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({ verb: "click", target: verb.target, ok: false, observation: "Could not find that element on the page." });
+        return;
+      }
+      highlightElement(el);
+      el.click();
+      options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: "Clicked it." });
+      return;
+    }
+
+    case "fill": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = findElement(verb.target, options.liveElements);
+      if (!el || !fillElement(el, verb.value)) {
+        (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({
+          verb: "fill",
+          target: verb.target,
+          ok: false,
+          observation: el ? "That element isn't a real form field — can't type into it." : "Could not find that element on the page.",
+        });
+        return;
+      }
+      highlightElement(el);
+      options.onToolStep?.({ verb: "fill", target: verb.target, ok: true, observation: `Typed "${verb.value}" into it.` });
+      return;
+    }
+
+    case "read": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = findElement(verb.target, options.liveElements);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({ verb: "read", target: verb.target, ok: false, observation: "Could not find that element on the page." });
+        return;
+      }
+      options.onToolStep?.({ verb: "read", target: verb.target, ok: true, observation: readElement(el) });
+      return;
+    }
+
+    case "call_tool": {
+      if (verb.text) options.onExplain(verb.text);
+      void executeWebMcpTool(verb.name, verb.args).then((result) => {
+        options.onToolStep?.({ verb: "call_tool", target: verb.name, ok: result.ok, observation: result.observation });
+      });
+      return;
+    }
   }
 }
 

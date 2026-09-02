@@ -46,6 +46,47 @@ export function highlightElement(el: HTMLElement, glowMs = 4000): void {
   window.setTimeout(() => el.classList.remove("cairn-glow"), glowMs);
 }
 
+// tagName, not `instanceof HTMLInputElement` — avoids depending on those
+// classes existing as globals at all (they don't in a plain Node test
+// environment, only a real browser/jsdom), and tagName is exactly what
+// distinguishes a real form field regardless.
+function isFormField(el: HTMLElement): el is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement {
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
+}
+
+/**
+ * Sets a real form field's value AND makes the framework that owns it (React,
+ * almost always, in this SDK's own target apps) actually notice — directly
+ * assigning `.value` bypasses React's tracked setter, so its own onChange
+ * never fires and the app's state silently doesn't update, a well-known
+ * React quirk. Going through the *native* prototype's value setter before
+ * dispatching a real "input" event is what makes React's synthetic event
+ * system pick it up the same way a real keystroke would.
+ */
+export function fillElement(el: HTMLElement, value: string): boolean {
+  if (!isFormField(el)) return false;
+
+  const ctorByTag: Record<string, unknown> = typeof window !== "undefined" ? { INPUT: window.HTMLInputElement, TEXTAREA: window.HTMLTextAreaElement, SELECT: window.HTMLSelectElement } : {};
+  const ctor = ctorByTag[el.tagName] as { prototype: object } | undefined;
+  const nativeSetter = ctor && (Object.getOwnPropertyDescriptor(ctor.prototype, "value")?.set as ((this: HTMLElement, v: string) => void) | undefined);
+  if (nativeSetter) nativeSetter.call(el, value);
+  else el.value = value;
+
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+/** The real current value/text of an element — a form field's `.value`,
+ * otherwise its trimmed visible text, bounded the same way runtime-scan.ts
+ * bounds a live element's label (this is what the agent loop "observes"
+ * after a read step, so it needs the same payload/privacy discipline). */
+export function readElement(el: HTMLElement): string {
+  const raw = isFormField(el) ? el.value : (el.textContent ?? "");
+  const trimmed = raw.replace(/\s+/g, " ").trim();
+  return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed || "(empty)";
+}
+
 export interface MissContext {
   attempted: string;
   route: string;

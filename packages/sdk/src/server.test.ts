@@ -201,6 +201,69 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(result.body).toEqual({ verb: "do", action: "open-session", target: "live-3" });
   });
 
+  it("click/fill/read: a real target from the manifest or liveElements passes through", async () => {
+    const clickHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "click", target: "start-call" }));
+    const clickResult = await clickHandler({ route: "/invoices", question: "call the patient", visible: [] });
+    expect(clickResult.body).toEqual({ verb: "click", target: "start-call" });
+
+    const fillHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "fill", target: "live-7", value: "Acme Co." }),
+    );
+    const fillResult = await fillHandler({
+      route: "/invoices",
+      question: "put Acme Co. in the client field",
+      visible: [],
+      liveElements: [{ id: "live-7", role: "input", label: "Client name" }],
+    });
+    expect(fillResult.body).toEqual({ verb: "fill", target: "live-7", value: "Acme Co." });
+
+    const readHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "read", target: "start-call" }));
+    const readResult = await readHandler({ route: "/invoices", question: "what does that button say", visible: [] });
+    expect(readResult.body).toEqual({ verb: "read", target: "start-call" });
+  });
+
+  it("click/fill/read: an unknown target is refused, not guessed at", async () => {
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "click", target: "made-up-id" }));
+    const result = await handler({ route: "/invoices", question: "click that", visible: [] });
+    expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("call_tool: a real WebMCP tool name from this exact request passes through", async () => {
+    const handler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({ verb: "call_tool", name: "search-products", args: { query: "laptops" } }),
+    );
+    const result = await handler({
+      route: "/invoices",
+      question: "find laptops",
+      visible: [],
+      webMcpTools: [{ name: "search-products", description: "Search the catalog" }],
+    });
+    expect(result.body).toEqual({ verb: "call_tool", name: "search-products", args: { query: "laptops" } });
+  });
+
+  it("call_tool: a tool name not reported by this exact request is refused, never invented", async () => {
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "call_tool", name: "delete-everything" }));
+    const result = await handler({ route: "/invoices", question: "do something", visible: [] });
+    expect((result.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("capability 'explain' allows read (non-mutating) but refuses click", async () => {
+    const readHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "read", target: "start-call" }), {
+      capability: "explain",
+    });
+    const readResult = await readHandler({ route: "/invoices", question: "what does it say", visible: [] });
+    expect(readResult.body).toEqual({ verb: "read", target: "start-call" });
+
+    const clickHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "click", target: "start-call" }), {
+      capability: "explain",
+    });
+    const clickResult = await clickHandler({ route: "/invoices", question: "click it", visible: [] });
+    expect((clickResult.body as { verb: string }).verb).toBe("explain");
+    expect((clickResult.body as { text: string }).text).not.toBe("what does it say");
+  });
+
   it("a do-verb with an unknown/hallucinated target is refused even if the action label looks plausible", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,

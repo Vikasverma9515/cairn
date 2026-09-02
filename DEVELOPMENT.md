@@ -329,6 +329,70 @@ reported as "too big." Now collapsed by default (only the current
 exchange shows), with a small "N earlier" toggle to expand the full
 archived history on demand.
 
+**A real agent loop, not a single fixed verb per question**
+(`@cairnvibe/core` 0.1.4, `@cairnvibe/sdk` 0.2.7). Every prior design —
+including everything above — resolved one question to exactly one action
+and stopped: no way to check something, decide, then act, no parameters
+beyond a fixed set of known elements. Explicit ask: an agent that can
+actually reason and operate the app, not a five-way classifier. Researched
+first, not guessed at — Anthropic's own Computer Use, OpenAI's Realtime
+API, the `browser-use` framework, and how production voice-agent companies
+split "fast talker" from "slow reasoner" — three findings shaped this:
+
+1. **[WebMCP](https://webmachinelearning.github.io/webmcp/)** — a real,
+   in-progress web standard (`document.modelContext.registerTool()`) for a
+   page to expose its own functions as typed tools an agent calls
+   directly, in the page's own session. Better than anything inferred from
+   static analysis: a real function with a real return value, written by
+   the app's own developer. New `packages/sdk/src/webmcp-client.ts`
+   discovers these tools client-side and reports them to the server each
+   turn (`CopilotRequestSchema.webMcpTools`) — a no-op everywhere the
+   standard isn't implemented yet (currently: everywhere, no browser ships
+   it natively), so this is additive, never a dependency.
+2. **The loop itself stays minimal** — `browser-use`'s own published
+   philosophy ("the less you build, the more it works") argued against a
+   bespoke planning/verification layer: just call tools until the model
+   signals it's done, with real observations fed back each step. Four new
+   verbs carry this: `click`/`fill`/`read` (act on or read a real,
+   already-discovered element) and `call_tool` (call a real WebMCP tool by
+   name) — all *continuing* steps (`TERMINAL_VERBS` in `@cairnvibe/core`
+   says which verbs, like `explain`/`do`/`tour`, end the turn instead).
+   Every target still has to be a real id from the manifest, the live DOM
+   scan, or this turn's own WebMcpTools list — the loop adds multi-step
+   reasoning, it doesn't relax "never invent a selector."
+3. **Talker/Reasoner is a real, named production pattern** (confirmed via
+   Sierra's and others' published latency engineering, and OpenAI's own
+   Realtime API update: "the model can continue a fluid conversation while
+   waiting on results") — not attempted this pass (a real next step, once
+   this foundation is proven), but it's *why* the loop had to exist first:
+   there's no multi-step work to hand a "worker" until the loop itself
+   does something.
+
+Where the loop actually lives, since a server can't execute a DOM action
+itself: `resolveVerb` (`server.ts`) stays the single-call primitive it
+already was, now also validating the four new verbs' targets the same way
+`do` already was. The *loop* is driven by whoever holds the turn's
+continuity — `index.tsx`'s new `runTypedAgentLoop` for the stateless HTTP
+path (resending accumulated history each call, the same pattern `ask()`
+already used), and `realtime-server.ts`'s rewritten `finalizeTurn` for the
+realtime path (a real `tool_result` WebSocket message and a
+`waitForToolResult()` pause/resume, following the same "mutable pending-
+callback slot" pattern the file's own barge-in handling already used) —
+capped at 6 steps either way, degrading to an honest "wasn't able to
+finish that" rather than looping forever.
+
+Verified live end-to-end on `examples/demo-app` (extended with a real
+`document.modelContext.registerTool()` call and — since no real browser
+implements WebMCP yet — a small demo-only polyfill, clearly labeled as
+such, purely to exercise the real API shape ahead of native support):
+asking "how many invoices are overdue right now" correctly resolved to
+`call_tool`, executed the real registered function, and answered "There
+is currently one overdue invoice, from New Client" — the real count, from
+the real function, not a guess. The pre-existing single-step paths
+(click-to-select on the sessions page) were re-verified unchanged
+afterward — the new terminal/continuing split didn't regress the fast
+path it's built alongside.
+
 Full detail: [ROADMAP.md](./ROADMAP.md) (forward-looking, phase-by-phase)
 and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 
