@@ -161,7 +161,18 @@ export function Copilot({
   const rtMicMutedRef = useRef(false);
   const rtSpeakerMutedRef = useRef(false);
   const rtStartingRef = useRef(false); // closes the click-to-first-state-update gap so a rapid double-click can't open two sessions
-  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Progressive PCM playback for the buffered (non-realtime) speak endpoint
+  // — the same gapless AudioBufferSourceNode scheduling the realtime path
+  // uses for its audio_chunk messages (see rtPlaybackCtxRef below), just fed
+  // by a fetch() ReadableStream instead of WebSocket messages. This exists
+  // because res.blob()/res.arrayBuffer() always wait for the whole response
+  // body in every browser no matter how the server sent it — streaming the
+  // wire alone (speak-server.ts) doesn't help unless playback also starts
+  // before the full reply has arrived.
+  const typedPlaybackCtxRef = useRef<AudioContext | null>(null);
+  const typedPlaybackGainRef = useRef<GainNode | null>(null);
+  const typedNextPlayTimeRef = useRef(0);
+  const typedScheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   // Watchdog for the "rt-thinking" state: started on every "final" transcript,
   // cleared the moment the server responds with anything for that turn
   // (verb/speaking_start/speaking_end/turn_complete/error). If it ever
@@ -497,29 +508,108 @@ export function Copilot({
     ].slice(-MAX_HISTORY_TURNS);
   }
 
-  /**
-   * The one place that starts audio playback for a spoken response — stops
-   * whatever's currently playing first, so two responses (e.g. a rapid
-   * double-click on "start conversation", or two utterances resolved close
-   * together) can never be heard overlapping. Used by both the typed/mic
-   * path and the realtime path.
-   */
-  function playResponseAudio(blob: Blob): Promise<void> {
-    if (activeAudioRef.current) {
-      activeAudioRef.current.pause();
-      activeAudioRef.current.currentTime = 0;
+  function ensureTypedPlaybackGraph(): { ctx: AudioContext; gain: GainNode } {
+    if (!typedPlaybackCtxRef.current) {
+      const ctx = new AudioContext();
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      typedPlaybackCtxRef.current = ctx;
+      typedPlaybackGainRef.current = gain;
     }
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    activeAudioRef.current = audio;
+    return { ctx: typedPlaybackCtxRef.current, gain: typedPlaybackGainRef.current! };
+  }
+
+  /** Stops whatever's currently playing on the typed/mic path's playback
+   * graph, so two responses (e.g. a rapid double-click, or two answers
+   * resolved close together) can never be heard overlapping. */
+  function stopTypedPlayback() {
+    for (const source of typedScheduledSourcesRef.current) {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+        // may already have finished naturally
+      }
+    }
+    typedScheduledSourcesRef.current = [];
+    typedNextPlayTimeRef.current = typedPlaybackCtxRef.current?.currentTime ?? 0;
+  }
+
+  function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+  }
+
+  /**
+   * Reads a raw linear16 PCM stream (mono, 24kHz — matches speak-server.ts)
+   * and schedules it gapless-appended into the Web Audio graph as chunks
+   * arrive — the same technique the realtime path uses for its audio_chunk
+   * messages, just driven by a fetch() reader instead of WebSocket frames.
+   * Resolves once every scheduled chunk has actually finished *playing*,
+   * not just finished arriving.
+   */
+  function playPcmStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    stopTypedPlayback();
+    const { ctx, gain } = ensureTypedPlaybackGraph();
+    void ctx.resume().catch(() => {});
+
     return new Promise((resolve) => {
-      const clear = () => {
-        URL.revokeObjectURL(url);
-        if (activeAudioRef.current === audio) activeAudioRef.current = null;
-        resolve();
+      let doneArriving = false;
+      let leftover: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+
+      const maybeResolve = () => {
+        if (doneArriving && typedScheduledSourcesRef.current.length === 0) resolve();
       };
-      audio.onended = clear;
-      audio.play().catch(clear);
+
+      const scheduleChunk = (bytes: Uint8Array) => {
+        const sampleCount = Math.floor(bytes.length / 2);
+        if (sampleCount === 0) return;
+        const float32 = new Float32Array(sampleCount);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+        for (let i = 0; i < sampleCount; i++) float32[i] = view.getInt16(i * 2, true) / 32768;
+
+        const buffer = ctx.createBuffer(1, sampleCount, 24000);
+        buffer.copyToChannel(float32, 0);
+
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(gain);
+
+        const startAt = Math.max(ctx.currentTime, typedNextPlayTimeRef.current);
+        source.start(startAt);
+        typedNextPlayTimeRef.current = startAt + buffer.duration;
+
+        typedScheduledSourcesRef.current.push(source);
+        source.onended = () => {
+          typedScheduledSourcesRef.current = typedScheduledSourcesRef.current.filter((s) => s !== source);
+          maybeResolve();
+        };
+      };
+
+      (async () => {
+        const reader = stream.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.length === 0) continue;
+            // PCM16 samples are 2 bytes each — a chunk boundary can split a
+            // sample in half, so carry any odd trailing byte into the next
+            // read instead of corrupting one sample at every chunk seam.
+            const combined = concatBytes(leftover, value);
+            const usableLen = combined.length - (combined.length % 2);
+            scheduleChunk(combined.subarray(0, usableLen));
+            leftover = combined.subarray(usableLen);
+          }
+        } catch {
+          // Best-effort — never let a stream read failure hang the caller forever.
+        } finally {
+          doneArriving = true;
+          maybeResolve();
+        }
+      })();
     });
   }
 
@@ -531,8 +621,8 @@ export function Copilot({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (!res.ok) return;
-      void playResponseAudio(await res.blob());
+      if (!res.ok || !res.body) return;
+      void playPcmStream(res.body);
     } catch {
       // Best-effort — never let speech playback break the widget.
     }
@@ -549,8 +639,8 @@ export function Copilot({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (!res.ok) return;
-      await playResponseAudio(await res.blob());
+      if (!res.ok || !res.body) return;
+      await playPcmStream(res.body);
     } catch {
       // Best-effort — never let a synthesis failure hang the tour forever.
     }
@@ -938,8 +1028,7 @@ export function Copilot({
       rtThinkingWatchdogRef.current = null;
     }
     rtStartingRef.current = false;
-    activeAudioRef.current?.pause();
-    activeAudioRef.current = null;
+    stopTypedPlayback();
     rtSocketRef.current?.close();
     rtSocketRef.current = null;
     rtCleanupRef.current?.();

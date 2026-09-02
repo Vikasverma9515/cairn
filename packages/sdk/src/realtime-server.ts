@@ -34,6 +34,12 @@ import { DeepgramSpeakStream } from "./tts-stream";
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
 const DEFAULT_STT_MODEL = "nova-2";
 const DEFAULT_TTS_VOICE = "aura-2-thalia-en";
+// The Talker half of a Talker/Reasoner split (see finalizeTurn): spoken the
+// instant a turn turns out to need more than one step, so the user hears
+// something within about a second instead of dead air while the real
+// multi-step work runs. A short rotating set, not one fixed line, so it
+// doesn't read as a canned bot phrase on every multi-step question.
+const ACK_PHRASES = ["Let me check that for you.", "One moment, let me look into that.", "Give me a second to check.", "Let me take a look."];
 // Not constrained by any telephony 8kHz requirement — this is just "what
 // quality does Deepgram render at" for browser playback, and the Web Audio
 // API resamples an AudioBuffer at any declared rate transparently.
@@ -413,6 +419,14 @@ async function finalizeTurn(
   safeSend(client, { type: "final", text: transcript });
 
   let loopHistory = history;
+  // The Talker: set once, the first time a turn turns out to need more
+  // than one step (see the loop below) — a real, in-flight speakStreamed()
+  // call, never awaited until we're actually ready to speak the real
+  // answer. Deliberately not re-triggered per step: the Speak connection
+  // (speakStreamed) only ever handles one utterance at a time, so a second
+  // ack mid-loop would race the first one's own audio_chunk/Flushed
+  // handling instead of queuing cleanly.
+  let ackPromise: Promise<void> | null = null;
 
   try {
     for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
@@ -435,9 +449,19 @@ async function finalizeTurn(
       safeSend(client, { type: "verb", verb });
 
       if (!TERMINAL_VERBS.has(verb.verb)) {
-        // A continuing step — no speech for it (keeps the loop fast;
-        // the client still shows it visually) — wait for its real result
-        // and go around again instead of ending the turn.
+        if (i === 0) {
+          // This turn just revealed it needs more than one step — speak a
+          // quick, cheap acknowledgment *now*, in parallel with the rest
+          // of the loop's own real work below (not awaited here), so the
+          // user hears something within about a second instead of dead
+          // air for however long the real multi-step answer takes.
+          // Single-step turns (the common case) never reach this branch
+          // at all, so they keep today's latency exactly as it is.
+          ackPromise = speakStreamed(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
+        }
+        // A continuing step itself stays silent (keeps the loop fast; the
+        // client still shows it visually) — wait for its real result and
+        // go around again instead of ending the turn.
         const observation = await waitForToolResult();
         if (myGeneration !== getGeneration()) return;
         loopHistory = [
@@ -449,6 +473,17 @@ async function finalizeTurn(
 
       history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
       history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+
+      if (ackPromise) {
+        // Never start a second speakStreamed call before the first (the
+        // ack) has actually finished — same single Speak connection, one
+        // utterance at a time. In the common multi-step case the real
+        // work below already took about as long as the ack itself did, so
+        // this rarely adds a real wait.
+        await ackPromise;
+        ackPromise = null;
+        if (myGeneration !== getGeneration()) return; // a barge-in could have landed during the ack itself
+      }
 
       // A verb with no spoken text (highlight/navigate/do often have none)
       // still needs to unstick the client's "thinking" state and let the mic
@@ -466,6 +501,10 @@ async function finalizeTurn(
     history.push({ role: "user", text: transcript }, { role: "assistant", text: "(gave up after too many steps)" });
     history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
     safeSend(client, { type: "verb", verb: { verb: "explain", text: "I wasn't able to finish that — try asking again or breaking it into smaller steps." } });
+    if (ackPromise) {
+      await ackPromise;
+      if (myGeneration !== getGeneration()) return;
+    }
     await speakStreamed("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
   } catch (err) {
     console.error("[cairn realtime] failed to resolve/speak this turn:", err);

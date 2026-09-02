@@ -40,6 +40,21 @@ function writeIfAbsent(filePath: string, content: string, result: InitResult): v
   result.filesWritten.push(filePath);
 }
 
+// Found live: if your Next.js config transpiles @cairnvibe/sdk (needed when
+// importing the client widget straight from source rather than a compiled
+// dist), webpack bundling the `ws` package used by the speak/transcribe/
+// realtime routes silently breaks its Deepgram WebSocket connections — every
+// request hung for ~10s then failed with ECONNRESET, even though the exact
+// same code worked outside Next's dev bundler. Marking `ws` as a server
+// external package (next.config.js) fixes it.
+const WS_TRANSPILE_WARNING = [
+  "   If your next.config.js sets transpilePackages for @cairnvibe/sdk, also",
+  '   add "ws" to serverExternalPackages (Next 15) or',
+  '   experimental.serverComponentsExternalPackages (Next 14) — webpack-',
+  "   bundling ws otherwise silently breaks the Deepgram speak/transcribe",
+  "   connections it uses.",
+];
+
 export interface RunInitOptions {
   /** Also scaffold /api/copilot/speak and /api/copilot/transcribe (Deepgram-backed) —
    * real bug this closes: previously nothing wrote these routes for a Next.js
@@ -89,6 +104,7 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
       "3. npx cairn build .   (scans this Next.js app's source)",
       "4. npm run dev, then ask it a question.",
     );
+    if (options.voice) result.nextSteps.push(...WS_TRANSPILE_WARNING);
   } else if (result.framework === "next-pages-router") {
     writeIfAbsent(path.join(absDir, "pages", "api", "copilot.ts"), NEXT_PAGES_API_ROUTE, result);
     const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}"];
@@ -105,6 +121,7 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
       "3. npx cairn build .   (scans this Next.js app's source)",
       "4. npm run dev, then ask it a question.",
     );
+    if (options.voice) result.nextSteps.push(...WS_TRANSPILE_WARNING);
   } else {
     writeIfAbsent(path.join(absDir, "cairn-server.cjs"), STANDALONE_SERVER, result);
     result.nextSteps.push(
@@ -192,7 +209,7 @@ export async function POST(request: Request) {
   if ("error" in result.body) {
     return Response.json(result.body, { status: result.status });
   }
-  return new Response(result.body.audio, {
+  return new Response(result.body.stream, {
     status: result.status,
     headers: { "content-type": result.body.contentType },
   });
@@ -213,6 +230,7 @@ export async function POST(request: Request) {
 `;
 
 const NEXT_PAGES_SPEAK_ROUTE = `import type { NextApiRequest, NextApiResponse } from "next";
+import { Readable } from "node:stream";
 import { createSpeakHandler } from "@cairnvibe/sdk/speak-server";
 
 const handler = createSpeakHandler({ apiKey: process.env.DEEPGRAM_API_KEY ?? "" });
@@ -223,7 +241,8 @@ export default async function speak(req: NextApiRequest, res: NextApiResponse) {
   if ("error" in result.body) {
     return res.status(result.status).json(result.body);
   }
-  res.status(result.status).setHeader("content-type", result.body.contentType).send(Buffer.from(result.body.audio));
+  res.status(result.status).setHeader("content-type", result.body.contentType);
+  Readable.fromWeb(result.body.stream).pipe(res);
 }
 `;
 
@@ -286,11 +305,13 @@ app.post("/api/copilot", async (req, res) => {
 
 if (process.env.DEEPGRAM_API_KEY) {
   const { createSpeakHandler } = require("@cairnvibe/sdk/speak-server");
+  const { Readable } = require("node:stream");
   const speak = createSpeakHandler({ apiKey: process.env.DEEPGRAM_API_KEY });
   app.post("/api/copilot/speak", async (req, res) => {
     const result = await speak(req.body?.text ?? "");
     if ("error" in result.body) return res.status(result.status).json(result.body);
-    res.status(result.status).type(result.body.contentType).send(Buffer.from(result.body.audio));
+    res.status(result.status).type(result.body.contentType);
+    Readable.fromWeb(result.body.stream).pipe(res);
   });
 }
 

@@ -521,6 +521,47 @@ describe("GroqVerbLLM", () => {
     await expect(llm.respond("system", "user")).resolves.toBeUndefined();
   });
 
+  it("retries once on a real, live output_parse_failed error (the model 'thought out loud' instead of calling the tool) and succeeds on the second attempt", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            if (attempt === 1) {
+              const err: any = new Error('400 {"error":{"message":"Parsing failed...","code":"output_parse_failed"}}');
+              err.code = "output_parse_failed";
+              throw err;
+            }
+            return {
+              choices: [{ message: { tool_calls: [{ function: { name: "respond_with_verb", arguments: JSON.stringify({ verb: "explain", text: "recovered" }) } }] } }],
+            };
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "recovered" });
+    expect(attempt).toBe(2);
+  });
+
+  it("does NOT retry (propagates immediately) for an unrelated error — only output_parse_failed gets the one-time retry", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            throw new Error("429 rate limit exceeded");
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).rejects.toThrow("429 rate limit exceeded");
+    expect(attempt).toBe(1);
+  });
+
   it("round-robins across multiple keys", async () => {
     const seenKeys: string[] = [];
     const fakeClient: GroqLikeClient = {

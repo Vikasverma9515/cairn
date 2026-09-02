@@ -212,6 +212,68 @@ describe("handleDeepgramMessage", () => {
     ]);
   });
 
+  it("Talker ack: a multi-step turn speaks a quick acknowledgment BEFORE the real answer, exactly twice — never more, even with several continuing steps", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      if (call <= 2) return { verb: "read", target: "archive-btn" }; // two continuing steps
+      return { verb: "explain", text: "Here's what I found." };
+    });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("check a couple things then tell me", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    // Exactly two speakStreamed calls: the ack (once, not once per step)
+    // and the real final answer — never a third for the second continuing
+    // step, which would race the ack's own in-flight Speak connection use.
+    expect(speakStreamed).toHaveBeenCalledTimes(2);
+    // The exact rotating phrase doesn't matter, only that the FIRST call is
+    // clearly an acknowledgment, not the real answer — and the SECOND call
+    // is the genuine final text.
+    expect(typeof speakStreamed.mock.calls[0][0]).toBe("string");
+    expect(speakStreamed.mock.calls[0][0]).not.toBe("Here's what I found.");
+    expect(speakStreamed).toHaveBeenNthCalledWith(2, "Here's what I found.");
+  });
+
+  it("Talker ack: a single-step turn (terminal on the very first call) never speaks an ack — no added latency on the common case", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Quick answer." });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("simple question", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      neverCalledWaitForToolResult,
+    );
+
+    expect(speakStreamed).toHaveBeenCalledTimes(1);
+    expect(speakStreamed).toHaveBeenCalledWith("Quick answer.");
+  });
+
   it("agent loop: hitting the iteration cap with no terminal verb degrades honestly instead of hanging", async () => {
     const { client, sent } = fakeClient();
     const respond = vi.fn().mockResolvedValue({ verb: "read", target: "archive-btn" });

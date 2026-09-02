@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   if ("error" in result.body) {
     return Response.json(result.body, { status: result.status });
   }
-  return new Response(result.body.audio, {
+  return new Response(result.body.stream, {
     status: result.status,
     headers: { "content-type": result.body.contentType },
   });

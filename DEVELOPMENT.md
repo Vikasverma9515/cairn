@@ -398,6 +398,78 @@ and [BUILD_PLAN.md](./BUILD_PLAN.md) (original design).
 
 ---
 
+Next pass, working down the same architecture's remaining items one by
+one: Talker/Reasoner for realtime voice (deferred above), a Groq
+tool-call-parsing robustness fix, then speeding up the buffered speak
+path — the last one turned up a second, more consequential bug.
+
+- **Talker/Reasoner, for real this time.** `realtime-server.ts`'s
+  `finalizeTurn` now speaks a quick, rotating acknowledgment
+  ("Let me check that for you.", etc.) the moment a turn needs more than
+  one loop step — not on every step, just once, before the real answer —
+  while the loop keeps working in the background. A single-step turn
+  (the common case) never triggers it, so the fast path gets zero added
+  latency. A barge-in landing during the ack itself is still honored
+  (checked again before the real answer speaks).
+- **Groq `output_parse_failed` retry.** Found live in a real VOXERA log:
+  Groq's `openai/gpt-oss-120b` occasionally reasons in prose instead of
+  emitting the forced tool call, which surfaced as "not reasoning, not
+  answering" from the outside. `GroqVerbLLM.respond()` now retries once,
+  specifically for that error code — any other error still throws
+  straight through.
+- **The buffered (non-realtime) speak route was slow for a real,
+  root-caused reason, not a vague one.** `speak-server.ts` did
+  `await response.arrayBuffer()` against Deepgram's REST endpoint —
+  nothing played until Deepgram rendered *and* the network delivered the
+  entire reply, measured at 5-8s in a real production log. This is the
+  same class of bug the realtime path already fixed once; it just hadn't
+  been applied to this separate code path. Fixed the same way: `speak-
+  server.ts` now opens Deepgram's streaming Speak WebSocket (the same
+  `DeepgramSpeakStream` class the realtime path already uses) and
+  returns a `ReadableStream` of raw PCM chunks as they render, instead of
+  a buffered `ArrayBuffer` — a real breaking change to the `/speak-
+  server` export, updated everywhere it's consumed (`packages/indexer`'s
+  three scaffolded route templates — App Router forwards the stream
+  natively; Pages Router and the standalone Express server both need
+  `Readable.fromWeb(stream).pipe(res)`). Splitting the outgoing text into
+  sentence-sized `Speak` messages before one `Flush` was a second win
+  from the same change: it also sidesteps Deepgram's REST-only
+  2000-character cap, a separate bug from the same log (a 413 on a long
+  reply, previously unhandled).
+  - **Streaming the wire alone isn't the fix — verified this the hard
+    way.** `fetch()`'s `.blob()`/`.arrayBuffer()` always wait for the
+    complete response body in every browser, no matter how the server
+    sent it. `index.tsx`'s `speak()`/`speakAndWait()` had to be reworked
+    too: they now read the response via `res.body.getReader()` and
+    schedule raw PCM16 chunks gapless-appended into a Web Audio API
+    graph as they arrive — reusing the exact scheduling technique the
+    realtime path already used for its own `audio_chunk` messages, just
+    fed by a fetch stream instead of WebSocket frames.
+  - **A second, separate bug this surfaced: `ws` silently breaks under
+    Next.js's dev bundler.** Live-testing the rewrite against
+    `examples/demo-app` — direct calls to the compiled handler worked in
+    under 3s, but the same code called through the actual Next.js API
+    route hung for ~10s and failed with `ECONNRESET`, every time. Root
+    cause: demo-app's `next.config.js` sets `transpilePackages:
+    ["@cairnvibe/sdk", ...]` (needed so the client widget's raw-TS
+    export gets a proper SWC pass), which also pulls the `ws` package
+    into webpack's bundle graph — and a webpack-bundled `ws` can't
+    reliably hold a Deepgram WebSocket open. Fixed by adding `ws` to
+    `serverExternalPackages` alongside `better-sqlite3` (already handled
+    the same way, for the same reason). Since any real consumer app that
+    transpiles `@cairnvibe/sdk` and enables voice would hit this exact
+    failure, `cairn init --voice` now prints the same fix as a next
+    step, not just demo-app's own config.
+  - **Verified live, not just unit-tested:** a direct streamed fetch
+    against demo-app's real `/api/copilot/speak` (real Deepgram key, no
+    mocks) delivered 184 real PCM chunks over 5.4s total, first chunk at
+    ~2s — versus the old behavior of zero bytes until the entire ~5.4s
+    reply was ready. Then re-verified through the actual widget UI
+    (typed question → real navigate answer, four real 200 responses from
+    the speak endpoint, no playback errors in console).
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -1,6 +1,6 @@
 {
   "name": "@cairnvibe/indexer",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Cairn's analyzer and installer (the `cairn` CLI) — scans Next.js source or crawls any running app, and scaffolds the backend either way.",
   "license": "MIT",
   "publishConfig": { "access": "public" },

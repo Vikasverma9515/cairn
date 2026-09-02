@@ -303,6 +303,28 @@ export class GroqVerbLLM implements VerbLLM {
   ) {}
 
   async respond(systemPrompt: string, userMessage: string): Promise<unknown> {
+    try {
+      return await this.attemptRespond(systemPrompt, userMessage);
+    } catch (err) {
+      // Real, live bug, not theoretical: openai/gpt-oss-120b (a reasoning-
+      // capable open model) occasionally "thinks out loud" in plain prose
+      // instead of emitting the forced tool call — Groq's own server-side
+      // validation rejects that outright, a 400 with code
+      // "output_parse_failed", before this code ever sees a real response
+      // to work with. Non-deterministic (found live re-asking the exact
+      // same question a moment later succeeded cleanly), so one retry —
+      // not exponential backoff, this is a latency-sensitive voice/chat
+      // path — genuinely helps rather than just delaying the same
+      // failure. Anything else still propagates to resolveVerb's own
+      // catch, unchanged.
+      if (isOutputParseFailure(err)) {
+        return await this.attemptRespond(systemPrompt, userMessage);
+      }
+      throw err;
+    }
+  }
+
+  private async attemptRespond(systemPrompt: string, userMessage: string): Promise<unknown> {
     const client = this.clientFactory(this.keys.take());
     const completion = await client.chat.completions.create({
       model: this.model,
@@ -331,6 +353,18 @@ export class GroqVerbLLM implements VerbLLM {
       return undefined;
     }
   }
+}
+
+/** Groq's SDK doesn't export a stable error shape to import and check
+ * against, so this checks defensively across the ways the real error has
+ * actually been observed to surface — a thrown APIError with a nested
+ * `.error.code`, a plain `.code`, or just the code string showing up
+ * somewhere in the message — rather than relying on exactly one of them. */
+function isOutputParseFailure(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: unknown; error?: { code?: unknown }; message?: unknown };
+  if (e.code === "output_parse_failed" || e.error?.code === "output_parse_failed") return true;
+  return typeof e.message === "string" && e.message.includes("output_parse_failed");
 }
 
 // ---------------------------------------------------------------------------
