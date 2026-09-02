@@ -17,7 +17,10 @@ import type { LiveElement } from "@cairnvibe/core";
 const CANDIDATE_SELECTOR =
   "[data-ai], button, a, [role='button'], input[type='submit'], input[type='button'], " +
   "input:not([type='submit']):not([type='button']):not([type='hidden']), textarea, select";
-const MAX_ELEMENTS = 40;
+// Bumped from 40 now that off-screen candidates (see viewportDistance below)
+// compete for a slot too — still comfortably under CopilotRequestSchema's
+// liveElements cap (60) server-side.
+const MAX_ELEMENTS = 50;
 const MAX_LABEL_LENGTH = 80;
 const RESCAN_DEBOUNCE_MS = 250;
 
@@ -26,9 +29,32 @@ export interface LiveScan {
   byId: Map<string, HTMLElement>;
 }
 
-function isInViewport(el: Element): boolean {
+/** Excludes elements that aren't rendered anywhere (display:none, a closed
+ * modal's contents, an inactive tab panel) — these get an all-zero rect from
+ * getBoundingClientRect() in every real browser, unlike anything actually on
+ * the page, however far off-screen. Not the same question as "is this
+ * scrolled into view" (viewportDistance, below) — this is "does it exist on
+ * the page at all right now." */
+function isRendered(el: Element): boolean {
   const rect = el.getBoundingClientRect();
-  return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+  return rect.width > 0 || rect.height > 0;
+}
+
+/**
+ * 0 for anything already in the viewport; otherwise the pixel gap to the
+ * nearest edge, summed across both axes. Used to RANK candidates instead of
+ * hard-filtering them — an element below the fold or in an unscrolled
+ * carousel is still real and still actionable (highlightElement already
+ * scrolls to it before acting on it), the agent just couldn't discover it
+ * existed under the old viewport-only scan. Ranking keeps what's on screen
+ * right now winning every tie, while still surfacing what's just out of
+ * view when there's room under MAX_ELEMENTS.
+ */
+function viewportDistance(el: Element): number {
+  const rect = el.getBoundingClientRect();
+  const verticalGap = rect.top > window.innerHeight ? rect.top - window.innerHeight : rect.bottom < 0 ? -rect.bottom : 0;
+  const horizontalGap = rect.left > window.innerWidth ? rect.left - window.innerWidth : rect.right < 0 ? -rect.right : 0;
+  return verticalGap + horizontalGap;
 }
 
 /** A form field's own text content is always empty — its identity comes
@@ -66,12 +92,14 @@ function roleFor(el: HTMLElement): string {
 }
 
 /**
- * Scans the live DOM for interactive elements currently in the viewport.
- * Returns both the bounded list to send to the model (`elements`, capped at
- * MAX_ELEMENTS and MAX_LABEL_LENGTH — the actual privacy/payload backstop,
- * mirrored server-side in CopilotRequestSchema) and the real elements it
- * maps to, keyed by the same ids (`byId`) — resolve a verb's target by
- * looking it up here, never by re-deriving a selector from the id string.
+ * Scans the live DOM for interactive elements, on screen right now or just
+ * off it (see viewportDistance) — anything rendered on the page at all, not
+ * just what's currently scrolled into view. Returns both the bounded list to
+ * send to the model (`elements`, capped at MAX_ELEMENTS and
+ * MAX_LABEL_LENGTH — the actual privacy/payload backstop, mirrored
+ * server-side in CopilotRequestSchema) and the real elements it maps to,
+ * keyed by the same ids (`byId`) — resolve a verb's target by looking it up
+ * here, never by re-deriving a selector from the id string.
  */
 export function scanInteractiveElements(root: ParentNode = document): LiveScan {
   const elements: LiveElement[] = [];
@@ -80,10 +108,11 @@ export function scanInteractiveElements(root: ParentNode = document): LiveScan {
 
   if (typeof document === "undefined") return { elements, byId };
 
-  const candidates = root.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR);
-  for (const el of Array.from(candidates)) {
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR)).filter(isRendered);
+  candidates.sort((a, b) => viewportDistance(a) - viewportDistance(b));
+
+  for (const el of candidates) {
     if (elements.length >= MAX_ELEMENTS) break;
-    if (!isInViewport(el)) continue;
 
     const dataAi = el.getAttribute("data-ai");
     const id = dataAi ?? `live-${counter++}`;

@@ -468,6 +468,63 @@ path — the last one turned up a second, more consequential bug.
     (typed question → real navigate answer, four real 200 responses from
     the speak endpoint, no playback errors in console).
 
+Next item down the list: the live scanner's viewport-only limitation. This
+one live-testing session turned up two more real bugs along the way,
+both a lot more consequential than the feature itself.
+
+- **`runtime-scan.ts` no longer hard-filters to what's on screen right
+  now.** An element below the fold, or in an unscrolled panel, was
+  completely invisible to the agent before — not just hard to reach, not
+  discoverable at all, even though `highlightElement` already
+  `scrollIntoView`'d before acting, so execution was never actually the
+  problem. Fixed by ranking candidates by distance from the current
+  viewport (0 for on-screen) instead of dropping anything outside it —
+  on-screen still wins every tie, off-screen fills whatever room is left
+  under the cap (bumped 40 → 50, still under `CopilotRequestSchema`'s 60
+  limit). A `display:none` element (an all-zero rect) is still excluded —
+  that's "not rendered," a different question from "off-screen." First
+  real unit tests for this file (it had none): 6 cases covering ranking,
+  the display:none exclusion, and cap behavior.
+- **A real bug this surfaced, unrelated to scanning itself: Groq's own
+  structured tool calling 400'd on `text`/`steps`.** Live-testing the
+  scan fix (asking to archive an off-screen row) hit a real
+  `tool_use_failed` 400 — Groq rejected `"text": null` and
+  `"steps": null` outright, because those two fields, alone among the
+  tool schema's optional properties, were plain `"string"`/`"array"`
+  instead of the nullable-union treatment (`["string", "null"]`) every
+  *other* optional field already got, for exactly this reason, in an
+  earlier batch. A model filling in the wire schema's every declared
+  property (`null` for whichever don't apply to the verb it picked) is
+  routine, not an edge case — `text` and `steps` had just been missed.
+  Fixed in `buildVerbToolSchema`.
+- **A second, more serious bug found chasing the first: every verb
+  variant in `VerbResponseSchema` was `.strict()`, and the wire schema is
+  ONE flat object shared across all of them.** Once the fix above let
+  Groq actually return a full flat response — `{verb:"click",
+  target:"...", text:null, route:null, action:null, value:null,
+  name:null, args:null, steps:null}` — `.strict()` rejected it outright
+  as "unrecognized keys," since a `click` response's own schema only
+  ever declared `verb`/`target`/`text`. This silently degraded a working
+  tool call to "I'm not sure how to help with that" — and would have hit
+  *any* verb, not just click, any time the model filled in enough of the
+  flat schema's other fields. Fixed by giving each variant a shared
+  `COMPANION_FIELDS` spread (every other verb's fields, nullable) before
+  overriding with its own real constraints — `.strict()` still rejects a
+  genuinely unexpected key (the existing "sql: DROP TABLE users"
+  injection-defense test still passes unchanged), it just no longer
+  chokes on the other verbs' own known fields showing up as null.
+- **Verified live, the real way — not a mock:** shrank the browser
+  viewport so the "New Client" row's Archive button fell below the fold,
+  asked the widget (over real Groq) to "archive the invoice for New
+  Client," and watched a real two-step agent loop run end to end: `read`
+  the (now-discoverable) invoice table to identify the right row, then
+  `click` its Archive button — firing a real `POST
+  /api/invoices/.../archive`, confirmed by the row showing "Archived" on
+  reload. Every layer of this fix chain (viewport ranking, the nullable
+  wire fields, the companion-fields schema) was necessary for this one
+  exchange to work; any single one missing would have broken it the same
+  way it did on the first attempt.
+
 ---
 
 ## Track B — the structure graph, phase by phase

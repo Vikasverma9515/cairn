@@ -110,6 +110,74 @@ describe("safeParseVerbResponse", () => {
     });
   });
 
+  it("real bug, found live: a genuinely flat tool-call response (every wire field present, null for the ones that don't apply to this verb) still parses — not just individually-omitted fields", () => {
+    // This is exactly what Groq's structured tool calling actually sends
+    // once every declared wire property is filled in (see buildVerbToolSchema
+    // in @cairnvibe/sdk) — not a synthetic case. A blanket .strict() on each
+    // variant rejected this outright as "unrecognized keys" (route, action,
+    // value, name, args, steps aren't part of the click/read/etc shape),
+    // degrading a working click into "I'm not sure how to help with that."
+    const flatClick = {
+      verb: "click",
+      target: "archive-inv-3",
+      text: null,
+      route: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(safeParseVerbResponse(flatClick)).toEqual({ verb: "click", target: "archive-inv-3" });
+
+    const flatExplain = {
+      verb: "explain",
+      text: "There is one overdue invoice.",
+      target: null,
+      route: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(safeParseVerbResponse(flatExplain)).toEqual({ verb: "explain", text: "There is one overdue invoice." });
+
+    const flatReadAndFill = [
+      { verb: "read", target: "invoice-table", text: null, route: null, action: null, value: null, name: null, args: null, steps: null },
+      {
+        verb: "fill",
+        target: "client-name-input",
+        value: "Acme Co.",
+        text: null,
+        route: null,
+        action: null,
+        name: null,
+        args: null,
+        steps: null,
+      },
+    ];
+    expect(safeParseVerbResponse(flatReadAndFill[0])).toEqual({ verb: "read", target: "invoice-table" });
+    expect(safeParseVerbResponse(flatReadAndFill[1])).toEqual({ verb: "fill", target: "client-name-input", value: "Acme Co." });
+  });
+
+  it("still rejects a genuinely unexpected field even alongside the real companion-null pattern — the prompt-injection defense isn't weakened by tolerating known companions", () => {
+    expect(
+      safeParseVerbResponse({
+        verb: "do",
+        action: "archiveInvoice",
+        target: null,
+        text: null,
+        route: null,
+        value: null,
+        name: null,
+        args: null,
+        steps: null,
+        sql: "DROP TABLE users",
+      }),
+    ).toBeNull();
+  });
+
   it("accepts a do verb carrying a server-attached apiCall, and tolerates a null one", () => {
     // apiCall is never something the model itself emits (see server.ts's
     // resolveVerb) — it's attached after the fact, once the target's been

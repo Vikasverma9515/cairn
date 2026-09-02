@@ -130,36 +130,68 @@ const optionalBoolean = () => z.preprocess((v) => (v === null ? undefined : v), 
 /** Same null-tolerance as optionalString, for call_tool's "args" field. */
 const optionalRecord = () => z.preprocess((v) => (v === null ? undefined : v), z.record(z.string(), z.unknown()).optional());
 
+/** Same null-tolerance as optionalString, for tour's "steps" field acting as
+ * a bystander companion on every OTHER verb (see COMPANION_FIELDS below) —
+ * the tour variant itself overrides this with the real, constrained array
+ * schema. */
+const optionalUnknownArray = () => z.preprocess((v) => (v === null ? undefined : v), z.array(z.unknown()).optional());
+
+// Every field ANY verb variant might carry, defaulted to "not applicable to
+// this verb" (null or omitted). Found live: the wire schema
+// (buildVerbToolSchema in server.ts) is ONE flat object shared across every
+// verb, so a provider's structured/strict tool calling (verified against
+// real Groq responses) routinely fills in EVERY declared property, `null`
+// for whichever ones don't apply to the verb it actually picked — e.g. a
+// real `click` response arrived as `{verb:"click", target:"...", text:null,
+// route:null, action:null, value:null, name:null, args:null, steps:null}`.
+// Each variant below spreads this in, then overrides only the field(s) that
+// are REAL for that verb with their true constraint — so `.strict()` still
+// rejects a genuinely unexpected key (an injection probe like `sql:
+// "DROP TABLE users"`, still covered by the test below), while the OTHER
+// verbs' own fields, always literal null on the wire, no longer sink an
+// otherwise-valid response one layer after Groq's own wire schema was fixed
+// to accept them (buildVerbToolSchema's nullableString/steps).
+const COMPANION_FIELDS = {
+  text: optionalString(),
+  target: optionalString(),
+  route: optionalString(),
+  action: optionalString(),
+  value: optionalString(),
+  name: optionalString(),
+  args: optionalRecord(),
+  steps: optionalUnknownArray(),
+};
+
 export const VerbResponseSchema = z.discriminatedUnion("verb", [
-  z.object({ verb: z.literal("explain"), text: z.string().min(1) }).strict(),
+  z.object({ ...COMPANION_FIELDS, verb: z.literal("explain"), text: z.string().min(1) }).strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("highlight"),
       target: z.string().min(1),
-      text: optionalString(),
     })
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("open"),
       target: z.string().min(1),
-      text: optionalString(),
     })
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("navigate"),
       route: z.string().min(1),
-      text: optionalString(),
     })
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("do"),
       action: z.string().min(1),
       /** What the action applies to, e.g. a manifest element id. Not every action needs one. */
       target: optionalString(),
-      text: optionalString(),
       /**
        * Never set by the model — the tool schema sent to the LLM has no
        * such field. Attached server-side, in resolveVerb, only after the
@@ -175,6 +207,7 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("tour"),
       /**
        * A guided walkthrough: each step is spoken/shown in order, highlighting
@@ -210,33 +243,33 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
   // never invented, same invariant every other verb already holds.
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("click"),
       target: z.string().min(1),
-      text: optionalString(),
     })
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("fill"),
       target: z.string().min(1),
       value: z.string(),
-      text: optionalString(),
     })
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("read"),
       target: z.string().min(1),
-      text: optionalString(),
     })
     .strict(),
   z
     .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("call_tool"),
       /** A tool name from this turn's webMcpTools list — never invented. */
       name: z.string().min(1),
       args: optionalRecord(),
-      text: optionalString(),
     })
     .strict(),
 ]);

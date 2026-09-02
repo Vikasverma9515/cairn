@@ -373,7 +373,7 @@ function isOutputParseFailure(err: unknown): boolean {
 
 const VERB_TOOL_DESCRIPTION = "Respond with exactly one action for the UI to take. Never invent selectors, routes, or code.";
 
-function buildVerbToolSchema(registeredActions: string[]): Record<string, unknown> {
+export function buildVerbToolSchema(registeredActions: string[]): Record<string, unknown> {
   // Every genuinely-optional field allows `null` as well as its real type
   // (`["string", "null"]`, not just `"string"`) — found live, not
   // theoretical: real models (verified against Groq's openai/gpt-oss-120b)
@@ -392,7 +392,7 @@ function buildVerbToolSchema(registeredActions: string[]): Record<string, unknow
     type: "object",
     properties: {
       verb: { type: "string", enum: [...VERBS] },
-      text: { type: "string", description: "Shown to the user. Required for explain." },
+      text: nullableString("Shown to the user. Required for explain. null (or omitted) if not applicable."),
       target: nullableString(
         "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read. For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. null (or omitted) if not applicable.",
       ),
@@ -411,9 +411,9 @@ function buildVerbToolSchema(registeredActions: string[]): Record<string, unknow
         description: "For call_tool — the arguments object, matching that tool's own inputSchema. null (or omitted) if the tool takes none.",
       },
       steps: {
-        type: "array",
+        type: ["array", "null"],
         description:
-          "Required for tour, 2-6 items. Each step is spoken/shown in order while highlighting its target (if any) — use this instead of explain when the answer genuinely covers several distinct elements, so the user sees what's being talked about instead of reading a wall of text.",
+          "Required for tour, 2-6 items. Each step is spoken/shown in order while highlighting its target (if any) — use this instead of explain when the answer genuinely covers several distinct elements, so the user sees what's being talked about instead of reading a wall of text. null (or omitted) if not applicable.",
         items: {
           type: "object",
           properties: {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Manifest } from "@cairnvibe/core";
+import { VerbResponseSchema, type Manifest } from "@cairnvibe/core";
 import {
   AnthropicVerbLLM,
   GroqVerbLLM,
+  buildVerbToolSchema,
   createCopilotHandlerWithLLM,
   type GroqLikeClient,
   type MessagesClient,
@@ -581,5 +582,37 @@ describe("GroqVerbLLM", () => {
     await llm.respond("s", "u");
     await llm.respond("s", "u");
     expect(seenKeys).toEqual(["key-a", "key-b", "key-a"]);
+  });
+});
+
+describe("buildVerbToolSchema", () => {
+  it("real bug, found live: text and steps must be nullable like every other optional field — Groq's own structured tool calling 400s otherwise", () => {
+    // Groq's own request: `parameters for tool respond_with_verb did not
+    // match schema: errors: [\`/text\`: expected string, but got null,
+    // \`/steps\`: expected array, but got null]` — the model reasonably fills
+    // every declared wire property, null for the ones that don't apply
+    // (target/route/action/etc. already got this treatment; text and steps
+    // hadn't).
+    const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown }> };
+    expect(schema.properties.text.type).toEqual(["string", "null"]);
+    expect(schema.properties.steps.type).toEqual(["array", "null"]);
+  });
+
+  it("a genuinely flat response — every wire property present, matching what Groq's structured tool calling actually sends — round-trips through VerbResponseSchema", () => {
+    const flat = {
+      verb: "click",
+      target: "archive-inv-3",
+      text: null,
+      route: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(VerbResponseSchema.safeParse(flat)).toEqual({
+      success: true,
+      data: { verb: "click", target: "archive-inv-3" },
+    });
   });
 });
