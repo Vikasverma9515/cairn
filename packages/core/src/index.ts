@@ -403,6 +403,37 @@ export function safeParseVerbResponse(data: unknown): VerbResponse | null {
   return result.success ? result.data : null;
 }
 
+/**
+ * Phase 3 step 5 — the Talker's real event stream ("Revisable by
+ * Design"'s pattern, research item #4 in the plan): an append-only,
+ * typed event a Talker-style narration layer consumes as a PURE
+ * downstream projection, never blocking or blocked by the agent loop
+ * that emits them. Defined here (not plan.ts) specifically because it
+ * needs VerbResponseSchema, already defined above in this same file —
+ * plan.ts deliberately avoids importing from here at all, since index.ts
+ * re-exports plan.ts and a two-way import would be a real circular-
+ * dependency risk (see plan.ts's own doc comment).
+ * - "act": a real verb about to execute, already past any abort check —
+ *   emitted only for a step that's actually going to happen.
+ * - "obs": a real step's result arrived — `ok` means a real observation
+ *   came back at all (vs. a timeout/no-result), NOT that the underlying
+ *   action itself succeeded (a "could not find that element" miss is
+ *   still a real, arrived observation, `ok: true`) — don't conflate the
+ *   two; a step's own success/failure lives in the observation text.
+ * - "thk": Planner/Critic reasoning, narrated (e.g. the Critic's own
+ *   `reasoning` on a verdict) — internal-only until a caller chooses to
+ *   surface it.
+ * - "inj": injected filler narration — e.g. today's rotating Talker ack
+ *   phrase, now emitted as a real event instead of an inline side effect.
+ */
+export const AgentEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("act"), verb: VerbResponseSchema, at: z.number() }),
+  z.object({ type: z.literal("obs"), observation: z.string(), ok: z.boolean(), at: z.number() }),
+  z.object({ type: z.literal("thk"), text: z.string(), at: z.number() }),
+  z.object({ type: z.literal("inj"), text: z.string(), at: z.number() }),
+]);
+export type AgentEvent = z.infer<typeof AgentEventSchema>;
+
 // Planner/Progress types (Phase 3 — see plan.ts's own doc comment for why
 // this is a plain re-export, not inlined here: avoids a circular import).
 export * from "./plan";

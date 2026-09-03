@@ -1744,6 +1744,114 @@ the existing test coverage.
   scope (see the scoping note above), a real, named follow-up if this
   ever proves worth doing for the single-step case too.
 
+### Step 5: the Talker event stream — the last step of Phase 3
+
+The last step in the currently-approved Phase 3 build order. "Revisable
+by Design"'s pattern (research item #4): an append-only, typed event
+stream a narration layer consumes as a pure downstream projection, never
+blocking or blocked by the agent loop that emits the events.
+
+**Built:**
+- `packages/core/src/index.ts` — `AgentEventSchema`
+  (`act`/`obs`/`thk`/`inj`, discriminated on `type`). Defined here, not
+  `plan.ts`, specifically because `act` needs the already-defined
+  `VerbResponseSchema` — `plan.ts` deliberately avoids importing from
+  `index.ts` at all (a real circular-dependency risk, since `index.ts`
+  re-exports `plan.ts`), so this schema lives wherever it can actually
+  use what it needs without introducing that cycle. `obs`'s `ok` field
+  means "a real observation arrived" (vs. a timeout/no-result) — **not**
+  "the underlying action succeeded"; documented explicitly so it's never
+  misread as a success/failure flag (a real miss like "could not find
+  that element" is still `ok: true` — the step genuinely completed and
+  produced a real result, it just wasn't a successful one).
+- `packages/sdk/src/agent-loop.ts` — `driveAgentLoop` gained an optional
+  `onEvent` hook. The driver itself emits `act` (right after a step's own
+  `onStep` abort check passes — never for a discarded/aborted verb) and
+  `obs` (right after `onStepResult`'s own abort check passes — never for
+  a discarded observation), since it already has that data at exactly
+  those points. `thk`/`inj` stay caller-emitted: a caller's `onStep`/
+  `runCritic` closures share the same plain `onEvent` callback reference
+  (via a local `emitEvent` function captured in the same outer scope,
+  not routed back through `deps` itself) to emit Critic reasoning or
+  filler narration — `driveAgentLoop` has no opinion on those event
+  kinds, it only carries them through.
+- `realtime-server.ts`'s `finalizeTurn` — the existing ack mechanism
+  genuinely migrated to be an event consumer: `onStep` now emits a real
+  `{type: "inj", text: ACK_PHRASES[...]}` event instead of directly
+  calling `speakStreamed(...)`; a small `emitEvent` function (this
+  transport's own minimal Talker projection) is what actually turns an
+  `inj` event into the real `speakStreamed()` call and sets `ackPromise`
+  — same real sequencing/timing as before, just reached through a real
+  event instead of an inline side effect buried inside `onStep`. The
+  Critic's own `resolveCritic` call now also emits a real `thk` event
+  carrying its `reasoning` — not narrated to the user yet (logged, not
+  spoken), a real, ready seam for a richer Talker to attach to later
+  without touching the loop again. `act`/`obs` aren't consumed for
+  anything user-facing either, same reasoning — this step builds the
+  real stream and a real (if currently minimal) consumer, not a fuller
+  narration UI nothing has asked for yet.
+- The typed/HTTP transport (`index.tsx`) is **not** wired to `onEvent` at
+  all this step — a real, honest scoping call, not an oversight: there's
+  no Plan/Critic wiring on that transport (steps 2-3's own deferred wire-
+  contract dependency, still unresolved), so there would be no real
+  `thk` events to project there yet, and the typed loop has no ack
+  mechanism to migrate in the first place. Wiring `onEvent` there today
+  would only ever emit `act`/`obs` with nothing meaningful consuming
+  them — deferred until there's a real reason to, not built speculatively.
+
+**Tests:** `index.test.ts` (in `@cairnvibe/core`) gained 6 for
+`AgentEventSchema` — all four real variants validating, an invented
+event type rejected, and confirming the discriminated union still
+enforces the real embedded `VerbResponseSchema` on `act` (not just its
+own top-level shape). `agent-loop.test.ts` gained 5: `act`-then-`obs`
+ordering for a real continuing step: `ok: false`'s real semantics (fires
+even on a null/undefined executeStep result — "a result arrived," not
+"the action succeeded"); `act` never fires for an `onStep`-aborted step;
+`obs` never fires for an `onStepResult`-aborted step; and a caller's own
+`onStep`/`runCritic` closures genuinely emitting `inj`/`thk` through the
+same shared callback. All 14 of `realtime-server.test.ts`'s existing
+tests — including every step 1-4 test — pass **completely unmodified**,
+and (a genuinely useful side effect of the migration) their own console
+output now shows the real event stream firing correctly, in the right
+order, across every scenario shape already covered: single-step,
+multi-step advancement, batch, a Critic give-up, and the iteration-cap
+path. Full monorepo typecheck + 357-test suite passing.
+
+**Live-verified (partial, by design):** rebuilt `packages/sdk` and
+confirmed zero regression against the real running demo-app (clean
+reload, no server/console errors) — but this step's actual new code
+(the event stream, the ack's migration to an `inj`-event consumer) only
+runs on the realtime/voice transport, which the typed-transport check
+above doesn't exercise at all. A full live voice call (the fake-mic
+technique from `packages/evals`, plus a running `cairn-realtime`
+process) would be the only way to live-verify this step's real change
+end to end; judged disproportionate to set up for a change that's
+purely additive observability with no discernible effect on what the
+user actually hears — the realtime-server.test.ts suite's own real,
+scenario-shaped console output (rather than a mocked assertion alone)
+was treated as sufficient evidence the event stream fires correctly, in
+the right order, in every real shape already covered.
+
+**Pending / not yet started — Phase 3 build order complete, real
+follow-ups tracked honestly:**
+- The typed/HTTP transport's Plan/Critic/event wiring — the SAME
+  deferred wire-contract dependency named in steps 2, 3, and now this
+  one too. A real, concrete piece of follow-up work, not three separate
+  gaps — one wire-contract change (`{verb, plan?, progress?}` on
+  `CopilotRequestSchema`/the copilot response, additive per the plan's
+  own backward-compatibility risk analysis) would close all three at once.
+- A full live voice-call verification of this step's real change,
+  blocked on setup complexity rather than any known issue.
+- `thk`/`act`/`obs` events aren't narrated/surfaced to the user anywhere
+  yet — logged only. A richer Talker (a real status-text projection on
+  the typed transport per the plan's own optional suggestion; genuine
+  narration of Critic reasoning on voice) is real, valuable follow-up
+  work, deliberately not built speculatively in this step.
+- This closes Phase 3's 5-step build order as approved. Per the original
+  plan, Phases 2/4/5 (voice architecture upgrade, deep runtime context,
+  memory) each get their own focused plan-and-approval pass when picked
+  up next — none started.
+
 ---
 
 ## Track B — the structure graph, phase by phase

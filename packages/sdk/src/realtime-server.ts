@@ -27,7 +27,7 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { HistoryTurn, LiveElement, Manifest, Plan, ProgressLedger, VerbResponse, WebMcpTool } from "@cairnvibe/core";
+import type { AgentEvent, HistoryTurn, LiveElement, Manifest, Plan, ProgressLedger, VerbResponse, WebMcpTool } from "@cairnvibe/core";
 import { driveAgentLoop, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import {
   buildSystemPrompt,
@@ -451,6 +451,35 @@ async function finalizeTurn(
   // handling instead of queuing cleanly.
   let ackPromise: Promise<void> | null = null;
 
+  // Phase 3 step 5 — the Talker's real event stream ("Revisable by
+  // Design"'s pattern): a pure, fire-and-forget consumer, never awaited
+  // by driveAgentLoop, never able to affect its control flow. This
+  // realtime transport's own Talker projection is intentionally small —
+  // the only event type it currently DOES anything with is "inj" (the
+  // ack phrase), which it turns into the same real speakStreamed() call
+  // as before, just reached through a real event instead of an inline
+  // side effect inside onStep. "act"/"obs"/"thk" events flow through the
+  // same stream (driveAgentLoop already emits act/obs on its own; the
+  // Critic below emits a real "thk" with its own reasoning) but aren't
+  // consumed for anything yet — logged, not narrated, a real seam for a
+  // future richer Talker to attach to without touching the loop again.
+  function emitEvent(event: AgentEvent): void {
+    switch (event.type) {
+      case "inj":
+        ackPromise = speakStreamed(event.text);
+        return;
+      case "act":
+        console.log("[cairn talker] act:", summarizeVerbForHistory(event.verb));
+        return;
+      case "obs":
+        console.log("[cairn talker] obs:", event.observation);
+        return;
+      case "thk":
+        console.log("[cairn talker] thk:", event.text);
+        return;
+    }
+  }
+
   // Phase 3 steps 2-3 — kicked off on the SAME lazy gate as the ack
   // above (only once a turn has already revealed it needs more than one
   // step); real Plan/Progress state the Critic (below) actually acts on,
@@ -496,7 +525,10 @@ async function finalizeTurn(
           // air for however long the real multi-step answer takes.
           // Single-step turns (the common case) never reach this branch
           // at all, so they keep today's latency exactly as it is.
-          ackPromise = speakStreamed(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
+          // Emitted as a real "inj" event now (step 5), consumed by
+          // emitEvent above — same real speakStreamed() call, reached
+          // through the event stream instead of an inline side effect.
+          emitEvent({ type: "inj", text: ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)], at: Date.now() });
           if (planLLM) planPromise = resolvePlan(planLLM, transcript);
         }
         return false;
@@ -506,6 +538,7 @@ async function finalizeTurn(
       // around again instead of ending the turn.
       executeStep: () => waitForToolResult(),
       onStepResult: () => myGeneration !== getGeneration(),
+      onEvent: emitEvent,
       runCritic:
         planLLM && criticLLM
           ? async ({ verb, observation }) => {
@@ -525,6 +558,12 @@ async function finalizeTurn(
               const currentProgress = progress!;
               const currentTask = plan.tasks[currentProgress.currentTaskIndex];
               const verdict = await resolveCritic(criticLLM, currentTask, transcript, verb, observation);
+              // A real "thk" event — the Critic's own reasoning, narrated
+              // onto the same event stream the ack/act/obs events already
+              // flow through (not spoken today, just carried — see
+              // emitEvent's own doc comment on why that's a deliberate,
+              // small v1 scope).
+              emitEvent({ type: "thk", text: verdict.reasoning, at: Date.now() });
 
               if (verdict.verdict === "task_complete") {
                 currentTask.status = "done";

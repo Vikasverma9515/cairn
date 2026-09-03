@@ -19,7 +19,7 @@
 // built-ins) — imported as raw source by index.tsx's browser bundle AND
 // compiled to dist/ for realtime-server.ts's Node build.
 
-import { TERMINAL_VERBS, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
+import { TERMINAL_VERBS, type AgentEvent, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
 
 /** 4 exchanges — matches the cap both original drivers independently used. */
 export const MAX_HISTORY_TURNS = 8;
@@ -109,6 +109,21 @@ export interface AgentLoopDeps {
    * Critic on a particular step without a special no-op verdict shape.
    */
   runCritic?(event: AgentLoopStepResultEvent): Promise<CriticVerdict | null | undefined>;
+  /**
+   * Phase 3 step 5 — a pure, fire-and-forget event consumer for a
+   * Talker-style narration layer ("Revisable by Design"'s pattern):
+   * never awaited, never able to affect control flow. driveAgentLoop
+   * itself emits "act" (right after a step's onStep/abort check passes —
+   * only for a verb that's actually going to execute, never a discarded
+   * one) and "obs" (right after onStepResult's own abort check passes),
+   * since it already has that data at exactly those points. A caller's
+   * own onStep/runCritic closures can call this SAME callback directly —
+   * it's just a plain reference they already have via the deps object
+   * they constructed — to emit "thk" (Critic reasoning) or "inj"
+   * (injected filler narration, e.g. a Talker ack phrase) events too;
+   * driveAgentLoop has no opinion on those.
+   */
+  onEvent?(event: AgentEvent): void;
   /** Defaults to 6 — a hard cap, not a target, matching both original drivers. */
   maxIterations?: number;
 }
@@ -141,6 +156,7 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
       const abort = await deps.onStep({ verb, iteration: i, terminal });
       if (abort) return { outcome: "aborted", workingHistory: loopHistory };
     }
+    deps.onEvent?.({ type: "act", verb, at: Date.now() });
 
     if (terminal) {
       return { outcome: "terminal", finalVerb: verb, workingHistory: loopHistory };
@@ -151,6 +167,7 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
       const abort = await deps.onStepResult({ verb, iteration: i, observation });
       if (abort) return { outcome: "aborted", workingHistory: loopHistory };
     }
+    deps.onEvent?.({ type: "obs", observation: observation ?? "no result", ok: observation !== null && observation !== undefined, at: Date.now() });
 
     loopHistory = [
       ...loopHistory,

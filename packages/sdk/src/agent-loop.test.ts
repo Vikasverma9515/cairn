@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { driveAgentLoop, summarizeVerbForHistory } from "./agent-loop";
-import type { CriticVerdict, HistoryTurn, VerbResponse } from "@cairnvibe/core";
+import type { AgentEvent, CriticVerdict, HistoryTurn, VerbResponse } from "@cairnvibe/core";
 
 function verdict(kind: CriticVerdict["verdict"], reasoning = "test"): CriticVerdict {
   return { verdict: kind, reasoning };
@@ -266,6 +266,91 @@ describe("driveAgentLoop", () => {
         },
       });
       expect(seenObservationInCritic).toBe("the real click result");
+    });
+  });
+
+  describe("onEvent (Phase 3 step 5 — the Talker's event stream)", () => {
+    it("emits a real 'act' event for a continuing step, then a real 'obs' event once its observation arrives — in that order", async () => {
+      const events: AgentEvent[] = [];
+      let call = 0;
+      await driveAgentLoop([], {
+        getNextStep: async () => {
+          call++;
+          return call === 1 ? { verb: "click", target: "archive-btn" } : { verb: "explain", text: "done" };
+        },
+        executeStep: async () => "Clicked it.",
+        onEvent: (e) => events.push(e),
+      });
+      expect(events[0]).toMatchObject({ type: "act", verb: { verb: "click", target: "archive-btn" } });
+      expect(events[1]).toMatchObject({ type: "obs", observation: "Clicked it.", ok: true });
+      expect(events[2]).toMatchObject({ type: "act", verb: { verb: "explain", text: "done" } });
+      // The terminal verb ends the loop right after its own "act" event — no "obs" follows it, since it's never executed as a step.
+      expect(events).toHaveLength(3);
+    });
+
+    it("real 'ok: false' semantics: 'obs' still fires (a real observation arrived) even when executeStep returns null/undefined — 'ok' means 'a result arrived', not 'the underlying action succeeded'", async () => {
+      const events: AgentEvent[] = [];
+      let call = 0;
+      await driveAgentLoop([], {
+        getNextStep: async () => {
+          call++;
+          return call === 1 ? { verb: "read", target: "x" } : { verb: "explain", text: "done" };
+        },
+        executeStep: async () => undefined,
+        onEvent: (e) => events.push(e),
+      });
+      const obsEvent = events.find((e) => e.type === "obs");
+      expect(obsEvent).toMatchObject({ type: "obs", observation: "no result", ok: false });
+    });
+
+    it("never emits 'act' for a step that onStep aborted — an aborted step never really happened", async () => {
+      const events: AgentEvent[] = [];
+      await driveAgentLoop([], {
+        getNextStep: async () => ({ verb: "click", target: "x" }),
+        onStep: () => true,
+        executeStep: async () => "unused",
+        onEvent: (e) => events.push(e),
+      });
+      expect(events).toHaveLength(0);
+    });
+
+    it("never emits 'obs' for a step whose result onStepResult aborted — a discarded observation was never really folded in", async () => {
+      const events: AgentEvent[] = [];
+      await driveAgentLoop([], {
+        getNextStep: async () => ({ verb: "click", target: "x" }),
+        executeStep: async () => "real result",
+        onStepResult: () => true,
+        onEvent: (e) => events.push(e),
+      });
+      expect(events).toEqual([{ type: "act", verb: { verb: "click", target: "x" }, at: expect.any(Number) }]);
+    });
+
+    it("a caller's own onStep/runCritic closures can emit their own 'inj'/'thk' events through the same shared callback — driveAgentLoop has no opinion on those, it just carries them through", async () => {
+      const events: AgentEvent[] = [];
+      // Mirrors the real shape a transport (e.g. realtime-server.ts) uses:
+      // a single local emitEvent function, referenced directly by
+      // onStep/runCritic AND passed as onEvent — not routed back through
+      // deps itself, which has no sibling access between its own fields.
+      const emitEvent = (e: AgentEvent) => events.push(e);
+      let call = 0;
+      await driveAgentLoop([], {
+        getNextStep: async () => {
+          call++;
+          return call === 1 ? { verb: "click", target: "x" } : { verb: "explain", text: "done" };
+        },
+        onStep: ({ iteration, terminal }) => {
+          if (!terminal && iteration === 0) emitEvent({ type: "inj", text: "Let me check that for you.", at: Date.now() });
+          return false;
+        },
+        executeStep: async () => "v",
+        runCritic: async () => {
+          emitEvent({ type: "thk", text: "Real progress, not done yet.", at: Date.now() });
+          return verdict("continue");
+        },
+        onEvent: emitEvent,
+      });
+      expect(events.some((e) => e.type === "inj" && e.text === "Let me check that for you.")).toBe(true);
+      expect(events.some((e) => e.type === "thk" && e.text === "Real progress, not done yet.")).toBe(true);
     });
   });
 });
