@@ -453,6 +453,45 @@ describe("executeVerbResponse", () => {
     }
   });
 
+  it("Phase 3 step 4, real positive case: a batch action's target isn't found on the first lookup but becomes available during the bounded retry (a real re-render) — the batch action still succeeds instead of stopping the whole batch on a transient miss", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      const opts = makeOptions();
+      const el = fakeElement();
+      const el2 = fakeElement();
+      // archive-btn-2 is present from the start (BatchActionSchema
+      // requires >= 2 actions, so a second, unrelated real step rounds
+      // this out realistically); archive-btn itself is missing at the
+      // start — simulates it not yet being in this turn's frozen
+      // liveElements snapshot — then populated shortly after, during
+      // findElementWithRetry's own real wait, simulating a re-render
+      // finishing.
+      const liveElements = new Map<string, any>([["archive-btn-2", el2]]);
+      setTimeout(() => liveElements.set("archive-btn", el), 10);
+
+      executeVerbResponse(
+        {
+          verb: "batch",
+          actions: [
+            { verb: "click", target: "archive-btn" },
+            { verb: "click", target: "archive-btn-2" },
+          ],
+        },
+        "/invoices",
+        { ...opts, liveElements },
+      );
+
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled(), { timeout: 2000 });
+      expect(el.click).toHaveBeenCalledTimes(1);
+      expect(el2.click).toHaveBeenCalledTimes(1); // the batch continued past the first (recovered) step
+      const result = opts.onToolStep.mock.calls[0][0];
+      expect(result.ok).toBe(true);
+      expect(result.observation).toContain("Clicked it.");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("executeToolStep: resolves with the real observation for a synchronous step (click)", async () => {
     vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
     try {

@@ -40,6 +40,33 @@ export function findElement(target: string, liveElements?: Map<string, HTMLEleme
   return null;
 }
 
+/**
+ * Phase 3 step 4 (see DEVELOPMENT.md/the plan file) — CODA's own point:
+ * the Executor gets real local retry latitude for a genuinely MECHANICAL
+ * miss (a re-render replaced the DOM node the frozen liveElements snapshot
+ * pointed at; an animation/async render hadn't settled yet) before a
+ * failure escalates all the way to the Critic/a replan. Deliberately NOT
+ * a second LLM call — the Executor stays opinion-free, exactly re-running
+ * the SAME real lookup (which, past the liveElements-map check, already
+ * queries the LIVE DOM directly — a stale snapshot doesn't matter to that
+ * part) after a short real wait. A target that's genuinely not on the
+ * page still fails after `attempts`, surfacing as a real miss — this
+ * never silently invents success.
+ */
+export async function findElementWithRetry(
+  target: string,
+  liveElements?: Map<string, HTMLElement>,
+  attempts = 2,
+  delayMs = 300,
+): Promise<HTMLElement | null> {
+  for (let i = 0; i < attempts; i++) {
+    const el = findElement(target, liveElements);
+    if (el) return el;
+    if (i < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return null;
+}
+
 export function highlightElement(el: HTMLElement, glowMs = 4000): void {
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.add("cairn-glow");

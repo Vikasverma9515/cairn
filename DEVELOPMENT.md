@@ -1657,6 +1657,93 @@ commit notes: a batch of 2 clicks succeeding). Two real checks:
   grounding for the Critic is a real, named enhancement opportunity for
   later, not implemented here.
 
+### Step 4: Executor local retry — bounded, LLM-free recovery
+
+CODA's own point (research item #4 in the plan): the Executor should get
+real local retry latitude for a genuinely MECHANICAL miss before a
+failure escalates all the way to the Critic/a replan — never a second
+LLM call, since that would blur the clean "who has an opinion" boundary
+step 3 just established.
+
+**Built:**
+- `packages/sdk/src/element-ladder.ts` — `findElementWithRetry(target,
+  liveElements, attempts=2, delayMs=300)`, a thin, bounded wrapper around
+  the existing `findElement`: on a miss, waits once and tries again
+  (never more than `attempts` times) before giving up for real. Past the
+  `liveElements` map's own exact-match check, `findElement` already
+  queries the LIVE DOM directly (`document.querySelector` on data-ai/
+  aria-label/role/text) — a stale frozen snapshot doesn't matter to that
+  half, which is what makes a plain re-try (not a fresh scan) a real fix
+  for a re-render that swapped the DOM node the snapshot pointed at, or
+  an animation/async render that hadn't settled yet on the first look.
+- `packages/sdk/src/verb-executor.ts`'s `executeOneBatchAction` — the
+  three DOM-touching batch actions (click/fill/read) now call
+  `findElementWithRetry` instead of the bare, single-shot `findElement`.
+  **Deliberately scoped to batch only**, matching the plan's own build
+  order precisely — batch's later steps are the ones most likely to race
+  a DOM update an earlier step in the SAME batch just triggered, which is
+  exactly the case this recovers from. Single-step click/fill/read
+  (`dispatchVerb`) stay untouched on purpose: they're currently
+  synchronous, and converting them to the same async-retry shape would
+  have broken every existing test that asserts `onToolStep` fired
+  immediately, for a benefit (retry on a single, not-batched step) the
+  plan never actually asked for — real scope discipline, not an
+  oversight.
+
+**Tests:** `element-ladder.test.ts` (new, 4 tests) covers the retry
+helper in real isolation — the two the plan's own verification section
+explicitly calls for (a real transient miss recovering once the element
+becomes available during the wait; a genuinely broken target still
+failing after all attempts, never masked as success), plus a
+no-added-latency check for the common already-found case and a bounded-
+attempts check. `verb-executor.test.ts` gained 1 real integration-level
+test proving the SAME positive case through the actual batch dispatch
+path (not just the helper in isolation): a 2-action batch where the
+first target is missing at the start and appears mid-retry — the batch
+recovers and continues to its second, unrelated step, instead of
+stopping the whole batch on what was really just a timing miss. All 31
+pre-existing `verb-executor.test.ts` tests still pass **completely
+unmodified** (one, the deliberate-miss "stops at first failure" test,
+now correctly takes ~300ms longer — the real, expected cost of one bounded
+retry wait before a genuine miss gives up, not a regression). Full
+monorepo typecheck + 346-test suite passing.
+
+**Real bug found and fixed while writing this step's own first test**:
+`BatchActionSchema` requires a minimum of 2 actions (`z.array(...).min(2)`)
+— an early draft of the new positive-case test used a single-action
+batch, which silently failed schema validation and degraded to the
+generic `FALLBACK_TEXT` explain path instead of ever reaching the batch
+dispatcher at all (no thrown error, no test failure signal beyond
+`onToolStep` mysteriously never firing). Reproduced and isolated outside
+vitest entirely (a standalone tsx script) before finding the real cause,
+rather than guessing at the new retry code — fixed by rewriting the test
+with a realistic 2-action batch, matching how a real multi-click batch
+actually looks.
+
+**Live-verified (partial):** rebuilt `packages/sdk` and attempted a real
+"archive both invoices" request against a live demo-app and Cairn's real
+Groq-backed agent (the exact real multi-step/batch shape this step
+targets) — 2 real `/api/copilot` round trips completed before hitting
+the SAME Groq daily-token-quota exhaustion already documented in steps
+1-3 (`rate_limit_exceeded`, this time with a ~16-minute retry window) —
+an environmental constraint, not a regression from this change (confirmed
+via the real server error log). The retry mechanism's own correctness is
+proven at the unit/integration level above; a full live re-verification
+of the batch-recovery path specifically is worth doing once quota
+recovers, but wasn't required to ship this step given the precision of
+the existing test coverage.
+
+**Pending / not yet started:**
+- A full live re-verification of the batch retry path specifically,
+  blocked on the same Groq quota constraint — not a correctness gap, a
+  verification-depth gap honestly tracked.
+- Step 5 of Phase 3's build order (the Talker event stream) — not
+  started; this is also the LAST step in the currently-approved Phase 3
+  plan.
+- Single-step (non-batch) click/fill/read retry — deliberately out of
+  scope (see the scoping note above), a real, named follow-up if this
+  ever proves worth doing for the single-step case too.
+
 ---
 
 ## Track B — the structure graph, phase by phase

@@ -6,7 +6,7 @@
 // enforces the same schema independently — never trust the client alone.
 
 import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { findElement, fillElement, highlightElement, logMiss, readElement, type MissContext } from "./element-ladder";
+import { findElement, findElementWithRetry, fillElement, highlightElement, logMiss, readElement, type MissContext } from "./element-ladder";
 import { executeWebMcpTool } from "./webmcp-client";
 
 /** The real result of one agent-loop step (click/fill/read/call_tool, or a
@@ -263,10 +263,19 @@ async function executeBatchActions(
   return { ok: true, observation: steps.join(" | ") };
 }
 
+// Phase 3 step 4 — real, bounded, LLM-free retry latitude for the
+// Executor's own lookups (CODA's own point: the Executor stays
+// opinion-free; anything requiring judgment escalates to the Critic,
+// which now genuinely exists as of step 3). Scoped to batch specifically,
+// per the plan's own build order — a batch's later steps are the ones
+// most likely to race a DOM update the batch's OWN earlier step just
+// triggered, which is exactly the "stale re-render" case this recovers
+// from; single-step click/fill/read stay unchanged (findElement, no
+// retry) rather than widening scope beyond what was actually planned.
 async function executeOneBatchAction(action: BatchAction, route: string, options: VerbExecutorOptions): Promise<{ ok: boolean; observation: string }> {
   switch (action.verb) {
     case "click": {
-      const el = findElement(action.target, options.liveElements);
+      const el = await findElementWithRetry(action.target, options.liveElements);
       if (!el) {
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
         return { ok: false, observation: "Could not find that element on the page." };
@@ -276,7 +285,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       return { ok: true, observation: "Clicked it." };
     }
     case "fill": {
-      const el = findElement(action.target, options.liveElements);
+      const el = await findElementWithRetry(action.target, options.liveElements);
       if (!el || !fillElement(el, action.value)) {
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
         return {
@@ -288,7 +297,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       return { ok: true, observation: `Typed "${action.value}" into it.` };
     }
     case "read": {
-      const el = findElement(action.target, options.liveElements);
+      const el = await findElementWithRetry(action.target, options.liveElements);
       if (!el) {
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
         return { ok: false, observation: "Could not find that element on the page." };
