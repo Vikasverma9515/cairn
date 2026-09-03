@@ -614,7 +614,54 @@ describe("GroqVerbLLM", () => {
     expect(attempt).toBe(2);
   });
 
-  it("does NOT retry (propagates immediately) for an unrelated error — only output_parse_failed gets the one-time retry", async () => {
+  it("real bug this specifically closes, found live running the eval harness's synthetic-voice scenario: retries once when the model hallucinates a slightly-wrong tool name instead of the real one it was actually given", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            if (attempt === 1) {
+              // The exact real error this produced live — the model called
+              // "json" instead of the one real tool it was forced to use.
+              const err: any = new Error(
+                '400 {"error":{"message":"Tool call validation failed: tool call validation failed: attempted to call tool \'json\' which was not in request.tools","code":"tool_use_failed"}}',
+              );
+              err.error = { code: "tool_use_failed", message: "attempted to call tool 'json' which was not in request.tools" };
+              throw err;
+            }
+            return {
+              choices: [{ message: { tool_calls: [{ function: { name: "respond_with_verb", arguments: JSON.stringify({ verb: "explain", text: "recovered" }) } }] } }],
+            };
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "recovered" });
+    expect(attempt).toBe(2);
+  });
+
+  it("does NOT retry a tool_use_failed error unrelated to a hallucinated tool name", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            const err: any = new Error('400 {"error":{"message":"something else entirely","code":"tool_use_failed"}}');
+            err.error = { code: "tool_use_failed", message: "something else entirely" };
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).rejects.toThrow("something else entirely");
+    expect(attempt).toBe(1);
+  });
+
+  it("does NOT retry (propagates immediately) for an unrelated error — only output_parse_failed/tool_use_failed-hallucination get the one-time retry", async () => {
     let attempt = 0;
     const fakeClient: GroqLikeClient = {
       chat: {

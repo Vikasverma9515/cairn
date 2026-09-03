@@ -661,6 +661,122 @@ generated file has no Cairn import at all).
 
 ---
 
+## Foundation: an eval + playground harness, and the real voice regression it found
+
+The prior batches shipped voice changes (Talker ack, streaming TTS, the
+agent loop) an entire session without ever once hearing them run — every
+verification was a unit test with mocked STT/TTS/LLM clients, or typed-
+text testing through the widget. That's the actual root cause behind a
+real "voice keeps breaking" report: there was no harness that exercised
+the full realtime path end to end, so a regression shipped invisibly
+until a real user hit it. Before touching architecture further, built the
+thing that closes that gap — and used it immediately, live, the way it's
+meant to be used.
+
+Full research (Anthropic's multi-agent research-system writeup, this
+repo's own Track B orchestrator/agent-loop/memory code, a real-time voice
+architecture primer, and current computer-use/long-horizon GUI agent
+papers — CODA's Cerebrum/Cerebellum split, a vision-based task-completion
+judge, Agent S2/ROMA/UI-TARS/Skyvern) is in the approved plan; the
+concrete architecture direction it points to (a Planner/Executor/Critic/
+Talker redesign, a real-time streaming upgrade, deep runtime context,
+memory) is scoped as its own follow-on work, each phase getting its own
+plan-and-approval pass in turn, the same way every other piece of work in
+this file has.
+
+**`packages/evals` (new)** — a real, never-published harness:
+
+- **Playground apps** — a new node-based workflow builder
+  (`examples/demo-app`'s `/workflows`, real SQLite-backed nodes/edges,
+  the n8n-shaped genre from the plan) alongside the existing CRUD pages,
+  chosen because it stresses canvas-style multi-step, stateful goals
+  together — the combination the eventual multi-agent redesign most
+  needs to be measured against. Deliberately scoped to click/fill/select
+  interactions for now, not free-form drag-and-drop — Cairn's agent loop
+  has no "drag" verb yet, so testing that now would only re-confirm an
+  already-documented gap, not teach anything new.
+  - **A real bug found building it**: the workflow page saved a field's
+    config on `onBlur` — but `element-ladder.ts`'s `fillElement` (what a
+    real Cairn `fill` action actually does) only ever dispatches
+    `input`/`change`, never blur. A real agent-driven fill would set the
+    value and never trigger the save. Fixed by saving on `onChange`
+    instead, matching how a real fill actually happens.
+- **`runScenario()`** — launches the real playground in a real Playwright
+  browser with the real widget installed and drives a goal (plain
+  language, never a click-here instruction) through **both transports**.
+  The typed path just fills the real input and clicks Send; the voice
+  path fakes the microphone at the browser API level
+  (`navigator.mediaDevices.getUserMedia`, overridden to play back real
+  pre-synthesized speech through a `MediaStreamAudioDestinationNode`)
+  and clicks "Start realtime conversation" — Cairn's own real client
+  code (mic capture, downsampling, the WS protocol, tool execution, audio
+  playback) runs completely unmodified either way; the harness only ever
+  *observes* network round trips and real WebSocket frames, never
+  reimplements the protocol.
+- **`judgeScenario()`** — Claude as judge, scoring task success against
+  the app's own real final state (never the agent's own claim), plus
+  efficiency, correctness, safety, and (voice runs) per-stage latency
+  against the primer's stage budget.
+- **Storage + regression tracking** — every run's full trace, verdict,
+  and real per-stage latencies land in SQLite (`packages/sdk/src/
+  dashboard-sqlite.ts`'s pattern), and `npm run evals` prints a score/
+  latency diff against the previous commit's run of the same scenario —
+  what runs before any future publish from now on.
+
+**Three real bugs found building and dogfooding the harness itself — not
+in the thing being tested, in the test infrastructure, each one a genuine
+"the run silently proved nothing" failure mode:**
+
+1. **The idle-clock started before the interaction it was supposed to
+   measure.** `waitUntilQuiet`'s activity timestamp was initialized at
+   function entry, before navigation/widget-open/the actual turn — by
+   the time the wait loop ran (often already 1-2s later), it looked
+   like the run had already been quiet long enough, closing the browser
+   before the real async response ever arrived. Every early run reported
+   zero network activity captured, even though the real turn had
+   genuinely started.
+2. **A short quiet-window mistook "still waiting on the next step" for
+   "the whole loop is done."** A real two-step archive flow showed a
+   ~10s gap between its "read" and "do" round trips under real Groq
+   load; an 1.8s quiet threshold cut the run off after just the first
+   step. Raised to 15s (with a 90s hard ceiling still catching a genuine
+   hang) — found by watching a real multi-step trace complete correctly
+   only once the window was wide enough to survive the gap.
+3. **The WebSocket frame listener captured Next.js's own dev-mode HMR
+   socket instead of (or drowning out) the real cairn-realtime
+   connection**, plus a separate one where Playwright's function-
+   serialization for `addInitScript` emitted a broken `__name(...)`
+   helper reference for the fake-mic closure, throwing before
+   `getUserMedia` was ever overridden — both silently produced "zero
+   real voice activity" results that looked like a clean run instead of
+   a broken harness. Fixed by filtering out framework noise from the
+   socket listener and switching the fake-mic injection to a raw content
+   string instead of a passed function reference.
+
+**The real regression, found only once all three of the above were
+actually fixed and the harness could observe a real run to completion:**
+Groq's `openai/gpt-oss-120b` intermittently hallucinates a slightly-wrong
+tool name — `"json"`, `"response_with_verb"` — instead of the one real
+tool (`respond_with_verb`) it was actually forced to call. Groq's own
+server-side validation rejects that with `tool_use_failed` /
+`"attempted to call tool 'X' which was not in request.tools"` before
+`resolveVerb` ever sees a response to work with, surfacing to the user
+as a bare "Something went wrong on my end" with no other symptom — the
+exact shape of "voice keeps breaking, stops mid-way" that got reported.
+An earlier batch this session already added a retry for a *different*
+Groq failure mode (`output_parse_failed`, the model reasoning in prose
+instead of calling the tool) — this one was never covered, since the
+error code and message are genuinely different. Fixed by broadening the
+same retry (`isRetryableToolCallFailure`, `packages/sdk/src/server.ts`)
+to also cover `tool_use_failed` with a hallucinated tool name — same
+non-deterministic character as the original bug (an identical retry a
+moment later gets the real tool name right), so the same one-retry fix
+applies. Verified live: the exact synthetic-voice scenario that
+previously produced "Something went wrong on my end" now answers "You
+have three invoices" correctly, run after run.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

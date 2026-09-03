@@ -40,3 +40,12 @@ function seedIfEmpty(): void {
   insert.run("inv-1", "Acme Co.", "$1,200.00", "Paid");
   insert.run("inv-2", "Globex Inc.", "$450.00", "Overdue");
 }
+
+/** Test-utility for @cairnvibe/evals — resets to the same two seed rows
+ * seedIfEmpty starts with, so a scenario's before/after check is
+ * deterministic instead of accumulating rows across runs. Dev/eval fixture
+ * only, same as workflows.ts's resetWorkflow. */
+export function resetInvoices(): void {
+  db.prepare("DELETE FROM invoices").run();
+  seedIfEmpty();
+}

@@ -19,3 +19,21 @@ db.exec(`
     status TEXT NOT NULL
   )
 `);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workflow_nodes (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    config TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workflow_edges (
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    PRIMARY KEY (from_id, to_id)
+  )
+`);

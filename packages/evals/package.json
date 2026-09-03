@@ -1,0 +1,27 @@
+{
+  "name": "@cairnvibe/evals",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cairn's own eval + playground harness — never published. Runs real scenarios (typed and synthetic-voice) against real playground apps in a real browser, scores them with Claude as judge, and tracks results over time so a regression is caught before publish, not after.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "evals": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@cairnvibe/core": "^0.1.0",
+    "@cairnvibe/sdk": "^0.2.0",
+    "better-sqlite3": "^13.0.3",
+    "playwright": "^1.62.1",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

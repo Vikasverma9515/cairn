@@ -317,18 +317,26 @@ export class GroqVerbLLM implements VerbLLM {
     try {
       return await this.attemptRespond(systemPrompt, userMessage);
     } catch (err) {
-      // Real, live bug, not theoretical: openai/gpt-oss-120b (a reasoning-
-      // capable open model) occasionally "thinks out loud" in plain prose
-      // instead of emitting the forced tool call — Groq's own server-side
-      // validation rejects that outright, a 400 with code
-      // "output_parse_failed", before this code ever sees a real response
-      // to work with. Non-deterministic (found live re-asking the exact
-      // same question a moment later succeeded cleanly), so one retry —
-      // not exponential backoff, this is a latency-sensitive voice/chat
-      // path — genuinely helps rather than just delaying the same
-      // failure. Anything else still propagates to resolveVerb's own
+      // Real, live bugs, not theoretical — two distinct non-deterministic
+      // failure modes from openai/gpt-oss-120b (a reasoning-capable open
+      // model), both rejected by Groq's own server-side validation before
+      // this code ever sees a real response to work with, and both found
+      // to recover cleanly on an identical retry a moment later:
+      //  - "output_parse_failed": the model "thinks out loud" in plain
+      //    prose instead of emitting the forced tool call.
+      //  - "tool_use_failed": the model hallucinates a slightly-wrong tool
+      //    name ("json", "response_with_verb" — seen live, both against
+      //    the real, correctly-configured VERB_TOOL_NAME) instead of the
+      //    one forced tool it was actually given. This one was the actual
+      //    cause behind a real "voice keeps breaking" report — found live
+      //    running the new eval harness's synthetic-voice scenario, where
+      //    it surfaced as "Something went wrong on my end" with no other
+      //    symptom, exactly matching what got reported.
+      // One retry — not exponential backoff, this is a latency-sensitive
+      // voice/chat path — genuinely helps rather than just delaying the
+      // same failure. Anything else still propagates to resolveVerb's own
       // catch, unchanged.
-      if (isOutputParseFailure(err)) {
+      if (isRetryableToolCallFailure(err)) {
         return await this.attemptRespond(systemPrompt, userMessage);
       }
       throw err;
@@ -371,11 +379,18 @@ export class GroqVerbLLM implements VerbLLM {
  * actually been observed to surface — a thrown APIError with a nested
  * `.error.code`, a plain `.code`, or just the code string showing up
  * somewhere in the message — rather than relying on exactly one of them. */
-function isOutputParseFailure(err: unknown): boolean {
+function isRetryableToolCallFailure(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { code?: unknown; error?: { code?: unknown }; message?: unknown };
-  if (e.code === "output_parse_failed" || e.error?.code === "output_parse_failed") return true;
-  return typeof e.message === "string" && e.message.includes("output_parse_failed");
+  const code = e.code ?? e.error?.code;
+  const message = typeof e.message === "string" ? e.message : "";
+  if (code === "output_parse_failed" || message.includes("output_parse_failed")) return true;
+  // "attempted to call tool 'json' which was not in request.tools" — the
+  // model calling a tool name it invented instead of VERB_TOOL_NAME, the
+  // only one actually offered. See respond()'s doc comment for how this
+  // was found.
+  if (code === "tool_use_failed" && message.includes("attempted to call tool")) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Bot, Compass, FileText, MessageSquare, TriangleAlert } from "lucide-react";
+import { Bot, Compass, FileText, MessageSquare, TriangleAlert, Workflow } from "lucide-react";
 import { CairnWebMcpTools } from "../components/CairnWebMcpTools";
 import { CopilotWithActions } from "../components/CopilotWithActions";
 import "../components/WebMcpPolyfill"; // demo-only shim — see that file's doc comment
@@ -30,6 +30,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           </Link>
           <Link href="/agents" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
             <Bot size={16} /> Agents
+          </Link>
+          <Link href="/workflows" className="flex items-center gap-2 font-medium text-gray-600 hover:text-gray-950">
+            <Workflow size={16} /> Workflows
           </Link>
         </nav>
         {children}

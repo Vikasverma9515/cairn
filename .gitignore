@@ -11,3 +11,6 @@ CAIRN_DOCS.md
 *.tsbuildinfo
 examples/demo-app/data/
 .vercel
+packages/evals/data/
+packages/evals/.cache/
+packages/evals/scratch-test.ts
