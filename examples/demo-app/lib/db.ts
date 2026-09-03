@@ -37,3 +37,22 @@ db.exec(`
     PRIMARY KEY (from_id, to_id)
   )
 `);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS board_columns (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    position INTEGER NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS board_cards (
+    id TEXT PRIMARY KEY,
+    column_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+`);

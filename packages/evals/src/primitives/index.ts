@@ -52,6 +52,20 @@ export const PRIMITIVES = {
     resetPath: "/api/invoices/reset",
     observePath: "/api/invoices",
   },
+  kanban: {
+    id: "kanban",
+    description: "Real columns and cards with a real move-between-columns state transition (examples/demo-app's board).",
+    capabilities: ["content-ops", "multi-step-composite"],
+    resetPath: "/api/board/reset",
+    observePath: "/api/board",
+  },
+  modal: {
+    id: "modal",
+    description: "A dynamically-opened dialog for editing an entity's details, distinct from inline page edits (examples/demo-app's board card editor).",
+    capabilities: ["content-ops"],
+    resetPath: "/api/board/reset",
+    observePath: "/api/board",
+  },
 } as const satisfies Record<string, PlaygroundPrimitive>;
 
 export type PrimitiveId = keyof typeof PRIMITIVES;
@@ -77,6 +91,12 @@ export const GENRES = {
     modeledAfter: "a generic admin/CRM data table",
     primitives: ["table-crud"],
     path: "/invoices",
+  },
+  "kanban-tracker": {
+    id: "kanban-tracker",
+    modeledAfter: "Trello/Linear (kanban board)",
+    primitives: ["kanban", "modal"],
+    path: "/board",
   },
 } as const satisfies Record<string, PlaygroundGenre>;
 

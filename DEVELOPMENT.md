@@ -1064,6 +1064,89 @@ typecheck + 284-test suite still pass.
   primitives/genres) and step 7 (simulated-user mode, policy-constraint
   scoring) — not started, per the build order.
 
+### Step 6a: kanban + modal primitives, the kanban-tracker genre
+
+Step 6 calls for 4 new primitives and 2 new genres. Split it into two
+sub-stages to keep each one a coherent, fully-verified commit — this
+entry covers the smaller half: `kanban`/`modal` and the kanban-tracker
+genre. `search-filter`/`wizard`/`auth-gate` and the marketplace genre
+are next.
+
+**Built:**
+- `examples/demo-app` gained a real kanban board (`/board`) — the same
+  real-SQLite-CRUD convention as `invoices.ts`/`workflows.ts`:
+  `lib/board.ts` (server-only), `lib/board-types.ts` (client-safe split,
+  same reasoning as `workflow-types.ts` — a "use client" component that
+  imports the server file directly bundles `better-sqlite3` and fails to
+  compile), `board_columns`/`board_cards` tables in `lib/db.ts`.
+- API routes: `GET /api/board` (observe), `POST /api/board/reset`,
+  `POST /api/board/cards` (create), `PATCH /api/board/cards/[id]`
+  (edit), `POST /api/board/cards/[id]/move` (the kanban primitive's
+  defining transition).
+- `components/BoardColumns.tsx` — real columns/cards; a card moves via
+  a `<select onChange>` (not a drag gesture) for the same reason the
+  workflow canvas favors explicit connect actions: a real, directly-
+  targetable state transition, not a pointer-drag an agent would have
+  to simulate.
+- `components/CardModal.tsx` — the modal primitive's real UI: a
+  dynamically-opened dialog (not an inline edit) for a card's
+  title/description, `data-ai`-tagged like every other interactive
+  element in this app (so it's honestly NOT also claimed as
+  `non-semantic-ui` coverage — that tag stays genuinely uncovered, see
+  below).
+- `packages/evals/src/primitives/index.ts` — `kanban` (`content-ops`,
+  `multi-step-composite`) and `modal` (`content-ops`) primitives, both
+  pointing at `/api/board`; the `kanban-tracker` genre (modeled after
+  Trello/Linear) composing them.
+- Two new real scenarios in `scenarios/index.ts`:
+  `move-kanban-card-to-done` and `add-kanban-card-description` (the
+  latter specifically exercises the modal, since the description field
+  only exists inside it) — suite grew from 7 to 9.
+
+**Tests:** `packages/evals`'s existing generic primitive/genre tests
+(id-key consistency, capability-tag validity, genre-primitive
+references) cover the two new entries with no changes needed — updated
+`scenarios/index.test.ts`'s hardcoded suite-size assertion (7 → 9). No
+new demo-app tests (it has none — the same rendering-surface reasoning
+as `packages/evals-dashboard`). Full monorepo typecheck + 284-test suite
+still pass.
+
+**Live-verified**, in a real browser against a real running demo-app:
+- Moved "Fix login bug" from In Progress to Done via the real `<select>`
+  — confirmed both in the rendered page and via a direct
+  `GET /api/board` call showing `columnId: "done"`.
+- Opened "Design homepage"'s edit modal, typed a description, saved —
+  confirmed the description persisted and rendered on the card, and via
+  `GET /api/board`, exactly matching what `add-kanban-card-description`'s
+  `verify.expectContains` checks for.
+- Reset the board back to seed state afterward via
+  `POST /api/board/reset` so the live demo-app is left clean.
+- Found and fixed a real, pre-existing environment blocker along the
+  way: the `lightningcss-darwin-arm64` native binary was missing from
+  `node_modules` (an npm optional-dependency resolution gap on this
+  machine, not something this session's own changes caused — it broke
+  `/invoices` too, a page untouched by this stage), which made
+  `examples/demo-app`'s entire Tailwind pipeline 500 on every route.
+  Installed it locally (`npm install lightningcss-darwin-arm64@1.32.0
+  --no-save`) to unblock this verification pass — deliberately
+  `--no-save`, since a platform-specific optional dependency doesn't
+  belong hand-pinned in `package.json` (it would break installs on
+  other platforms); this is a session-local workaround, not a repo fix,
+  and the same root cause is why `packages/evals-dashboard` avoided
+  Tailwind entirely when it was built.
+
+**Pending / not yet started:**
+- `search-filter`, `wizard`, `auth-gate` primitives and the marketplace
+  genre — step 6's other half.
+- Step 7 (simulated-user mode, policy-constraint scoring) — not
+  started, deliberately last per the build order.
+- The `lightningcss-darwin-arm64` gap is unresolved at the repo level —
+  a fresh `npm install` on this machine (or any machine with the same
+  gap) will very likely lose the local workaround again, since it was
+  never recorded in the lockfile. Worth a real root-cause look
+  (why did `npm install` skip an optional dependency it should have
+  resolved) if it keeps recurring, but out of scope for this stage.
+
 ---
 
 ## Track B — the structure graph, phase by phase

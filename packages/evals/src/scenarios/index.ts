@@ -16,6 +16,9 @@ const canvasReset = PRIMITIVES.canvas.resetPath;
 const canvasObserve = PRIMITIVES.canvas.observePath;
 const tableReset = PRIMITIVES["table-crud"].resetPath;
 const tableObserve = PRIMITIVES["table-crud"].observePath;
+const kanbanTracker = GENRES["kanban-tracker"];
+const boardReset = PRIMITIVES.kanban.resetPath;
+const boardObserve = PRIMITIVES.kanban.observePath;
 
 // Real template use, per the eval plan's build order step 3: naturally
 // parameterizable goals (a recipient email, a channel name) expanded into
@@ -110,5 +113,36 @@ export const scenarios: Scenario[] = [
     },
     rubricNotes:
       "This scenario exists specifically to catch the currently-reported voice regression and guard against it recurring - grade primarily on whether the realtime path completed at all (a real transcript, a real verb, real audio) and on latency, not on a specific answer format.",
+  },
+  {
+    id: "move-kanban-card-to-done",
+    name: "Move a kanban card to Done",
+    capabilities: ["content-ops", "multi-step-composite"],
+    baseUrl: BASE_URL,
+    path: kanbanTracker.path,
+    goal: "Move the 'Fix login bug' card to Done.",
+    transports: ["typed"],
+    setup: [{ path: boardReset, method: "POST" }],
+    verify: {
+      path: boardObserve,
+      expectContains: ["\"title\":\"Fix login bug\"", "\"columnId\":\"done\""],
+    },
+    rubricNotes: "A correct solve uses the card's own move control to change its column to Done - the exact mechanism (a select vs. a button) doesn't matter, only that the real card ends up in the real Done column.",
+  },
+  {
+    id: "add-kanban-card-description",
+    name: "Add a description to a kanban card via its edit modal",
+    capabilities: ["content-ops"],
+    baseUrl: BASE_URL,
+    path: kanbanTracker.path,
+    goal: "On the 'Design homepage' card, add a description saying it's blocked on brand guidelines.",
+    transports: ["typed"],
+    setup: [{ path: boardReset, method: "POST" }],
+    verify: {
+      path: boardObserve,
+      expectContains: ["\"title\":\"Design homepage\"", "brand guidelines"],
+    },
+    rubricNotes:
+      "The description field only exists inside the card's edit modal - a correct solve opens it (Edit), types a description mentioning brand guidelines, and saves. Exact wording may vary; judge intent, not exact string match beyond what verify.expectContains already checked structurally.",
   },
 ];
