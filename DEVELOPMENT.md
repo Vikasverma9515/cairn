@@ -844,6 +844,97 @@ have three invoices" correctly, run after run.
   (`attempted to call tool`), but only `"json"` has a dedicated unit
   test reproducing the literal observed error.
 
+### Redesign: the eval/playground platform, on real published precedent
+
+The 6-scenario, single-genre, CLI-only first pass proved the mechanics
+but wasn't rigorous enough — explicit feedback after it shipped. Real
+research this time (WebArena, BrowserGym, WorkArena/WorkArena++,
+τ-bench, AgentRewardBench, production eval-platform UI patterns — full
+citations in the approved plan) instead of continuing from first
+principles. Working through the plan's 7-step build order one stage at
+a time, each with its own tests and, where possible, live verification
+— this entry covers steps 1-4.
+
+**Built:**
+- `taxonomy.ts` — 11 capability dimensions (`info-seeking`,
+  `navigation`, `content-ops`, `multi-step-composite`, `unachievable`,
+  `policy-constraint`, `ambiguous-clarify`, `non-semantic-ui`,
+  `tool-use`, `voice-realtime`, `error-recovery`), grounded in WebArena's
+  4-category taxonomy + τ-bench's policy/clarification dimensions.
+  `Scenario.capabilities` is now required, not optional.
+- `primitives/index.ts` — the "lego piece" registry (`PRIMITIVES`,
+  `GENRES`), adapted from BrowserGym's standardized-environment-
+  interface lesson to Next.js's real constraint (file-based routing
+  can't register routes at runtime) — a primitive is a real
+  reset/observe/capability contract, not a literal shared-component
+  system. `scenarios/index.ts` now resolves its paths through this
+  registry instead of hardcoding them.
+- `templates.ts` — WebArena's template-to-variation scaling. The email
+  and Slack workflow scenarios are now real templates (`{email}`,
+  `{channel}` placeholders) with 2 variants each — suite grew from 5 to
+  7 scenarios by adding variants, not hand-writing new fixtures.
+- `runScenarioRepeated` (runner.ts) + `passAtK` (judge.ts) + trial-group
+  support (store.ts: `trial_group`/`trial_index` columns,
+  `previousTrialGroup`, `trialGroupResults`) — τ-bench's pass^k
+  reliability metric, systematizing the ad-hoc 3x manual check from the
+  first pass. `cli.ts` now runs k=3 trials per scenario/transport by
+  default (`CAIRN_EVALS_K=1` for fast dev iteration) and reports pass^k,
+  not a single pass/fail.
+- `judgeScenario` refactored to accept an injectable `clientFactory`
+  (matching `GroqVerbLLM`'s existing DI pattern in `packages/sdk`) —
+  found live that this repo has no real `ANTHROPIC_API_KEY` configured
+  anywhere (demo-app's own `.env` has an empty placeholder; it runs on
+  Groq), so judge logic needed to become testable without live network
+  access, not just easier to test.
+
+**Tests:** 36 real tests across 7 new/updated test files in
+`packages/evals` (taxonomy, primitives, templates, store, judge,
+scenarios/index, runner), full monorepo suite 284/284 passing, all
+packages typecheck clean.
+
+**Live-verified:**
+- The primitive/genre refactor: the `create-new-invoice` scenario still
+  passes unchanged after resolving its path/verify through the registry
+  instead of a hardcoded string.
+- Template expansion: ran `workflow-email-on-form-submit-2` (the
+  `alerts@example.com` variant, never hand-written) against a real
+  demo-app — real distinct goal text, real distinct verify check, real
+  trace captured (correctly `achieved: false` — the same known
+  incomplete-config behavior already documented, not a harness bug).
+- `runScenarioRepeated`: ran `archive-named-invoice` 3x live — 1/3
+  trials achieved, real evidence of the exact non-determinism pass^k
+  exists to catch (this scenario has shown both ~1/3 and ~2/3 real
+  success rates across separate live runs this session).
+
+**Pending / not yet started:**
+- Step 5 (the dashboard app) — next.
+- Step 6 (new primitives: kanban, wizard, auth-gate, modal; new genres:
+  marketplace, kanban-tracker) — not started.
+- Step 7 (simulated-user mode, policy-constraint scoring) — not
+  started, deliberately last per the build order.
+- `judgeScenario` has never actually been called against a real Claude
+  API in this environment — only the mocked-client test exists. The
+  eval CLI's pass^k reporting is therefore unverified end-to-end (the
+  trial-running half is proven live; the judging half is proven only by
+  logic, not a real call) until a real `ANTHROPIC_API_KEY` is available.
+- Retrofitted taxonomy tags reveal (honestly, by design —
+  `taxonomy.test.ts` asserts this explicitly) 6 of 11 capability
+  dimensions have zero scenario coverage today: `unachievable`,
+  `policy-constraint`, `ambiguous-clarify`, `non-semantic-ui`,
+  `navigation`, `error-recovery`. Real, tracked gaps, not forgotten
+  ones — the dashboard's capability breakdown (step 5) will show this
+  as empty bars once it exists, and steps 6-7 are what fill them in.
+
+**Known gaps / did not fully solve:**
+- `runScenarioRepeated` runs trials strictly sequentially, on purpose
+  (avoids piling more load onto an already rate-limited Groq account,
+  keeps each trial's timing independent) — this means a full k=3 suite
+  run takes roughly 3x as long as a single pass, not yet offset by any
+  parallelism. Acceptable for now; worth revisiting if the suite grows
+  large enough for this to matter.
+- No CI/pre-publish wiring, same gap as the first pass — still a manual
+  step.
+
 ---
 
 ## Track B — the structure graph, phase by phase

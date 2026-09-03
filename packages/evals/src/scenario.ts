@@ -3,6 +3,8 @@
 // actually phrase a request (an end goal, never a click-here instruction) —
 // see DEVELOPMENT.md/the eval plan for why that distinction matters.
 
+import type { CapabilityTag } from "./taxonomy";
+
 export type Transport = "typed" | "voice";
 
 export interface Scenario {
@@ -10,6 +12,11 @@ export interface Scenario {
   id: string;
   /** Human-readable name for CLI output. */
   name: string;
+  /** Which capability dimensions this scenario exercises (taxonomy.ts) —
+   * required, not optional: an untagged scenario can't be aggregated into
+   * the dashboard's "how good are we at X" capability breakdown, which
+   * defeats the point of having the taxonomy at all. */
+  capabilities: CapabilityTag[];
   /** Base URL the playground app is already running at (see README — the
    * harness doesn't manage the dev server's lifecycle, same convention
    * `cairn build <url>` already uses for crawl mode). */

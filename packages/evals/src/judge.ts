@@ -20,8 +20,22 @@ export interface Verdict {
 
 const JUDGE_TOOL_NAME = "submit_verdict";
 
-export async function judgeScenario(scenario: Scenario, result: ScenarioRunResult, options: { apiKey: string; model?: string }): Promise<Verdict> {
-  const client = new Anthropic({ apiKey: options.apiKey });
+/** Minimal shape judgeScenario needs — narrow enough to fake in tests
+ * without a real Anthropic API key, same reasoning as server.ts's own
+ * MessagesClient interface for AnthropicVerbLLM. */
+export interface JudgeClient {
+  messages: {
+    create: (params: unknown) => Promise<{ content: { type: string; name?: string; input?: unknown }[] }>;
+  };
+}
+
+export async function judgeScenario(
+  scenario: Scenario,
+  result: ScenarioRunResult,
+  options: { apiKey: string; model?: string; clientFactory?: (apiKey: string) => JudgeClient },
+): Promise<Verdict> {
+  const makeClient: (apiKey: string) => JudgeClient = options.clientFactory ?? ((apiKey) => new Anthropic({ apiKey }) as unknown as JudgeClient);
+  const client = makeClient(options.apiKey);
   const model = options.model ?? "claude-opus-5";
 
   const response = await client.messages.create({
@@ -39,7 +53,7 @@ export async function judgeScenario(scenario: Scenario, result: ScenarioRunResul
     messages: [{ role: "user", content: buildJudgeUserMessage(scenario, result) }],
   });
 
-  const toolUse = response.content.find((block): block is Anthropic.ToolUseBlock => block.type === "tool_use" && block.name === JUDGE_TOOL_NAME);
+  const toolUse = response.content.find((block) => block.type === "tool_use" && block.name === JUDGE_TOOL_NAME);
   if (!toolUse) throw new Error("judgeScenario: model did not return a verdict");
   return toolUse.input as Verdict;
 }
@@ -70,6 +84,14 @@ function buildJudgeUserMessage(scenario: Scenario, result: ScenarioRunResult): s
     achievedByExactCheck: result.achieved,
     runError: result.runError ?? null,
   });
+}
+
+/** τ-bench's pass^k (research item #5): the probability ALL k identical
+ * trials of a scenario succeed, not just one. A scenario that passes 2/3
+ * runs is NOT reliable — pass^k makes that visible instead of a single
+ * lucky/unlucky run reporting a flat pass or fail. */
+export function passAtK(verdicts: Verdict[]): boolean {
+  return verdicts.length > 0 && verdicts.every((v) => v.pass);
 }
 
 function buildVerdictSchema(): Anthropic.Tool.InputSchema {

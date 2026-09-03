@@ -161,6 +161,29 @@ export async function runScenario(scenario: Scenario, transport: "typed" | "voic
   }
 }
 
+/**
+ * τ-bench's pass^k (research item #5): runs the identical scenario k times
+ * — sequentially, not parallel, both to avoid piling more load onto an
+ * already rate-limited Groq account and to keep each trial's timing
+ * independent — and returns every trial's full result, so the caller can
+ * compute pass^k (judge.ts's `passAtK`) while still keeping each trial's
+ * own trace for the dashboard's trial-level drill-down. Default k=3
+ * matches the ad-hoc manual check that first built confidence in the
+ * voice regression fix this session, now made a real, repeatable metric.
+ */
+export async function runScenarioRepeated(
+  scenario: Scenario,
+  transport: "typed" | "voice",
+  k: number,
+  options: RunnerOptions,
+): Promise<ScenarioRunResult[]> {
+  const results: ScenarioRunResult[] = [];
+  for (let i = 0; i < k; i++) {
+    results.push(await runScenario(scenario, transport, options));
+  }
+  return results;
+}
+
 async function openWidget(page: Page): Promise<void> {
   const toggle = page.locator('[aria-label="Open Cairn help"]');
   if (await toggle.count()) await toggle.click();
