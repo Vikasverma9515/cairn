@@ -775,6 +775,75 @@ applies. Verified live: the exact synthetic-voice scenario that
 previously produced "Something went wrong on my end" now answers "You
 have three invoices" correctly, run after run.
 
+### Status — foundation stage
+
+**Built:**
+- `packages/evals` (new, never published) — `runScenario()` (typed +
+  voice transports, real Playwright, real fake-mic audio injection),
+  `judgeScenario()` (Claude-as-judge against real final state),
+  `store.ts` (SQLite run history), `cli.ts` (`npm run evals`, prints a
+  pass/fail summary + score/latency diff vs. the previous commit's run).
+- Workflow-builder playground: `examples/demo-app/app/workflows`, real
+  SQLite-backed nodes/edges (`lib/workflows.ts`/`workflow-types.ts`),
+  6 API routes, reachable at `/workflows`.
+- 6 scenario fixtures in `packages/evals/src/scenarios/index.ts`
+  (2 workflow-builder, 2 invoices CRUD, 1 typed-archive, 1 voice
+  regression guard) — below the plan's ~20-scenario floor, an explicit
+  starting point per lesson #1 (small samples are enough early signal),
+  not a finished suite.
+- `isRetryableToolCallFailure` in `packages/sdk/src/server.ts`
+  broadened to cover the real `tool_use_failed`/hallucinated-tool-name
+  regression, on top of the pre-existing `output_parse_failed` retry.
+
+**Tests:**
+- `packages/evals/src/runner.test.ts` — 8 real unit tests
+  (`matchesExpectation`, `computeVoiceLatencies`), all passing.
+- `packages/sdk/src/server.test.ts` — 2 new tests for the broadened
+  retry (retries on the real hallucinated-tool-name error, does NOT
+  retry an unrelated `tool_use_failed`), all passing.
+- Full monorepo suite: 254/254 passing, all packages typecheck clean.
+- Live-verified, not just unit-tested: all 6 scenarios run against a
+  real demo-app + real Groq/Deepgram at least once; the voice-
+  regression-guard scenario specifically run 3x in a row post-fix, 3/3
+  succeeded with real, varying latencies (5.7s–18.3s total).
+
+**Pending / not yet started:**
+- Growing the scenario suite toward the ~20-scenario floor — only 6
+  exist today, and only 2 playground genres (workflow-builder, CRUD) of
+  the plan's larger list (canvas/design, marketplace, kanban).
+- Human spot-checks on judge output (lesson #1's third eval layer) —
+  only LLM-as-judge has run so far, never cross-checked by a human on
+  any of these 6 scenarios yet.
+- Phase 2 (real-time voice architecture upgrade: streaming the LLM
+  answer into TTS, client-side fast VAD for barge-in, the Talker's
+  actual persona) — scoped in the plan, not started. The streaming
+  piece specifically needs a short design spike (three options listed
+  in the plan) before implementation, not a guess.
+- Phase 3 (Planner/Executor/Critic/Talker multi-agent redesign) — not
+  started; explicitly waiting on Phase 1/2 to land first so it can be
+  measured against the harness, not believed.
+- Phase 4 (deep runtime context: data shapes, business rules/state
+  machines, docs mining, unified tool inventory, dependency graph) —
+  not started.
+- Phase 5 (cross-session memory) — not started.
+
+**Known gaps / did not fully solve:**
+- The redundant-read behavior found live (run 1 of the reliability
+  check: 4 repeated `read` calls before answering) — a real, observed
+  instance of the "doesn't recognize task completion" failure mode from
+  both pieces of research, left as-is on purpose. This is exactly what
+  Phase 3's Critic role is designed to fix; patching it piecemeal here
+  would fight the eventual real fix instead of measuring it.
+- No CI wiring yet — `npm run evals` is a manual step today, not yet
+  run automatically on a PR/pre-publish hook. The plan's "runs before
+  any future publish" is a stated intent this session has started
+  following manually, not yet an enforced gate.
+- Only 1 of the two remaining `tool_use_failed`-shaped variants
+  (`"json"`, `"response_with_verb"`) has a captured regression test with
+  the *exact* live error string; the fix covers both by pattern
+  (`attempted to call tool`), but only `"json"` has a dedicated unit
+  test reproducing the literal observed error.
+
 ---
 
 ## Track B — the structure graph, phase by phase
