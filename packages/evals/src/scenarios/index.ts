@@ -19,6 +19,10 @@ const tableObserve = PRIMITIVES["table-crud"].observePath;
 const kanbanTracker = GENRES["kanban-tracker"];
 const boardReset = PRIMITIVES.kanban.resetPath;
 const boardObserve = PRIMITIVES.kanban.observePath;
+const marketplace = GENRES.marketplace;
+const shopReset = PRIMITIVES["search-filter"].resetPath;
+const shopProductsObserve = PRIMITIVES["search-filter"].observePath;
+const shopOrdersObserve = PRIMITIVES.wizard.observePath;
 
 // Real template use, per the eval plan's build order step 3: naturally
 // parameterizable goals (a recipient email, a channel name) expanded into
@@ -144,5 +148,41 @@ export const scenarios: Scenario[] = [
     },
     rubricNotes:
       "The description field only exists inside the card's edit modal - a correct solve opens it (Edit), types a description mentioning brand guidelines, and saves. Exact wording may vary; judge intent, not exact string match beyond what verify.expectContains already checked structurally.",
+  },
+  {
+    id: "search-shop-for-cheapest-home-item",
+    name: "Find the cheapest item in a category via search-filter",
+    capabilities: ["info-seeking"],
+    baseUrl: BASE_URL,
+    path: marketplace.path,
+    goal: "What's the cheapest item in the Home category?",
+    transports: ["typed"],
+    setup: [{ path: shopReset, method: "POST" }],
+    verify: {
+      // A pure info-seeking scenario - nothing to mutate, so this is a
+      // trivial reachability check, same convention as
+      // voice-regression-guard. Real correctness is graded from the
+      // trace's own response text, per rubricNotes below.
+      path: shopProductsObserve,
+      expectContains: "[",
+    },
+    rubricNotes:
+      "The seeded catalog's Home category has exactly two items: Desk Lamp ($24.99) and Throw Blanket ($34.99) - Desk Lamp is the correct answer. Grade primarily on whether the agent used the real category filter to narrow results before answering (not a guess), and whether its stated answer is actually correct.",
+  },
+  {
+    id: "complete-shop-checkout",
+    name: "Buy an item, navigating the real auth-gate and checkout wizard",
+    capabilities: ["multi-step-composite", "content-ops", "policy-constraint"],
+    baseUrl: BASE_URL,
+    path: marketplace.path,
+    goal: "Buy a Desk Lamp.",
+    transports: ["typed"],
+    setup: [{ path: shopReset, method: "POST" }],
+    verify: {
+      path: shopOrdersObserve,
+      expectContains: ["\"name\":\"Desk Lamp\""],
+    },
+    rubricNotes:
+      "The real policy constraint: checkout is server-side gated on being logged in (a fresh reset always starts logged out) - a correct solve either logs in proactively or recovers cleanly from the real 403 the checkout API returns, then adds the Desk Lamp to cart, completes the 3-step wizard (review, shipping, confirm), and places the order. The goal never specifies an email/shipping address - any reasonable invented value is fine; grade on whether the real order ends up containing a Desk Lamp, not on the exact contact details used.",
   },
 ];

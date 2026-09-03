@@ -56,3 +56,37 @@ db.exec(`
     created_at INTEGER NOT NULL
   )
 `);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shop_products (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    price_cents INTEGER NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shop_cart (
+    product_id TEXT PRIMARY KEY,
+    quantity INTEGER NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shop_session (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    logged_in INTEGER NOT NULL
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shop_orders (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    address TEXT NOT NULL,
+    total_cents INTEGER NOT NULL,
+    items TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+`);

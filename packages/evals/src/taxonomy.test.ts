@@ -33,8 +33,8 @@ describe("scenarios/index — capability tagging", () => {
     // plan's build order: new primitives/scenarios land in later steps).
     // This test exists so the gap is visible and tracked, not silently
     // forgotten - update the expected list as scenarios are added.
-    expect(uncovered.sort()).toEqual(
-      ["ambiguous-clarify", "error-recovery", "navigation", "non-semantic-ui", "policy-constraint", "unachievable"].sort(),
-    );
+    // "policy-constraint" was closed by step 6b's complete-shop-checkout
+    // scenario (a real server-side 403 gate, not a UI-only appearance).
+    expect(uncovered.sort()).toEqual(["ambiguous-clarify", "error-recovery", "navigation", "non-semantic-ui", "unachievable"].sort());
   });
 });

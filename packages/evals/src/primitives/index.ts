@@ -66,6 +66,27 @@ export const PRIMITIVES = {
     resetPath: "/api/board/reset",
     observePath: "/api/board",
   },
+  "search-filter": {
+    id: "search-filter",
+    description: "A real query (text + category) against a real catalog, driven through the URL's own search params (examples/demo-app's shop).",
+    capabilities: ["info-seeking"],
+    resetPath: "/api/shop/reset",
+    observePath: "/api/shop/products",
+  },
+  wizard: {
+    id: "wizard",
+    description: "A real multi-step flow (review, shipping, confirm) ending in a real state-creating submit (examples/demo-app's checkout).",
+    capabilities: ["multi-step-composite", "content-ops"],
+    resetPath: "/api/shop/reset",
+    observePath: "/api/shop/orders",
+  },
+  "auth-gate": {
+    id: "auth-gate",
+    description: "A real business rule enforced server-side, not just hidden in the UI: checkout returns a real 403 when the session isn't logged in (examples/demo-app's shop checkout).",
+    capabilities: ["policy-constraint"],
+    resetPath: "/api/shop/reset",
+    observePath: "/api/shop/auth",
+  },
 } as const satisfies Record<string, PlaygroundPrimitive>;
 
 export type PrimitiveId = keyof typeof PRIMITIVES;
@@ -97,6 +118,22 @@ export const GENRES = {
     modeledAfter: "Trello/Linear (kanban board)",
     primitives: ["kanban", "modal"],
     path: "/board",
+  },
+  // The plan's original sketch composed this genre as search-filter +
+  // table-crud + wizard + auth-gate. Deliberately dropped table-crud
+  // here: this registry binds each primitive id to ONE concrete
+  // resetPath/observePath (table-crud already means "/api/invoices"),
+  // so reusing that literal id for the shop's own catalog would silently
+  // reset/observe the WRONG app's data when a marketplace scenario runs.
+  // A genuinely reusable per-genre parameterization is a real
+  // architectural gap (see DEVELOPMENT.md's step 6b entry) — worth
+  // fixing if a third genre ever wants its own "table-crud"-shaped data,
+  // but not invented here just to satisfy the plan's literal wording.
+  marketplace: {
+    id: "marketplace",
+    modeledAfter: "Amazon (search, cart, checkout)",
+    primitives: ["search-filter", "wizard", "auth-gate"],
+    path: "/shop",
   },
 } as const satisfies Record<string, PlaygroundGenre>;
 
