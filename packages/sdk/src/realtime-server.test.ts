@@ -167,6 +167,16 @@ describe("handleDeepgramMessage", () => {
     webMcpTools: [],
   });
 
+  const getContextWithTwoArchiveBtns = () => ({
+    route: "/",
+    visible: [] as string[],
+    liveElements: [
+      { id: "archive-btn", role: "button", label: "Archive" },
+      { id: "archive-btn-2", role: "button", label: "Archive" },
+    ],
+    webMcpTools: [],
+  });
+
   it("agent loop: a continuing verb (click) is sent to the client, waits for its real result, then calls the model again to get the terminal answer", async () => {
     const { client, sent } = fakeClient();
     let call = 0;
@@ -392,6 +402,126 @@ describe("handleDeepgramMessage", () => {
       ),
     ).resolves.not.toThrow();
     expect(speakStreamed).toHaveBeenCalledWith("done");
+  });
+
+  it("Phase 3 step 3, real bug fix: a task_complete Critic verdict ends the turn right after the batch that actually finished it — no second respond() call, unlike the diagnosed bug where the model kept looping", async () => {
+    const { client, sent } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({
+      verb: "batch",
+      actions: [{ verb: "click", target: "archive-btn" }, { verb: "click", target: "archive-btn-2" }],
+    });
+    const deps = fakeDeps(respond);
+    deps.planLLM = { respond: async () => ({ goal: "archive both overdue invoices", facts: [], tasks: [{ id: "t1", description: "Archive both overdue invoices", doneContract: "Both invoices show status Archived" }] }) };
+    deps.criticLLM = { respond: async () => ({ verdict: "task_complete", reasoning: "Both invoices now show status Archived, matching the doneContract." }) };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("Both archived");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive both overdue invoices", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithTwoArchiveBtns,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    // The real bug this fixes: respond() (the model) is called exactly
+    // ONCE — the batch — never a second time "hoping it notices" the
+    // real state already satisfies the goal. The Critic's own real
+    // reasoning is what gets spoken and committed to history instead.
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(speakStreamed).toHaveBeenCalledWith("Both invoices now show status Archived, matching the doneContract.");
+    expect(history).toEqual([
+      { role: "user", text: "archive both overdue invoices" },
+      { role: "assistant", text: "Both invoices now show status Archived, matching the doneContract." },
+    ]);
+    const verbMessages = sent.filter((m: any) => m.type === "verb");
+    expect(verbMessages).toHaveLength(1); // only the batch itself was ever sent — no synthetic second verb message
+  });
+
+  it("Phase 3 step 3: a give_up Critic verdict ends the turn early with its own real reasoning, distinct from the generic iteration-cap message", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "click", target: "archive-btn" });
+    const deps = fakeDeps(respond);
+    deps.planLLM = { respond: async () => ({ goal: "archive the invoice", facts: [], tasks: [{ id: "t1", description: "Archive the invoice", doneContract: "The invoice shows status Archived" }] }) };
+    deps.criticLLM = { respond: async () => ({ verdict: "give_up", reasoning: "The click has no visible effect after repeated attempts — the button may be disabled." }) };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("nothing changed");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(speakStreamed).toHaveBeenCalledWith("The click has no visible effect after repeated attempts — the button may be disabled.");
+  });
+
+  it("Phase 3 step 3: a multi-task plan advances to the next task on task_complete and keeps looping instead of ending the turn early", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "click", target: "archive-btn" } : { verb: "click", target: "archive-btn-2" };
+    });
+    const deps = fakeDeps(respond);
+    deps.planLLM = {
+      respond: async () => ({
+        goal: "archive both invoices, one at a time",
+        facts: [],
+        tasks: [
+          { id: "t1", description: "Archive the first invoice", doneContract: "The first invoice shows status Archived" },
+          { id: "t2", description: "Archive the second invoice", doneContract: "The second invoice shows status Archived" },
+        ],
+      }),
+    };
+    let criticCall = 0;
+    deps.criticLLM = {
+      respond: async () => {
+        criticCall++;
+        // First task's own click completes it; the second doesn't (loop
+        // hits the iteration cap deliberately, to keep this test focused
+        // on proving advancement — not full completion).
+        return criticCall === 1 ? { verdict: "task_complete", reasoning: "First invoice archived." } : { verdict: "continue", reasoning: "Still working on the second." };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("archived");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive both invoices, one at a time", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithTwoArchiveBtns,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    // Real proof of advancement: the model was asked again after the
+    // first task_complete (not ended there), and the Critic itself was
+    // consulted more than once — a real multi-task turn, not a single
+    // task ending prematurely.
+    expect(respond.mock.calls.length).toBeGreaterThan(1);
+    expect(criticCall).toBeGreaterThan(1);
   });
 
   it("agent loop: hitting the iteration cap with no terminal verb degrades honestly instead of hanging", async () => {

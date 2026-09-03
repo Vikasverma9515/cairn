@@ -92,3 +92,29 @@ export const PlannerOutputSchema = z
   })
   .strict();
 export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
+
+// ---------------------------------------------------------------------------
+// The Critic (Phase 3 step 3) — a genuinely separate pass over REAL
+// resulting state, decoupled from the Executor's own self-report. This is
+// the direct fix for the diagnosed bug (a batch of 2 clicks succeeded,
+// and the model kept looping 4 more iterations before giving up, never
+// recognizing its own success): "are we done" stops being purely "did the
+// model pick a TERMINAL_VERBS verb" and becomes a real, independent check
+// against the current task's own doneContract.
+// ---------------------------------------------------------------------------
+
+export const CRITIC_VERDICTS = ["continue", "task_complete", "replan", "give_up"] as const;
+export type CriticVerdictKind = (typeof CRITIC_VERDICTS)[number];
+
+export const CriticVerdictSchema = z
+  .object({
+    verdict: z.enum(CRITIC_VERDICTS),
+    /** Only meaningful on "replan" — PIVOT's structured expected-vs-actual
+     * diff, cheaper and more actionable for the next Planner call than a
+     * full-context re-derivation. Absent for every other verdict. */
+    expected: z.string().optional(),
+    actual: z.string().optional(),
+    reasoning: z.string().min(1),
+  })
+  .strict();
+export type CriticVerdict = z.infer<typeof CriticVerdictSchema>;

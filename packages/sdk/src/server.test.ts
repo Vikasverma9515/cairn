@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { VerbResponseSchema, type Manifest } from "@cairnvibe/core";
+import { VerbResponseSchema, type Manifest, type Task } from "@cairnvibe/core";
 import {
   AnthropicVerbLLM,
   GroqVerbLLM,
   buildVerbToolSchema,
   createCopilotHandlerWithLLM,
+  resolveCritic,
   resolvePlan,
   type GroqLikeClient,
   type MessagesClient,
@@ -880,5 +881,77 @@ describe("buildVerbToolSchema", () => {
         ],
       },
     });
+  });
+});
+
+describe("resolveCritic", () => {
+  function fakeCriticLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  const task: Task = { id: "t1", description: "Archive Globex Inc.", doneContract: "Globex Inc. shows status Archived", status: "in_progress" };
+
+  it("real bug this exists to fix: sends the real task/action/observation and returns a real task_complete verdict when the doneContract is genuinely satisfied", async () => {
+    let seenUserMessage: any;
+    const llm = fakeCriticLLM(async (systemPrompt, userMessage) => {
+      seenUserMessage = JSON.parse(userMessage);
+      return { verdict: "task_complete", reasoning: "Globex Inc. now shows status Archived, matching the doneContract exactly." };
+    });
+
+    const result = await resolveCritic(llm, task, "Archive my old invoices", { verb: "click", target: "archive-btn" }, "Archived, status now Archived");
+
+    expect(seenUserMessage).toEqual({
+      goal: "Archive my old invoices",
+      taskDescription: "Archive Globex Inc.",
+      doneContract: "Globex Inc. shows status Archived",
+      action: "(clicked archive-btn)",
+      observation: "Archived, status now Archived",
+    });
+    expect(result.verdict).toBe("task_complete");
+  });
+
+  it("real replan verdict carries the expected-vs-actual diff", async () => {
+    const llm = fakeCriticLLM(async () => ({
+      verdict: "replan",
+      expected: "Globex Inc. status is Archived",
+      actual: "Globex Inc. status is still Overdue",
+      reasoning: "The click landed on the wrong row.",
+    }));
+    const result = await resolveCritic(llm, task, "Archive my old invoices", { verb: "click", target: "wrong-row" }, "nothing changed");
+    expect(result).toEqual({
+      verdict: "replan",
+      expected: "Globex Inc. status is Archived",
+      actual: "Globex Inc. status is still Overdue",
+      reasoning: "The click landed on the wrong row.",
+    });
+  });
+
+  it("degrades to a real, safe 'continue' verdict when the LLM call itself throws — never blocks the turn on a Critic hiccup", async () => {
+    const llm = fakeCriticLLM(async () => {
+      throw new Error("network blip");
+    });
+    const result = await resolveCritic(llm, task, "Archive my old invoices", { verb: "click", target: "x" }, "some result");
+    expect(result.verdict).toBe("continue");
+  });
+
+  it("degrades to the same safe 'continue' verdict when the model's response fails schema validation", async () => {
+    const llm = fakeCriticLLM(async () => ({ not: "a valid verdict" }));
+    const result = await resolveCritic(llm, task, "Archive my old invoices", { verb: "click", target: "x" }, "some result");
+    expect(result.verdict).toBe("continue");
+  });
+
+  it("real Phase 3 requirement: createCriticLLM's own request uses the Critic's tool, not the verb/planner tool — proven via the same custom-toolName path AnthropicVerbLLM already exposes", async () => {
+    let seenTools: any;
+    const fakeClient: MessagesClient = {
+      messages: {
+        create: async (params: any) => {
+          seenTools = params.tools;
+          return { content: [{ type: "tool_use", name: "submit_verdict", input: { verdict: "continue", reasoning: "x" } }] };
+        },
+      },
+    };
+    const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} }, "submit_verdict", "Submit your verdict.");
+    await resolveCritic(llm, task, "goal", { verb: "click", target: "x" }, "result");
+    expect(seenTools[0].name).toBe("submit_verdict");
   });
 });

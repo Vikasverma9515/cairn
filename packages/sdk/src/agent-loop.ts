@@ -19,7 +19,7 @@
 // built-ins) — imported as raw source by index.tsx's browser bundle AND
 // compiled to dist/ for realtime-server.ts's Node build.
 
-import { TERMINAL_VERBS, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
+import { TERMINAL_VERBS, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
 
 /** 4 exchanges — matches the cap both original drivers independently used. */
 export const MAX_HISTORY_TURNS = 8;
@@ -92,12 +92,38 @@ export interface AgentLoopDeps {
    * can itself take a while). Returning true aborts the loop with
    * outcome "aborted", discarding this step's observation. */
   onStepResult?(event: AgentLoopStepResultEvent): boolean | Promise<boolean>;
+  /**
+   * Phase 3 step 3 — a genuinely separate pass over the step's REAL
+   * observation, decoupled from the Executor/model's own self-report
+   * (the direct fix for the diagnosed bug: a batch succeeded and the
+   * model kept looping instead of recognizing it). Fires after
+   * onStepResult/the history fold. Returning a "task_complete" or
+   * "give_up" verdict ends the loop right here — even though the
+   * model's own verb was never a TERMINAL_VERBS member — instead of
+   * asking the model again and hoping it notices. Returning "continue"
+   * (including after the caller's own closure has silently handled a
+   * "replan" by fetching a fresh Plan — driveAgentLoop itself has no
+   * concept of a Plan, only of "keep going or stop") keeps the loop
+   * going exactly as if this hook were absent. Returning null/undefined
+   * behaves the same as "continue" — a caller can choose not to run the
+   * Critic on a particular step without a special no-op verdict shape.
+   */
+  runCritic?(event: AgentLoopStepResultEvent): Promise<CriticVerdict | null | undefined>;
   /** Defaults to 6 — a hard cap, not a target, matching both original drivers. */
   maxIterations?: number;
 }
 
 export type AgentLoopOutcome =
   | { outcome: "terminal"; finalVerb: VerbResponse; workingHistory: HistoryTurn[] }
+  /** The Critic independently confirmed the (last) task's doneContract
+   * is satisfied — the real fix for the diagnosed bug. The caller
+   * synthesizes its own terminal-shaped response (e.g. `{verb: "explain",
+   * text: verdict.reasoning}`) from `verdict`, same as it would for a
+   * model-produced terminal verb. */
+  | { outcome: "critic-complete"; verdict: CriticVerdict; workingHistory: HistoryTurn[] }
+  /** The Critic (or the harness's own stall-count fail-safe, inside the
+   * caller's runCritic closure) decided continuing wouldn't help. */
+  | { outcome: "critic-give-up"; verdict: CriticVerdict; workingHistory: HistoryTurn[] }
   | { outcome: "unparseable"; workingHistory: HistoryTurn[] }
   | { outcome: "gave-up"; workingHistory: HistoryTurn[] }
   | { outcome: "aborted"; workingHistory: HistoryTurn[] };
@@ -130,6 +156,15 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
       ...loopHistory,
       { role: "assistant" as const, text: `${summarizeVerbForHistory(verb)}. Result: ${observation ?? "no result"}` },
     ].slice(-MAX_HISTORY_TURNS);
+
+    if (deps.runCritic) {
+      const verdict = await deps.runCritic({ verb, iteration: i, observation });
+      if (verdict?.verdict === "task_complete") return { outcome: "critic-complete", verdict, workingHistory: loopHistory };
+      if (verdict?.verdict === "give_up") return { outcome: "critic-give-up", verdict, workingHistory: loopHistory };
+      // "continue", "replan" (already handled inside the caller's own
+      // runCritic closure — see this field's own doc comment), or no
+      // verdict at all: fall through and keep looping, unchanged.
+    }
   }
 
   return { outcome: "gave-up", workingHistory: loopHistory };

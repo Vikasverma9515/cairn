@@ -27,9 +27,19 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { HistoryTurn, LiveElement, Manifest, VerbResponse, WebMcpTool } from "@cairnvibe/core";
+import type { HistoryTurn, LiveElement, Manifest, Plan, ProgressLedger, VerbResponse, WebMcpTool } from "@cairnvibe/core";
 import { driveAgentLoop, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
-import { buildSystemPrompt, createPlanLLM, createVerbLLM, resolvePlan, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
+import {
+  buildSystemPrompt,
+  createCriticLLM,
+  createPlanLLM,
+  createVerbLLM,
+  resolveCritic,
+  resolvePlan,
+  resolveVerb,
+  type CapabilityTier,
+  type CreateCopilotHandlerOptions,
+} from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
@@ -69,10 +79,10 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
   const llm = createVerbLLM(options);
-  // Phase 3 step 2 (observability only — see finalizeTurn's own doc
-  // comment on where this gets called): a real, separately-configured
-  // Planner LLM, not yet acted on by anything.
+  // Phase 3 steps 2-3 — real, separately-configured Planner/Critic LLMs.
+  // See finalizeTurn's own doc comment for how they're actually used.
   const planLLM = createPlanLLM(options);
+  const criticLLM = createCriticLLM(options);
   // "text" is optional on highlight/open/navigate/do in the base prompt —
   // fine for the typed/HTTP path, which always has a visible answer area,
   // but silence reads as broken in a live voice conversation (the client
@@ -94,7 +104,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, systemPrompt, manifest: options.manifest, registeredActions, capability }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, systemPrompt, manifest: options.manifest, registeredActions, capability }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -111,12 +121,17 @@ export interface ConnectionDeps {
   sttModel: string;
   ttsVoice: string;
   llm: ReturnType<typeof createVerbLLM>;
-  /** Phase 3 step 2 — a separately-configured Planner LLM, called
-   * fire-and-forget (observability only, see finalizeTurn) on the first
-   * continuing step of a turn. Optional so existing ConnectionDeps
-   * construction (and every existing test) keeps working unchanged;
-   * absent means no Planner call happens at all. */
+  /** Phase 3 step 2 — a separately-configured Planner LLM, called on the
+   * first continuing step of a turn (see finalizeTurn). Optional so
+   * existing ConnectionDeps construction (and every existing test) keeps
+   * working unchanged; absent means no Planner call happens at all. */
   planLLM?: ReturnType<typeof createPlanLLM>;
+  /** Phase 3 step 3 — a separately-configured Critic LLM. Only engages
+   * (task-advancement/replan/give-up actually driving the loop, not just
+   * logging) when BOTH this and planLLM are present — the Critic needs a
+   * real Plan's current task to check against. Optional for the same
+   * backward-compatibility reason as planLLM. */
+  criticLLM?: ReturnType<typeof createCriticLLM>;
   systemPrompt: string;
   manifest: Manifest;
   registeredActions: string[];
@@ -436,7 +451,22 @@ async function finalizeTurn(
   // handling instead of queuing cleanly.
   let ackPromise: Promise<void> | null = null;
 
+  // Phase 3 steps 2-3 — kicked off on the SAME lazy gate as the ack
+  // above (only once a turn has already revealed it needs more than one
+  // step); real Plan/Progress state the Critic (below) actually acts on,
+  // not just observability. Only the realtime transport is wired this
+  // way — the typed/HTTP path would need the `{verb, plan?, progress?}`
+  // wire-contract change the plan file's own risk section already
+  // flagged, deferred until it's genuinely needed there too.
+  let planPromise: Promise<Plan> | null = null;
+  let plan: Plan | null = null;
+  let progress: ProgressLedger | null = null;
+  const STALL_THRESHOLD = 3; // Magentic-One-sized bounded budget before the harness itself escalates to give_up, rather than trusting the Critic alone to notice it's stalling
+
   try {
+    const planLLM = deps.planLLM;
+    const criticLLM = deps.criticLLM;
+
     const result = await driveAgentLoop(history, {
       async getNextStep(loopHistory) {
         const { route, visible, liveElements, webMcpTools } = getContext();
@@ -467,23 +497,7 @@ async function finalizeTurn(
           // Single-step turns (the common case) never reach this branch
           // at all, so they keep today's latency exactly as it is.
           ackPromise = speakStreamed(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
-
-          // Phase 3 step 2 — the SAME lazy gate as the ack above (only
-          // once a turn has already revealed it needs more than one
-          // step), fire-and-forget, never awaited: a real Plan gets
-          // produced and logged, but nothing acts on it yet (no Critic
-          // until step 3) — this is observability wiring, not a
-          // behavior change, and deliberately adds zero latency to the
-          // turn either way. Only the realtime transport is wired here;
-          // the typed/HTTP path would need the `{verb, plan?, progress?}`
-          // wire-contract change the plan file's own risk section
-          // already flagged — deferred until step 3 actually needs the
-          // Plan to be client-actionable, not invented speculatively now.
-          if (deps.planLLM) {
-            void resolvePlan(deps.planLLM, transcript)
-              .then((plan) => console.log(`[cairn] real Plan produced for "${transcript}":`, JSON.stringify(plan)))
-              .catch((err) => console.error("[cairn] planner call failed (observability only, turn unaffected):", err));
-          }
+          if (planLLM) planPromise = resolvePlan(planLLM, transcript);
         }
         return false;
       },
@@ -492,13 +506,78 @@ async function finalizeTurn(
       // around again instead of ending the turn.
       executeStep: () => waitForToolResult(),
       onStepResult: () => myGeneration !== getGeneration(),
+      runCritic:
+        planLLM && criticLLM
+          ? async ({ verb, observation }) => {
+              // Real state, not the Executor's self-report — see
+              // resolveCritic's own doc comment for why this is a
+              // genuinely separate pass, mirroring judge.ts's own
+              // precedent. Awaited here (not just logged) on its FIRST
+              // use — by now at least one real tool round trip has
+              // already happened, so the Planner call kicked off above
+              // has likely already resolved in parallel; this is not a
+              // NEW blocking wait so much as picking up work already in
+              // flight.
+              if (!plan) {
+                plan = planPromise ? await planPromise : { version: 1, goal: transcript, facts: [], tasks: [{ id: "t1", description: transcript, doneContract: "The stated goal has been achieved.", status: "in_progress" }] };
+                progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
+              }
+              const currentProgress = progress!;
+              const currentTask = plan.tasks[currentProgress.currentTaskIndex];
+              const verdict = await resolveCritic(criticLLM, currentTask, transcript, verb, observation);
+
+              if (verdict.verdict === "task_complete") {
+                currentTask.status = "done";
+                if (currentProgress.currentTaskIndex < plan.tasks.length - 1) {
+                  // More tasks remain — advance and keep looping instead
+                  // of ending the turn here.
+                  currentProgress.currentTaskIndex++;
+                  plan.tasks[currentProgress.currentTaskIndex].status = "in_progress";
+                  currentProgress.stallCount = 0;
+                  return { ...verdict, verdict: "continue" };
+                }
+                // The real bug fix: the LAST task is genuinely done —
+                // end the loop right here instead of asking the model
+                // again and hoping it notices its own success.
+                return verdict;
+              }
+
+              if (verdict.verdict === "replan") {
+                // A fresh Planner call, a real new version — never a
+                // silent patch to the existing plan.
+                plan = await resolvePlan(planLLM, transcript, plan.version + 1);
+                progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
+                return { ...verdict, verdict: "continue" };
+              }
+
+              if (verdict.verdict === "give_up") return verdict;
+
+              // "continue" — a harness-enforced fail-safe on top of the
+              // Critic's own judgment: crossing a bounded stall budget
+              // escalates to give_up itself, rather than trusting the
+              // Critic alone to eventually notice it's stuck (Magentic-One's
+              // own two-tier tolerance pattern).
+              currentProgress.stallCount++;
+              if (currentProgress.stallCount >= STALL_THRESHOLD) {
+                return {
+                  verdict: "give_up",
+                  reasoning: `Stuck after ${currentProgress.stallCount} steps with no confirmed progress on "${currentTask.description}" — ${verdict.reasoning}`,
+                };
+              }
+              return verdict;
+            }
+          : undefined,
     });
 
     if (result.outcome === "aborted") return;
 
-    if (result.outcome === "terminal" || result.outcome === "unparseable") {
+    if (result.outcome === "terminal" || result.outcome === "unparseable" || result.outcome === "critic-complete") {
       const verb: VerbResponse =
-        result.outcome === "terminal" ? result.finalVerb : { verb: "explain", text: "I'm not sure how to help with that." };
+        result.outcome === "terminal"
+          ? result.finalVerb
+          : result.outcome === "critic-complete"
+            ? { verb: "explain", text: result.verdict.reasoning }
+            : { verb: "explain", text: "I'm not sure how to help with that." };
       history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
       history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
 
@@ -524,16 +603,21 @@ async function finalizeTurn(
       return;
     }
 
-    // Iteration cap hit with no terminal verb — degrade honestly instead
-    // of leaving the client waiting forever.
-    history.push({ role: "user", text: transcript }, { role: "assistant", text: "(gave up after too many steps)" });
+    // Iteration cap hit with no terminal verb, OR the Critic/stall
+    // fail-safe gave up — degrade honestly instead of leaving the client
+    // waiting forever. A real Critic give-up carries its own specific
+    // reasoning, which is a genuinely better message than the generic
+    // fallback below — use it when there is one.
+    const giveUpText =
+      result.outcome === "critic-give-up" ? result.verdict.reasoning : "I wasn't able to finish that — try asking again or breaking it into smaller steps.";
+    history.push({ role: "user", text: transcript }, { role: "assistant", text: result.outcome === "critic-give-up" ? giveUpText : "(gave up after too many steps)" });
     history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
-    safeSend(client, { type: "verb", verb: { verb: "explain", text: "I wasn't able to finish that — try asking again or breaking it into smaller steps." } });
+    safeSend(client, { type: "verb", verb: { verb: "explain", text: giveUpText } });
     if (ackPromise) {
       await ackPromise;
       if (myGeneration !== getGeneration()) return;
     }
-    await speakStreamed("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
+    await speakStreamed(giveUpText);
   } catch (err) {
     console.error("[cairn realtime] failed to resolve/speak this turn:", err);
     if (myGeneration === getGeneration()) {

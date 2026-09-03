@@ -1556,6 +1556,107 @@ runs on.
   check were judged sufficient for an observability-only, no-user-visible-
   behavior-change step.
 
+### Step 3: the Critic — the actual fix for the diagnosed bug
+
+The step everything else in this phase exists in service of. Before this
+step, "are we done" was purely "did the model pick a `TERMINAL_VERBS`
+verb" — never checked against real state. After it, a genuinely separate
+pass looks at the real observation from each continuing step and decides
+whether the CURRENT task's own `doneContract` is actually satisfied,
+independent of whatever the model itself claims or does next.
+
+**Built:**
+- `packages/core/src/plan.ts` — `CRITIC_VERDICTS`
+  (`continue`/`task_complete`/`replan`/`give_up`) and `CriticVerdictSchema`
+  (`verdict`, optional `expected`/`actual` — PIVOT's structured diff,
+  only meaningful on `replan` — and required `reasoning`).
+- `packages/sdk/src/server.ts` — `resolveCritic(llm, task, goal, verb,
+  observation)`, structurally mirroring `packages/evals/src/judge.ts`'s
+  `judgeScenario` on purpose (a separate model, forced tool call,
+  structured verdict — the same real, already-proven-in-this-repo
+  pattern, not a new one invented for this). Same resilience discipline
+  as `resolveVerb`/`resolvePlan`: never throws, degrades to a real,
+  harmless `continue` verdict on any failure. `createCriticLLM` is the
+  same thin wrapper over `createToolLLM` as `createPlanLLM`.
+- `packages/sdk/src/agent-loop.ts` — `driveAgentLoop` gained an optional
+  `runCritic` hook and two new outcomes, `critic-complete`/
+  `critic-give-up`. This is the actual mechanism of the fix: a
+  `task_complete` (or `give_up`) verdict ends the loop **immediately**,
+  even though the model's own verb was never a `TERMINAL_VERBS` member —
+  no second `getNextStep`/model call "hoping it notices." A bare
+  `continue`/`replan` verdict falls through and keeps the loop going
+  exactly as if `runCritic` were absent — `driveAgentLoop` itself has no
+  concept of a Plan at all, only "stop or keep going"; a caller's own
+  `runCritic` closure is what actually replans (see below), keeping the
+  shared driver domain-agnostic.
+- `realtime-server.ts`'s `finalizeTurn` — step 2's fire-and-forget,
+  logged-only Planner call is now a real, awaited dependency: a
+  `plan`/`progress` pair tracked in the connection's own closure state,
+  advanced by a real `runCritic` implementation. `task_complete` on a
+  non-last task advances `currentTaskIndex` and keeps looping (a real,
+  multi-task turn); on the last task, it propagates straight to
+  `driveAgentLoop`, ending the turn there. `replan` calls `resolvePlan`
+  again with a bumped `version` — a real new Planner call, never a
+  silent patch to the existing plan. A harness-enforced stall budget
+  (`STALL_THRESHOLD = 3`, Magentic-One-sized) escalates a
+  `continue`-forever pattern to `give_up` on its own, rather than
+  trusting the Critic alone to eventually notice it's stalling. A
+  `critic-complete`/`critic-give-up` outcome is spoken using the
+  verdict's own real `reasoning` — a genuinely more specific message
+  than the old generic "I wasn't able to finish that."
+
+**Tests:** `plan.test.ts` gained 4 (schema validation for both real
+verdict shapes, plus rejecting an invented verdict and a missing
+`reasoning`). `server.test.ts` gained 5 for `resolveCritic` (the real
+request shape sent to the model, a real `replan` diff round-tripping
+correctly, both fallback paths, and the custom-tool-name wiring).
+`agent-loop.test.ts` gained 7 for `runCritic`, including the single most
+load-bearing test in this whole step: **a `task_complete` verdict ends
+the loop after exactly ONE `getNextStep` call** — the literal, direct,
+unit-level proof the diagnosed bug is fixed at the driver level.
+`realtime-server.test.ts` gained 3 real integration-level tests proving
+the same fix through the ACTUAL `finalizeTurn` code path (not just the
+driver in isolation): a `task_complete` verdict on a real 2-click batch
+ends the turn with exactly one `respond()` call and the Critic's own
+reasoning spoken; a `give_up` verdict ends the turn early with its own
+specific message instead of the generic fallback; a multi-task plan
+correctly advances instead of ending prematurely. All 11 of step 1-2's
+existing tests still pass **completely unmodified**. Full monorepo
+typecheck + 341-test suite passing.
+
+**Live-verified:** a real, unmocked `resolvePlan` → `resolveCritic` call
+sequence against demo-app's real Groq credentials, shaped exactly like
+the diagnosed bug's own real scenario (DEVELOPMENT.md's batch-verb
+commit notes: a batch of 2 clicks succeeding). Two real checks:
+1. **Real success** — given a real observation matching the doneContract
+   ("Both invoices archived: ... status now Archived"), the real Critic
+   returned `task_complete` with correct, specific reasoning — the exact
+   judgment that was missing before this step, that would have ended the
+   diagnosed bug's real turn immediately instead of the model looping 4
+   more times.
+2. **Real failure** — given an observation that contradicts the
+   doneContract ("status still Overdue"), the real Critic returned
+   `replan` with a genuinely useful, real `expected`/`actual` diff — not
+   just a pass/fail check, an example of it actually reasoning about
+   *why* the approach failed.
+
+**Pending / not yet started:**
+- The typed/HTTP transport's Critic wiring — same deferred wire-contract
+  dependency as step 2's Planner wiring.
+- A real, full live voice call exercising this end to end over the
+  WebSocket relay — verified instead via real integration-level unit
+  tests (fake WebSocket, real assertions on `finalizeTurn`'s actual
+  control flow) plus the direct real-Groq check above, for the same
+  reasons (Groq quota, real-audio complexity) noted in steps 1-2.
+- Steps 4-5 of Phase 3's build order (Executor local retry; the Talker
+  event stream) — not started.
+- The Critic currently judges from the step's own text observation only
+  — not fresh `liveElements`/a real DOM snapshot. The observation is
+  already real, grounded data (a real tool-execution result, not a
+  self-report), so this is a reasonable v1 scope, but richer live-state
+  grounding for the Critic is a real, named enhancement opportunity for
+  later, not implemented here.
+
 ---
 
 ## Track B — the structure graph, phase by phase

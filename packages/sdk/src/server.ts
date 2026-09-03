@@ -7,22 +7,28 @@ import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
 import {
   CopilotRequestSchema,
+  CriticVerdictSchema,
   PlannerOutputSchema,
   VERBS,
   VerbResponseSchema,
+  type CriticVerdict,
   type HistoryTurn,
   type LiveElement,
   type Manifest,
   type Plan,
   type PlannerOutput,
+  type Task,
   type VerbResponse,
   type WebMcpTool,
 } from "@cairnvibe/core";
+import { summarizeVerbForHistory } from "./agent-loop";
 import { KeyRotator } from "./key-rotator";
 
 const VERB_TOOL_NAME = "respond_with_verb";
 const PLAN_TOOL_NAME = "create_plan";
 const PLAN_TOOL_DESCRIPTION = "Submit an ordered task plan for achieving the user's real end goal.";
+const CRITIC_TOOL_NAME = "submit_verdict";
+const CRITIC_TOOL_DESCRIPTION = "Submit your verdict on whether the current task is actually done, based on the real resulting state.";
 
 /**
  * What the agent is allowed to do, independent of which specific "do"
@@ -285,6 +291,49 @@ function fallbackPlan(goal: string, version: number): Plan {
     facts: [],
     tasks: [{ id: "t1", description: goal, doneContract: "The stated goal has been achieved.", status: "in_progress" }],
   };
+}
+
+/**
+ * Phase 3, step 3 — the Critic. A genuinely SEPARATE pass over the
+ * step's real observation, decoupled from the Executor/model's own
+ * self-report — this is the direct fix for the diagnosed bug (a batch
+ * of 2 clicks succeeded, and the model kept looping 4 more iterations
+ * before giving up, never recognizing its own success). Mirrors
+ * packages/evals/src/judge.ts's own judgeScenario shape on purpose (a
+ * separate model looking at real state, forced tool call, structured
+ * verdict) — same real precedent already proven and tested in this repo,
+ * not a new pattern invented for this. Same resilience discipline as
+ * resolveVerb/resolvePlan: never throws, degrades to a real "continue"
+ * verdict (harmless — the loop just behaves as if the Critic weren't
+ * there for this one step) on any failure.
+ */
+export async function resolveCritic(llm: VerbLLM, task: Task, goal: string, verb: VerbResponse, observation: string | null | undefined): Promise<CriticVerdict> {
+  let candidate: unknown;
+  try {
+    candidate = await llm.respond(
+      buildCriticSystemPrompt(),
+      JSON.stringify({
+        goal,
+        taskDescription: task.description,
+        doneContract: task.doneContract,
+        action: summarizeVerbForHistory(verb),
+        observation: observation ?? "no result",
+      }),
+    );
+  } catch (err) {
+    console.error("[cairn] critic LLM call failed:", err);
+    return { verdict: "continue", reasoning: "Critic call failed — defaulting to continue rather than blocking the turn." };
+  }
+
+  const parsed = CriticVerdictSchema.safeParse(candidate);
+  if (!parsed.success) return { verdict: "continue", reasoning: "Critic response failed validation — defaulting to continue rather than blocking the turn." };
+  return parsed.data;
+}
+
+/** Same real rotation/model-selection logic as createVerbLLM/createPlanLLM,
+ * configured for the Critic's own tool instead — see resolveCritic. */
+export function createCriticLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
+  return createToolLLM(options, buildCriticToolSchema(), CRITIC_TOOL_NAME, CRITIC_TOOL_DESCRIPTION);
 }
 
 /** Builds a provider-appropriate forced-single-tool-call LLM for ANY tool
@@ -773,4 +822,32 @@ Break the goal into as FEW tasks as genuinely make sense — most goals need onl
 - doneContract: what counts as this task being ACTUALLY done, checkable against real state — a real observable outcome, never "the model thinks it's done" or "the user is satisfied."
 
 List any real facts already known that bear on the goal, in "facts" — leave it empty if there's nothing worth carrying forward. Never invent a task that isn't a real, necessary step toward the stated goal.`;
+}
+
+function buildCriticToolSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      verdict: { type: "string", enum: ["continue", "task_complete", "replan", "give_up"] },
+      expected: { type: "string", description: "Only for replan — what SHOULD have happened, per the task's doneContract." },
+      actual: { type: "string", description: "Only for replan — what actually happened instead, per the real observation." },
+      reasoning: { type: "string", description: "2-3 sentences, specific to what actually happened in THIS step, not generic." },
+    },
+    required: ["verdict", "reasoning"],
+    additionalProperties: false,
+  };
+}
+
+function buildCriticSystemPrompt(): string {
+  return `You are the verification layer of an in-app AI agent that operates a web app on a user's behalf. You do NOT act — you look at what a real execution step ACTUALLY did, independent of what it or its own summary claimed, and decide what happens next.
+
+You'll be given: the overall goal, the current task's own description and doneContract (what counts as it being done), the real action just taken, and its real observed result.
+
+Score the verdict:
+- "task_complete": the doneContract is genuinely satisfied by the real observation — the task is done. Say so even if this took just one step; don't wait for confirmation that was never going to come.
+- "continue": real progress happened but the doneContract isn't satisfied yet — more steps are needed on this same task.
+- "replan": the real observation contradicts what the task expected (a click didn't register, the wrong element was targeted, an error occurred) — the current approach isn't working and needs a different plan. Fill in "expected" (what the doneContract implied should happen) and "actual" (what really happened instead).
+- "give_up": repeated real attempts have failed and continuing wouldn't help — be honest about being stuck rather than looping forever.
+
+Never trust the action's own claim of success — judge only the real observation. reasoning: 2-3 sentences, specific to what actually happened in this step, not generic.`;
 }

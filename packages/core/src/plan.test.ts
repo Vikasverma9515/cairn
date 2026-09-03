@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PlanSchema, PlannerOutputSchema, ProgressLedgerSchema, TaskSchema } from "./index";
+import { CriticVerdictSchema, PlanSchema, PlannerOutputSchema, ProgressLedgerSchema, TaskSchema } from "./index";
 
 describe("plan.ts re-exported from index.ts", () => {
   it("real smoke test for the circular-import risk noted in plan.ts's own doc comment — importing via index.ts must not throw a TDZ error at module load", () => {
@@ -55,5 +55,32 @@ describe("plan.ts re-exported from index.ts", () => {
   it("validates a real ProgressLedger", () => {
     const result = ProgressLedgerSchema.safeParse({ planVersion: 1, currentTaskIndex: 0, stallCount: 0 });
     expect(result.success).toBe(true);
+  });
+});
+
+describe("CriticVerdictSchema", () => {
+  it("validates a real task_complete verdict with no expected/actual diff needed", () => {
+    const result = CriticVerdictSchema.safeParse({ verdict: "task_complete", reasoning: "The invoice now shows status Archived, matching the task's doneContract." });
+    expect(result.success).toBe(true);
+  });
+
+  it("validates a real replan verdict carrying PIVOT's expected-vs-actual diff", () => {
+    const result = CriticVerdictSchema.safeParse({
+      verdict: "replan",
+      expected: "Globex Inc. status is Archived",
+      actual: "Globex Inc. status is still Overdue",
+      reasoning: "The click didn't register — the row still shows the original status.",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an invented verdict not in CRITIC_VERDICTS", () => {
+    const result = CriticVerdictSchema.safeParse({ verdict: "looks_fine", reasoning: "x" });
+    expect(result.success).toBe(false);
+  });
+
+  it("requires real reasoning — never a silent verdict with no explanation", () => {
+    const result = CriticVerdictSchema.safeParse({ verdict: "continue" });
+    expect(result.success).toBe(false);
   });
 });
