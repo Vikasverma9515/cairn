@@ -2,6 +2,8 @@
 // must be derivable the same way on every run of the same source (the
 // determinism regression test diffs this JSON byte-for-byte across two runs).
 
+import type { DataShape } from "@cairnvibe/core";
+
 export type InteractiveTag = "button" | "a" | "form" | "input";
 
 export interface RawElement {
@@ -23,6 +25,8 @@ export interface RawPage {
   /** Every source file reachable from this route's entry point, including itself. */
   reachableFiles: string[];
   elements: RawElement[];
+  /** Real interface/type-alias shapes traced from data-fetching calls across this page's reachable files — see l1-data-shapes.ts. */
+  dataShapes: DataShape[];
   /**
    * The page's rendered visible text — only set by crawl.ts's runtime-DOM
    * analyzer (crawl mode has no source file to read; l1-scan.ts's

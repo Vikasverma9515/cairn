@@ -65,6 +65,31 @@ export const ElementSchema = z.object({
 });
 export type Element = z.infer<typeof ElementSchema>;
 
+/**
+ * Phase 4, layer 2 ("data shapes") — a real TypeScript interface/type-alias
+ * a page's own reachable source actually returns from a data-fetching call
+ * (`listInvoices(): Invoice[]` -> `Invoice`'s real fields), traced statically
+ * at build time (l1-data-shapes.ts) from an EXPLICIT return-type annotation
+ * only — no full type-checker inference, same "read syntax, not semantics"
+ * determinism discipline as the rest of L1. `type` is the field's type-node
+ * source text verbatim (e.g. `"Paid" | "Overdue" | "Archived"`), not a
+ * resolved/normalized type, so the agent sees the exact same literal a
+ * developer wrote.
+ */
+export const DataFieldSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  optional: z.boolean(),
+});
+export type DataField = z.infer<typeof DataFieldSchema>;
+
+export const DataShapeSchema = z.object({
+  name: z.string(),
+  fields: z.array(DataFieldSchema),
+  source: z.string(),
+});
+export type DataShape = z.infer<typeof DataShapeSchema>;
+
 export const PageSchema = z.object({
   id: z.string(),
   route: z.string(),
@@ -74,6 +99,8 @@ export const PageSchema = z.object({
   whenToUse: z.string(),
   confidence: z.number().min(0).max(1),
   elements: z.array(ElementSchema),
+  /** Absent (not just empty) when no return-type-annotated data call was found — distinguishes "not analyzed" from "genuinely no data shapes here" is not needed today, so both collapse to omitted/empty; optional purely for additive backward compat with manifests written before this field existed. */
+  dataShapes: z.array(DataShapeSchema).optional(),
 });
 export type Page = z.infer<typeof PageSchema>;
 

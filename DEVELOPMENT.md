@@ -1852,6 +1852,134 @@ follow-ups tracked honestly:**
   memory) each get their own focused plan-and-approval pass when picked
   up next — none started.
 
+## Phase 4 — deep runtime context
+
+Phase 3 gave the Planner an architecture (`resolvePlan`) but no real
+knowledge of the target app beyond page structure — it decomposes a goal
+into tasks knowing only routes/titles/purposes, never what data actually
+flows through a page or what shape it's in. The plan's own Phase 4
+section names six layers; layer 2 ("data shapes") was picked to go
+first, per the plan's own reasoning — the indexer already depends on
+`ts-morph`, so reading real type definitions is an extension of existing
+machinery, not a new tool, and it's the layer research (a live Explore
+pass over `l1-scan.ts`, `manifest.ts`, `packages/core`'s `ManifestSchema`,
+and `server.ts`'s two prompt-injection points) confirmed was genuinely
+tractable against how this codebase's own demo app — and real apps like
+it — actually write data-fetching code.
+
+### Step 1: data shapes — real interface/type-alias fields surfaced per page
+
+**Built:**
+- `DataFieldSchema`/`DataShapeSchema` in `packages/core/src/index.ts` —
+  `{name, fields: [{name, type, optional}], source}`. `type` is the
+  field's type-node source text verbatim (e.g. `"Paid" | "Overdue" |
+  "Archived"`), not a resolved/normalized type — the agent sees exactly
+  what a developer wrote. `PageSchema` gains an optional `dataShapes`
+  field — additive, same pattern as `ElementSchema.apiCall`, so a
+  manifest written before this field existed still validates.
+- `packages/indexer/src/l1-data-shapes.ts` — `extractDataShapes(project,
+  absRoot, reachableAbsFiles)`. For every file reachable from a page
+  (L1 already computes this set), walks every `CallExpression` with a
+  plain-identifier callee, resolves it to an imported function/arrow
+  declaration, and — only when that declaration has an EXPLICIT
+  return-type annotation (never the type checker's inferred type; same
+  "read syntax, not semantics" determinism discipline as the rest of L1)
+  — resolves the named type to an `interface` or object-shaped `type`
+  alias and reports its fields. Handles `T[]`, `T | null`/`T |
+  undefined`, and — the real gap the live check against demo-app
+  surfaced first-hand — a type only *imported* into the calling file
+  rather than declared there (the `board.ts`/`board-types.ts` split-file
+  convention, a common real pattern for keeping a server-only import out
+  of a "use client" bundle), via a one-hop fallback into the file's own
+  imports. Union/primitive type aliases correctly report no fields
+  (nothing to shape) rather than crashing or guessing.
+- Wired into `l1-scan.ts` (`RawPage.dataShapes`, computed per page
+  alongside `reachableFiles`/`elements`) and `manifest.ts`
+  (`assembleManifest` passes it straight through onto `Page.dataShapes`,
+  same as `dead`/`conflicts` — no LLM involvement, this is pure L1).
+  `crawl.ts`'s runtime-DOM mode sets `dataShapes: []` explicitly (no
+  source file to read when crawling a live URL instead of reading disk).
+
+**Tests:**
+- `packages/indexer/src/l1-data-shapes.test.ts` (new, 9 tests, isolated
+  in-memory ts-morph projects) — same-file interface resolution; the
+  cross-file import-chasing case (mirrors `board.ts`/`board-types.ts`
+  exactly); nullable unwrapping; object-shaped type alias; optional
+  fields; a function with NO explicit return-type annotation correctly
+  yields no shape (proves the determinism boundary is real, not just
+  documented); a union type alias correctly yields no shape; dedup +
+  sorted output when multiple calls return the same shape; an
+  unresolvable reachable file doesn't crash.
+- `l1-scan.test.ts` (+1): every page gets a `dataShapes` array (possibly
+  empty) — proves the wiring without touching the shared `simple-app`
+  fixture other suites (l2-reachability, l3-describe, crawl) also
+  depend on.
+- `manifest.test.ts` (+2, new `assembleManifest` coverage — this file
+  previously only tested `parseApiCall`): a page's L1 `dataShapes`
+  passes straight through onto the manifest `Page` unchanged, both
+  populated and empty.
+- `packages/core/src/index.test.ts` (+3): `DataShapeSchema` accepts a
+  well-formed shape; `PageSchema` accepts a page with real `dataShapes`;
+  `PageSchema` still accepts a page with the field omitted entirely
+  (backward compatibility with pre-existing manifests).
+- Full regression gate: 372/372 tests pass across the whole repo
+  (`npx vitest run`, no scope narrowing) — zero regressions. Full
+  repo-wide `npm run typecheck` (all 6 workspaces) also clean.
+
+**Live-verified:** ran `scanL1` directly against the REAL
+`examples/demo-app` source (not a fixture) via a disposable script,
+same convention as this session's `packages/evals/scratch-test.ts`
+checks, deleted after use. Confirmed against three real, independently
+data-shaped pages:
+- `/invoices` → `Invoice` from `lib/invoices.ts`, fields `id`/`client`/
+  `amount`/`status`, with `status`'s real literal union
+  `"Paid" | "Overdue" | "Archived"` surfaced verbatim — the exact
+  concrete example the research pass and this step's design were built
+  around.
+- `/board` → `BoardColumn` from `lib/board-types.ts` (found only via the
+  cross-file import-chasing fallback — the FIRST version of this code,
+  without that fallback, returned `[]` for this page; a real bug the
+  live check caught before it shipped, not a hypothetical), including
+  its nested `cards: BoardCard[]` field.
+- `/shop` and `/shop/checkout` → `Product`/`CartLine`.
+Ran across all 9 of demo-app's real pages with zero crashes; the
+remaining 6 pages correctly report no data shapes (either no
+explicit-return-typed data call in their reachable set, or a shape this
+step deliberately doesn't chase yet — see Pending) rather than guessing.
+
+**Pending:**
+- Not yet wired into what the Planner/model actually sees —
+  `server.ts`'s `buildPageElements` (the per-request, uncached
+  injection point the research pass identified as the natural
+  integration seam, since `buildSystemPrompt`'s cached page-list is
+  explicitly budget-constrained and scales with page count only) still
+  only sends element `id (does)` pairs. This step is the extraction
+  layer alone, deliberately kept separate and independently tested
+  before touching what reaches the LLM — the next step.
+- Anonymous/inline-asserted shapes (e.g. `db.prepare(...).get() as
+  {count: number}`, seen for real in `lib/invoices.ts`) have no named
+  declaration to point to — out of scope for v1, correctly reported as
+  "no shape" rather than guessed.
+- A shape referenced by prop-drilling through several component layers
+  with only an inferred (not annotated) prop type isn't traced —
+  attributing it to the originating function's own explicit return type
+  (this step's actual behavior) rather than the leaf component is the
+  deliberate, documented boundary from the research pass, not an
+  oversight.
+- Nested named types (`BoardColumn.cards: BoardCard[]`) are reported by
+  name/type-text only, not recursively expanded into their own
+  `DataShape` entry — a real, reasonable v2 enhancement, not attempted
+  here to keep this step's scope to what the plan's own text asked for.
+- Remaining Phase 4 layers (business rules & state machines, docs/copy
+  mining, the unified tools/skills inventory, the runtime dependency
+  graph) — not started; sequencing beyond this first step still
+  undecided, per the plan's own "sequencing gets decided in this
+  phase's own focused plan" note.
+
+**Failed:** nothing — no dead ends this step; the one real bug found
+(cross-file type resolution) was caught by live verification against
+demo-app before being called done, not shipped and found later.
+
 ---
 
 ## Track B — the structure graph, phase by phase

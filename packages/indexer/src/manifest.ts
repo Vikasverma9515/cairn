@@ -26,6 +26,7 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
       whenToUse: desc?.whenToUse ?? "Unknown — no description generated for this page.",
       confidence: desc?.confidence ?? 0,
       elements: [...ownElements, ...globalElements],
+      dataShapes: rawPage.dataShapes,
     };
   });
 

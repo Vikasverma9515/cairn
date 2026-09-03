@@ -95,4 +95,18 @@ describe("scanL1", () => {
     const b = scanL1(FIXTURE);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
+
+  it("wires a dataShapes array (possibly empty) onto every page — the extraction logic itself is covered by l1-data-shapes.test.ts", () => {
+    const facts = scanL1(FIXTURE);
+    for (const page of facts.pages) {
+      expect(Array.isArray(page.dataShapes)).toBe(true);
+    }
+    // This fixture's pages don't call any function with an explicit,
+    // interface/type-alias-shaped return annotation — a real, deliberate
+    // "no shape found" case (l1-data-shapes.test.ts's own "skips a function
+    // with no explicit return-type annotation" case is the same scenario in
+    // isolation), not a bug.
+    const home = facts.pages.find((p) => p.route === "/")!;
+    expect(home.dataShapes).toEqual([]);
+  });
 });

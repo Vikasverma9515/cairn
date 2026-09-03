@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseApiCall } from "./manifest";
+import { assembleManifest, parseApiCall } from "./manifest";
+import type { RawFacts } from "./types";
+import type { L2Result } from "./l2-reachability";
+import type { L3Result } from "./l3-describe";
 
 describe("parseApiCall", () => {
   it("accepts a clean, static, mutating call", () => {
@@ -39,5 +42,53 @@ describe("parseApiCall", () => {
 
   it("rejects a url with no leading slash", () => {
     expect(parseApiCall("POST api/items")).toBeNull();
+  });
+});
+
+describe("assembleManifest", () => {
+  it("passes a page's L1 dataShapes straight through onto the manifest Page, unchanged", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/invoices",
+          file: "app/invoices/page.tsx",
+          reachableFiles: [],
+          elements: [],
+          dataShapes: [
+            {
+              name: "Invoice",
+              source: "lib/invoices.ts",
+              fields: [{ name: "status", type: '"Paid" | "Overdue" | "Archived"', optional: false }],
+            },
+          ],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].dataShapes).toEqual(facts.pages[0].dataShapes);
+  });
+
+  it("passes through an empty dataShapes array as-is", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [{ route: "/", file: "app/page.tsx", reachableFiles: [], elements: [], dataShapes: [] }],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].dataShapes).toEqual([]);
   });
 });

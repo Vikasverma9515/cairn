@@ -101,6 +101,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<RawFacts> {
             file: finalUrl,
             reachableFiles: [],
             elements: extracted.elements,
+            dataShapes: [], // no source file to read in crawl mode
             renderedText: extracted.bodyText,
           });
 

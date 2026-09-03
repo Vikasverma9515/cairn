@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, CopilotRequestSchema, ManifestSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
+import { AgentEventSchema, CopilotRequestSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -24,6 +24,40 @@ describe("ManifestSchema", () => {
       conflicts: [],
     };
     expect(() => ManifestSchema.parse(manifest)).toThrow();
+  });
+});
+
+describe("DataShapeSchema / PageSchema.dataShapes (Phase 4, layer 2 — real data shapes)", () => {
+  const basePage = {
+    id: "invoices",
+    route: "/invoices",
+    file: "app/invoices/page.tsx",
+    title: "Invoices",
+    purpose: "Manage invoices",
+    whenToUse: "When asked about billing",
+    confidence: 1,
+    elements: [],
+  };
+
+  it("accepts a well-formed data shape", () => {
+    const shape = {
+      name: "Invoice",
+      source: "lib/invoices.ts",
+      fields: [{ name: "status", type: '"Paid" | "Overdue" | "Archived"', optional: false }],
+    };
+    expect(() => DataShapeSchema.parse(shape)).not.toThrow();
+  });
+
+  it("PageSchema accepts a page with real dataShapes", () => {
+    const page = {
+      ...basePage,
+      dataShapes: [{ name: "Invoice", source: "lib/invoices.ts", fields: [{ name: "id", type: "string", optional: false }] }],
+    };
+    expect(() => PageSchema.parse(page)).not.toThrow();
+  });
+
+  it("PageSchema still accepts a page with dataShapes entirely omitted — additive/backward-compatible with manifests written before this field existed", () => {
+    expect(() => PageSchema.parse(basePage)).not.toThrow();
   });
 });
 

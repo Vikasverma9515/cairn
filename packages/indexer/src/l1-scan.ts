@@ -7,6 +7,7 @@ import path from "node:path";
 import { Project, Node, SyntaxKind, ts } from "ts-morph";
 import type { SourceFile } from "ts-morph";
 import { routeFromPagePath, routeFromPagesRouterPath } from "./routes";
+import { extractDataShapes } from "./l1-data-shapes";
 import type { InteractiveTag, RawElement, RawFacts, RawPage } from "./types";
 
 const INTERACTIVE_TAGS = new Set<InteractiveTag>(["button", "a", "form", "input"]);
@@ -84,11 +85,14 @@ export function scanL1(rootDir: string): RawFacts {
     const elements: RawElement[] = [];
     walkImports(pageFile, absRoot, reachable, elements, new Set());
 
+    const reachableAbsFiles = Array.from(reachable).map((rel) => path.join(absRoot, rel));
+
     return {
       route: deriveRoute(absRoot, pageFile.getFilePath())!,
       file: toPosix(path.relative(absRoot, pageFile.getFilePath())),
       reachableFiles: Array.from(reachable).sort(),
       elements: elements.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file))),
+      dataShapes: extractDataShapes(project, absRoot, reachableAbsFiles),
     };
   });
 
