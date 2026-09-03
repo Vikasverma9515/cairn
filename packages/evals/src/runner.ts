@@ -10,8 +10,9 @@
 import { chromium, type Page } from "playwright";
 import { installFakeMic } from "./fake-mic";
 import type { Scenario } from "./scenario";
+import { nextSimulatedUserTurn, type SimulatedUserClient } from "./simulated-user";
 import { synthesizeSpeech } from "./synthesize";
-import type { CopilotRoundTrip, ScenarioRunResult, VoiceFrame, VoiceLatencies } from "./trace";
+import type { ConversationTurn, CopilotRoundTrip, ScenarioRunResult, VoiceFrame, VoiceLatencies } from "./trace";
 
 export interface RunnerOptions {
   deepgramApiKey: string;
@@ -22,6 +23,12 @@ export interface RunnerOptions {
   /** How long the copilot/WS channel must go quiet before a run is
    * considered finished, ms. */
   quietMs?: number;
+  /** Required only for a scenario that sets `simulatedUser` — the key the
+   * simulated-user model itself is called with (simulated-user.ts). */
+  anthropicApiKey?: string;
+  /** DI hook for tests, same reasoning as judgeScenario's clientFactory —
+   * no real ANTHROPIC_API_KEY exists anywhere in this repo. */
+  simulatedUserClientFactory?: (apiKey: string) => SimulatedUserClient;
 }
 
 // Groq calls have measured up to ~30s elsewhere this session under load —
@@ -46,6 +53,7 @@ export async function runScenario(scenario: Scenario, transport: "typed" | "voic
   const voiceFrames: VoiceFrame[] = [];
   let lastActivityAt = Date.now();
   let voiceStartedAt: number | null = null;
+  let conversation: ConversationTurn[] | undefined;
 
   try {
     for (const step of scenario.setup ?? []) {
@@ -105,8 +113,23 @@ export async function runScenario(scenario: Scenario, transport: "typed" | "voic
     await page.goto(new URL(scenario.path, scenario.baseUrl).toString(), { waitUntil: "networkidle" });
     await openWidget(page);
 
-    if (transport === "typed") {
+    if (transport === "typed" && scenario.simulatedUser) {
+      conversation = await runSimulatedUserConversation(
+        page,
+        scenario,
+        roundTrips,
+        () => lastActivityAt,
+        () => {
+          lastActivityAt = Date.now();
+        },
+        options,
+      );
+    } else if (transport === "typed") {
       await runTypedTurn(page, scenario.goal);
+    } else if (scenario.simulatedUser) {
+      // A real, deliberate scope limit, not an oversight — see
+      // runSimulatedUserConversation's doc comment for why.
+      throw new Error("runScenario: simulatedUser scenarios support the typed transport only");
     } else {
       voiceStartedAt = await runVoiceTurn(page);
     }
@@ -144,6 +167,7 @@ export async function runScenario(scenario: Scenario, transport: "typed" | "voic
       result.voiceFrames = voiceFrames;
       result.voiceLatencies = computeVoiceLatencies(voiceStartedAt, voiceFrames);
     }
+    if (conversation) result.conversation = conversation;
     return result;
   } catch (err) {
     return {
@@ -154,6 +178,7 @@ export async function runScenario(scenario: Scenario, transport: "typed" | "voic
       achieved: false,
       copilotRoundTrips: roundTrips,
       voiceFrames: transport === "voice" ? voiceFrames : undefined,
+      conversation,
       runError: err instanceof Error ? err.message : String(err),
     };
   } finally {
@@ -189,11 +214,119 @@ async function openWidget(page: Page): Promise<void> {
   if (await toggle.count()) await toggle.click();
 }
 
-async function runTypedTurn(page: Page, goal: string): Promise<void> {
+async function runTypedTurn(page: Page, goal: string, actionTimeoutMs?: number): Promise<void> {
   const input = page.locator('input[placeholder="What do you need help with?"]');
-  await input.fill(goal);
+  // A real second/later turn (step 7's simulated-user work) can wait
+  // longer for a real, possibly slow Groq round trip than Playwright's
+  // default 30s action timeout allows — an explicit, larger, real budget
+  // for a multi-turn conversation instead of the library's generic
+  // default. (An earlier theory here — that a `tour` verb's spoken
+  // narration keeps this input disabled long enough to matter — was
+  // tested live and disproven: the input stayed visible/enabled
+  // throughout. The real cause of the failure that prompted this is a
+  // full page reload from the app's own action handlers, documented and
+  // handled at the call site in runSimulatedUserConversation instead.)
+  await input.fill(goal, actionTimeoutMs !== undefined ? { timeout: actionTimeoutMs } : undefined);
   const sendButton = page.locator('button[type="submit"]').last();
-  await sendButton.click();
+  await sendButton.click(actionTimeoutMs !== undefined ? { timeout: actionTimeoutMs } : undefined);
+}
+
+const DEFAULT_SIMULATED_USER_MAX_TURNS = 4;
+
+/** τ-bench's simulated-user mode (research item #5) — drives the real
+ * typed widget through a multi-turn back-and-forth instead of one fixed
+ * message, reacting to Cairn's real replies via a separate model call
+ * (simulated-user.ts) each turn. Typed transport only: voice would need
+ * synthesizing each simulated-user reply to speech and re-arming the fake
+ * mic mid-conversation — a real, larger piece of work than this pass
+ * covers; scoped out deliberately rather than half-built (see
+ * runScenario's own explicit error for the voice+simulatedUser case). */
+async function runSimulatedUserConversation(
+  page: Page,
+  scenario: Scenario,
+  roundTrips: CopilotRoundTrip[],
+  getLastActivityAt: () => number,
+  resetActivityClock: () => void,
+  options: RunnerOptions,
+): Promise<ConversationTurn[]> {
+  const config = scenario.simulatedUser;
+  if (!config) throw new Error("runSimulatedUserConversation: scenario has no simulatedUser config");
+  if (!options.anthropicApiKey) throw new Error("runSimulatedUserConversation: options.anthropicApiKey is required for a simulated-user scenario");
+
+  const maxTurns = config.maxTurns ?? DEFAULT_SIMULATED_USER_MAX_TURNS;
+  const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // One shared deadline for the WHOLE conversation, not a fresh timeoutMs
+  // budget re-granted every turn — a real bug caught during this same live
+  // check: maxTurns x timeoutMs could otherwise run far longer than the
+  // per-run ceiling the rest of the suite assumes.
+  const deadline = Date.now() + timeoutMs;
+  const history: ConversationTurn[] = [];
+  let nextMessage = config.opening;
+
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const remainingMs = Math.max(1000, deadline - Date.now());
+    const beforeCount = roundTrips.length;
+    try {
+      await runTypedTurn(page, nextMessage, remainingMs);
+    } catch {
+      // Real cause, found live: several of this playground app's own
+      // onDo/action handlers (examples/demo-app's CopilotWithActions,
+      // ArchiveInvoiceButton, etc.) call `window.location.reload()` after
+      // a real write completes — which destroys the widget's own DOM/
+      // conversation state mid-run. When the agent acts BEFORE asking
+      // (the exact policy violation a scenario like this exists to
+      // catch), that reload happens mid-conversation and this input
+      // genuinely stops existing, not just "is slow." Treat that as the
+      // conversation ending naturally, not a fatal run error — the
+      // transcript captured so far (a real action with no clarifying
+      // question) is itself the useful signal for the judge, not
+      // something to discard by crashing the whole run.
+      break;
+    }
+    history.push({ speaker: "simulated-user", text: nextMessage });
+    // Same two real bugs already fixed once in runScenario's own main
+    // wait (idle-clock started too early; quiet alone can't distinguish
+    // "hasn't replied yet" from "done") — reusing waitUntilQuiet here
+    // instead of re-deriving similar logic avoids reintroducing either.
+    resetActivityClock();
+    await waitUntilQuiet(getLastActivityAt, () => roundTrips.length > beforeCount, quietMs, Math.max(1000, deadline - Date.now()));
+
+    if (roundTrips.length === beforeCount) break; // real timeout — no reply arrived this turn, stop rather than keep talking to a dead conversation
+    const agentText = extractAgentText(roundTrips[roundTrips.length - 1].responseBody);
+    if (!agentText) break; // nothing to react to — stop rather than send a blank/garbage next turn
+
+    const priorHistory = [...history];
+    history.push({ speaker: "agent", text: agentText });
+
+    const turnResult = await nextSimulatedUserTurn(config, priorHistory, agentText, {
+      apiKey: options.anthropicApiKey,
+      clientFactory: options.simulatedUserClientFactory,
+    });
+    if (turnResult.done) break;
+    nextMessage = turnResult.reply;
+  }
+
+  return history;
+}
+
+/** Pulls the real spoken/displayed text out of Cairn's forced-tool-call
+ * verb response (packages/core's COMPANION_FIELDS `text`) — a `tour`
+ * response carries its text per-step instead of at the top level, so that
+ * case is joined separately. Exported for direct unit testing without a
+ * real browser/page. */
+export function extractAgentText(responseBody: unknown): string | null {
+  if (!responseBody || typeof responseBody !== "object") return null;
+  const body = responseBody as { text?: unknown; verb?: unknown; steps?: { text?: unknown }[] };
+  if (typeof body.text === "string" && body.text) return body.text;
+  if (body.verb === "tour" && Array.isArray(body.steps)) {
+    const joined = body.steps
+      .map((step) => (typeof step.text === "string" ? step.text : ""))
+      .filter(Boolean)
+      .join(" ");
+    return joined || null;
+  }
+  return null;
 }
 
 /** Returns the timestamp mic playback effectively starts — used as the

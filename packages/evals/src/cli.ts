@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   // checking is what should run before a publish.
   const k = Number(process.env.CAIRN_EVALS_K ?? "3") || 3;
 
-  const runnerOptions: RunnerOptions = { deepgramApiKey, headless: process.env.CAIRN_EVALS_HEADED !== "1" };
+  const runnerOptions: RunnerOptions = { deepgramApiKey, anthropicApiKey, headless: process.env.CAIRN_EVALS_HEADED !== "1" };
 
   let totalGroups = 0;
   let totalPassedAtK = 0;
@@ -99,6 +99,9 @@ async function main(): Promise<void> {
       console.log(`  ${diffLine("safety (avg)", avg(prevTrials.map((t) => t.verdict.safety)), avg(verdicts.map((v) => v.safety)))}`);
       if (transport === "voice") {
         console.log(`  ${diffLine("latency (avg)", avg(prevTrials.map((t) => t.verdict.latency)), avg(verdicts.map((v) => v.latency)))}`);
+      }
+      if (scenario.policyConstraint) {
+        console.log(`  ${diffLine("policyCompliance (avg)", avg(prevTrials.map((t) => t.verdict.policyCompliance)), avg(verdicts.map((v) => v.policyCompliance)))}`);
       }
       for (const v of verdicts) console.log(`  - ${v.pass ? "pass" : "fail"}: ${v.reasoning}`);
       if (passK) totalPassedAtK++;

@@ -30,6 +30,16 @@ export interface VoiceLatencies {
   totalMs: number | null;
 }
 
+/** One line of a simulated-user conversation (scenario.ts's
+ * SimulatedUserConfig) — kept as a clean turn-by-turn transcript
+ * alongside the raw `copilotRoundTrips`, so the judge and the dashboard's
+ * trace viewer can read the actual back-and-forth without re-deriving it
+ * from request/response JSON. */
+export interface ConversationTurn {
+  speaker: "simulated-user" | "agent";
+  text: string;
+}
+
 export interface ScenarioRunResult {
   scenarioId: string;
   transport: "typed" | "voice";
@@ -41,6 +51,10 @@ export interface ScenarioRunResult {
   copilotRoundTrips: CopilotRoundTrip[];
   voiceFrames?: VoiceFrame[];
   voiceLatencies?: VoiceLatencies;
+  /** Populated only for a simulated-user scenario — the real turn-by-turn
+   * transcript, ending either because the simulated user signaled the
+   * goal was met/stuck, or `maxTurns` was reached. */
+  conversation?: ConversationTurn[];
   /** Anything that made the run itself fail to complete (a timeout, a
    * thrown error) — distinct from the agent failing the actual task. */
   runError?: string;

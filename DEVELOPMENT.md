@@ -1248,6 +1248,124 @@ the full intended flow end to end:
 - The `lightningcss-darwin-arm64` gap from step 6a is still unresolved
   at the repo level (unchanged from that entry).
 
+### Step 7: policy-constraint scoring + simulated-user mode
+
+The last and, per the plan, deliberately riskiest step — built last on
+purpose, on top of a proven taxonomy/primitive/UI foundation instead of
+guessed at first. Both pieces got real, live, multi-round testing against
+the actual running demo-app and Cairn's real Groq-backed agent, which
+surfaced and fixed two genuine bugs before this could be called done.
+
+**Built:**
+- **Policy-constraint scoring** — `Scenario.policyConstraint` (a stated
+  business rule, `scenario.ts`) and `Verdict.policyCompliance`
+  (`judge.ts`, its own 0-1 dimension, `null` when a scenario declares no
+  constraint — never a free passing score). `pass` now additionally
+  requires `policyCompliance is null OR policyCompliance >= 0.8`. The
+  judge's user message now includes the real `policyConstraint` text and
+  (when present) the real conversation transcript, so it can check
+  compliance across the WHOLE trace, not just final state.
+- **Simulated-user mode** (`simulated-user.ts`, new) — τ-bench's mode: a
+  separate model plays a real persona (`SimulatedUserConfig.opening` +
+  `privateContext`) and reacts to Cairn's real replies turn by turn,
+  ending the conversation via a real forced `end_conversation` tool call
+  (same forced-tool-call-for-a-terminal-signal pattern as judge.ts's own
+  verdict, not free-text parsing). Injectable `clientFactory`, same DI
+  reasoning as `judgeScenario`/`GroqVerbLLM` — no real `ANTHROPIC_API_KEY`
+  exists anywhere in this repo.
+- `runner.ts` gained `runSimulatedUserConversation` — drives the real
+  typed widget through a real multi-turn back-and-forth (typed transport
+  only; voice is a real, larger piece of separate work, scoped out
+  deliberately with an explicit thrown error rather than half-built).
+  Reuses the existing `waitUntilQuiet` rather than re-deriving similar
+  wait logic, and shares ONE deadline across the whole conversation
+  rather than re-granting a fresh `timeoutMs` every turn.
+- `trace.ts` gained `ConversationTurn`/`ScenarioRunResult.conversation` —
+  a clean turn-by-turn transcript alongside the raw round trips, for both
+  the judge and (later) the dashboard's trace viewer.
+- Two scenarios updated/added: `complete-shop-checkout` (step 6b) now
+  carries a real `policyConstraint` (it only had the capability tag
+  before this step added the actual judged field — found live while
+  wiring this up, and fixed retroactively rather than left cosmetic).
+  New: `archive-invoices-with-approval-threshold` — a real simulated-user
+  + policy-constraint scenario, closing the `ambiguous-clarify` taxonomy
+  gap alongside `policy-constraint`.
+
+**Tests:** 9 new tests (`simulated-user.test.ts`: role inversion, reply
+vs. end-signal handling, error on neither; `runner.test.ts`:
+`extractAgentText` covering the plain-text case, the `tour` per-step
+join, and malformed input) plus updates to existing tests for the new
+`policyCompliance` field and taxonomy/suite-size counts. Full monorepo
+typecheck + 293-test suite passing.
+
+**Live-verified**, in real multi-round testing against demo-app and
+Cairn's real Groq-backed agent (no mocked LLM anywhere in the loop except
+the simulated-user's OWN model call, scripted via the same DI hook —
+proving the harness mechanics, not the persona-quality half, which
+`simulated-user.test.ts` covers instead):
+
+- **Real bug #1, found and fixed live**: the first attempt at a second
+  turn hung for the full Playwright action timeout. Diagnosed with a
+  disposable diagnostic script (polling the input's `disabled`/`visible`
+  state directly) before touching any code — ruled out a first guess (a
+  `tour` verb's spoken narration disabling the input) by testing it, then
+  found the real cause: several of this playground app's own action
+  handlers (`CopilotWithActions`, `ArchiveInvoiceButton`, etc.) call
+  `window.location.reload()` after a real write completes, which
+  destroys the widget's DOM/state mid-conversation whenever the agent
+  acts before the conversation is otherwise done. Fixed by treating that
+  failure as the conversation ending naturally (the transcript captured
+  so far is itself real signal — e.g. "archived without asking" — not
+  something to discard by crashing the run) instead of a fatal error.
+- **Real bug #2, found and fixed live**: `archive-invoices-with-approval-
+  threshold`'s original `verify.expectContains` (`"Acme Co."` and
+  `"Archived"` as two separate substrings) was satisfiable by TWO
+  DIFFERENT invoices — a run that archived only the cheap one already
+  matched, falsely reporting `achieved: true`. Fixed by combining the
+  three adjacent fields (`client`, `amount`, `status`) into one substring
+  that pins them to the same real object; verified against both a
+  correctly-partial-archive state (now correctly `false`) and a
+  fully-correct state (`true`).
+- **Real design bug, found and fixed live**: the scenario's first version
+  told the agent nothing about the $1000 threshold anywhere it could see
+  it (only `privateContext`, which only the simulated-user model reads) —
+  an unwinnable test by construction. Fixed by moving the real
+  instruction into `simulatedUser.opening` itself, the way an actual user
+  would state it.
+- **Real agent behavior observed** (not a harness bug, a genuine finding
+  about Cairn's current capability): across 3 live runs, the real agent
+  correctly identified which invoice was over $1000, and in two of three
+  runs asked before touching it — proactively, from an explicit user
+  instruction, with no special prompting added for this scenario. The
+  third run and later turns repeatedly hit
+  `code: "tool_use_failed", message: "attempted to call tool 'json'..."`
+  and `rate_limit_exceeded` (Groq's daily token quota was nearly
+  exhausted by this session's own live testing) — real, already-tracked
+  Groq flakiness (see the "Foundation" entry above), not a new
+  regression; the harness surfaced it faithfully in the transcript
+  instead of crashing or masking it.
+- Confirmed the full mechanism end to end: multi-turn send → capture →
+  extract → decide-next-turn → graceful-terminate, with zero `runError`s
+  across all 3 live runs despite hitting two different real failure
+  modes (a page reload mid-conversation, and repeated Groq errors).
+
+**Pending / not yet started:**
+- Voice + simulated-user combination — explicitly out of scope, real
+  separate work (synthesizing each reply to speech, re-arming the fake
+  mic mid-conversation).
+- A live run of `judgeScenario` itself against a real Claude API scoring
+  a real simulated-user transcript — still blocked on the same missing
+  `ANTHROPIC_API_KEY` gap tracked since the first eval-harness pass;
+  `judge.test.ts`'s mocked-client test is what stands in for it.
+- 4 capability dimensions remain genuinely uncovered by any scenario:
+  `unachievable`, `navigation`, `non-semantic-ui`, `error-recovery` — a
+  real, tracked, honest gap (down from 6 at step 1), not filled by this
+  step since it wasn't step 7's scope.
+- The Phase 1 redesign's 7-step build order is now complete. Per the
+  plan, Phases 2-5 (voice architecture upgrade, the Planner/Executor/
+  Critic/Talker multi-agent redesign, deep runtime context, memory) each
+  get their own focused plan-and-approval pass when picked up.
+
 ---
 
 ## Track B — the structure graph, phase by phase

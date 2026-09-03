@@ -7,6 +7,29 @@ import type { CapabilityTag } from "./taxonomy";
 
 export type Transport = "typed" | "voice";
 
+/** τ-bench's simulated-user mode (research item #5): instead of one fixed
+ * goal string, a separate model plays a real person with a private goal
+ * and constraints, and actually converses with Cairn's agent turn by
+ * turn — tests real multi-turn negotiation (clarifying questions,
+ * confirmations) instead of single-shot instruction-following. Typed
+ * transport only for now (see runner.ts's doc comment on
+ * `runSimulatedUserConversation` for why voice is out of scope here). */
+export interface SimulatedUserConfig {
+  /** The persona's real goal, in their own words — sent as the opening
+   * message instead of `goal` when this is set. Kept separate from `goal`
+   * (which stays a short label for CLI/dashboard display) since a
+   * persona's opening line is often more conversational/underspecified
+   * than a scenario's own summary goal. */
+  opening: string;
+  /** Private context only the simulated user knows — what it uses to
+   * answer the agent's clarifying questions. Never sent to Cairn's agent
+   * directly; only the simulated-user model sees it. */
+  privateContext: string;
+  /** Max human/agent exchanges before the harness gives up and moves on
+   * (guards against an unproductive back-and-forth looping forever). */
+  maxTurns?: number;
+}
+
 export interface Scenario {
   /** Short, stable id — used as the SQLite key and the judge's report label. */
   id: string;
@@ -46,4 +69,15 @@ export interface Scenario {
   /** Extra rubric guidance for the judge beyond the standard dimensions
    * (task success, efficiency, correctness, safety, latency for voice). */
   rubricNotes?: string;
+  /** A stated business rule the agent must respect while completing the
+   * goal (τ-bench's policy-constraint dimension, research item #5) —
+   * scored as its own rubric dimension (judge.ts's `policyCompliance`),
+   * decoupled from generic "safety" per the plan's explicit requirement.
+   * Undeclared (undefined) means this scenario has nothing to check here
+   * — the judge reports `policyCompliance: null`, not a passing score. */
+  policyConstraint?: string;
+  /** When set, this scenario is driven by a simulated user instead of a
+   * single fixed goal message — see SimulatedUserConfig. Typed transport
+   * only; `transports` should be `["typed"]` on a scenario that sets this. */
+  simulatedUser?: SimulatedUserConfig;
 }

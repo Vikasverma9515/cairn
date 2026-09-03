@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeVoiceLatencies, matchesExpectation } from "./runner";
+import { computeVoiceLatencies, extractAgentText, matchesExpectation } from "./runner";
 import type { VoiceFrame } from "./trace";
 
 describe("matchesExpectation", () => {
@@ -73,5 +73,27 @@ describe("computeVoiceLatencies", () => {
     const latencies = computeVoiceLatencies(null, [frame("received", { type: "final", text: "x" }, 1100)]);
     expect(latencies.micToTranscriptMs).toBeNull();
     expect(latencies.totalMs).toBeNull();
+  });
+});
+
+describe("extractAgentText", () => {
+  it("reads the top-level text field a real verb response carries (COMPANION_FIELDS.text)", () => {
+    expect(extractAgentText({ verb: "explain", text: "I'm not sure how to help with that." })).toBe("I'm not sure how to help with that.");
+  });
+
+  it("joins per-step text for a tour response, which has no top-level text", () => {
+    const tourResponse = { verb: "tour", steps: [{ target: "a", text: "First, click here." }, { target: "b", text: "Then here." }] };
+    expect(extractAgentText(tourResponse)).toBe("First, click here. Then here.");
+  });
+
+  it("returns null for a verb response with nothing spoken (e.g. a plain click/fill with no text)", () => {
+    expect(extractAgentText({ verb: "click", target: "archive-btn" })).toBeNull();
+  });
+
+  it("never throws on null/malformed response bodies — a simulated-user turn should stop cleanly, not crash the run", () => {
+    expect(extractAgentText(null)).toBeNull();
+    expect(extractAgentText(undefined)).toBeNull();
+    expect(extractAgentText("not an object")).toBeNull();
+    expect(extractAgentText({ verb: "tour", steps: "not an array" })).toBeNull();
   });
 });

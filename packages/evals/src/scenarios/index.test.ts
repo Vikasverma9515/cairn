@@ -17,7 +17,7 @@ describe("scenarios/index — template expansion", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("suite size grew from the original 5 hand-written scenarios to 7 via template expansion, then to 9 with the kanban-tracker scenarios and 11 with the marketplace scenarios (step 6)", () => {
-    expect(scenarios.length).toBe(11);
+  it("suite size grew from the original 5 hand-written scenarios to 7 via template expansion, to 9 with the kanban-tracker scenarios, to 11 with the marketplace scenarios (step 6), then to 12 with the simulated-user scenario (step 7)", () => {
+    expect(scenarios.length).toBe(12);
   });
 });

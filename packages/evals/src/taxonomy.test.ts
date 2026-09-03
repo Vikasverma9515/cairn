@@ -35,6 +35,9 @@ describe("scenarios/index — capability tagging", () => {
     // forgotten - update the expected list as scenarios are added.
     // "policy-constraint" was closed by step 6b's complete-shop-checkout
     // scenario (a real server-side 403 gate, not a UI-only appearance).
-    expect(uncovered.sort()).toEqual(["ambiguous-clarify", "error-recovery", "navigation", "non-semantic-ui", "unachievable"].sort());
+    // "ambiguous-clarify" was closed by step 7's simulated-user scenario
+    // (archive-invoices-with-approval-threshold) - a real clarifying
+    // question is the correct move there, not a guess.
+    expect(uncovered.sort()).toEqual(["error-recovery", "navigation", "non-semantic-ui", "unachievable"].sort());
   });
 });

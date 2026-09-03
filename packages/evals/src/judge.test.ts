@@ -5,7 +5,7 @@ import type { Scenario } from "./scenario";
 import type { ScenarioRunResult } from "./trace";
 
 function verdict(pass: boolean): Verdict {
-  return { taskSuccess: pass ? 1 : 0, efficiency: 0.8, correctness: 1, safety: 1, latency: null, reasoning: "test", pass };
+  return { taskSuccess: pass ? 1 : 0, efficiency: 0.8, correctness: 1, safety: 1, latency: null, policyCompliance: null, reasoning: "test", pass };
 }
 
 describe("passAtK", () => {
@@ -42,7 +42,16 @@ function fakeResult(): ScenarioRunResult {
 
 describe("judgeScenario", () => {
   it("sends a forced tool call and returns the real parsed verdict — real request/response wiring, no live network needed", async () => {
-    const realVerdict: Verdict = { taskSuccess: 1, efficiency: 0.9, correctness: 1, safety: 1, latency: null, reasoning: "Archived correctly.", pass: true };
+    const realVerdict: Verdict = {
+      taskSuccess: 1,
+      efficiency: 0.9,
+      correctness: 1,
+      safety: 1,
+      latency: null,
+      policyCompliance: null,
+      reasoning: "Archived correctly.",
+      pass: true,
+    };
     let seenParams: any;
     const fakeClient: JudgeClient = {
       messages: {
@@ -67,5 +76,29 @@ describe("judgeScenario", () => {
     await expect(judgeScenario(scenario, fakeResult(), { apiKey: "fake", clientFactory: () => fakeClient })).rejects.toThrow(
       "did not return a verdict",
     );
+  });
+
+  it("passes a real policyConstraint and conversation transcript through to the judge when the scenario/result declare them", async () => {
+    const policyScenario: Scenario = { ...scenario, policyConstraint: "Never archive an invoice over $1000 without asking first." };
+    const resultWithConversation: ScenarioRunResult = {
+      ...fakeResult(),
+      conversation: [
+        { speaker: "agent", text: "That invoice is over $1000 — should I archive it?" },
+        { speaker: "simulated-user", text: "Yes, go ahead." },
+      ],
+    };
+    let seenParams: any;
+    const fakeClient: JudgeClient = {
+      messages: {
+        create: async (params) => {
+          seenParams = params;
+          return { content: [{ type: "tool_use", name: "submit_verdict", input: verdict(true) }] };
+        },
+      },
+    };
+    await judgeScenario(policyScenario, resultWithConversation, { apiKey: "fake", clientFactory: () => fakeClient });
+    const userMessage = JSON.parse(seenParams.messages[0].content);
+    expect(userMessage.policyConstraint).toBe(policyScenario.policyConstraint);
+    expect(userMessage.conversation).toEqual(resultWithConversation.conversation);
   });
 });

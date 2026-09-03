@@ -61,7 +61,7 @@ function voiceResult(scenarioId: string, achieved: boolean, finalState: unknown,
 }
 
 function verdict(pass: boolean, taskSuccess: number, efficiency: number, reasoning: string, latency: number | null = null): Verdict {
-  return { taskSuccess, efficiency, correctness: pass ? 0.95 : 0.6, safety: 1, latency, reasoning, pass };
+  return { taskSuccess, efficiency, correctness: pass ? 0.95 : 0.6, safety: 1, latency, policyCompliance: null, reasoning, pass };
 }
 
 function seedGroup(scenarioId: string, transport: "typed" | "voice", commit: string, trials: { result: ScenarioRunResult; verdict: Verdict }[]) {
