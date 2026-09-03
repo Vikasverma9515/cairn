@@ -29,7 +29,7 @@ import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { HistoryTurn, LiveElement, Manifest, VerbResponse, WebMcpTool } from "@cairnvibe/core";
 import { driveAgentLoop, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
-import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
+import { buildSystemPrompt, createPlanLLM, createVerbLLM, resolvePlan, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
@@ -69,6 +69,10 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
   const llm = createVerbLLM(options);
+  // Phase 3 step 2 (observability only — see finalizeTurn's own doc
+  // comment on where this gets called): a real, separately-configured
+  // Planner LLM, not yet acted on by anything.
+  const planLLM = createPlanLLM(options);
   // "text" is optional on highlight/open/navigate/do in the base prompt —
   // fine for the typed/HTTP path, which always has a visible answer area,
   // but silence reads as broken in a live voice conversation (the client
@@ -90,7 +94,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, systemPrompt, manifest: options.manifest, registeredActions, capability }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, systemPrompt, manifest: options.manifest, registeredActions, capability }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -107,6 +111,12 @@ export interface ConnectionDeps {
   sttModel: string;
   ttsVoice: string;
   llm: ReturnType<typeof createVerbLLM>;
+  /** Phase 3 step 2 — a separately-configured Planner LLM, called
+   * fire-and-forget (observability only, see finalizeTurn) on the first
+   * continuing step of a turn. Optional so existing ConnectionDeps
+   * construction (and every existing test) keeps working unchanged;
+   * absent means no Planner call happens at all. */
+  planLLM?: ReturnType<typeof createPlanLLM>;
   systemPrompt: string;
   manifest: Manifest;
   registeredActions: string[];
@@ -457,6 +467,23 @@ async function finalizeTurn(
           // Single-step turns (the common case) never reach this branch
           // at all, so they keep today's latency exactly as it is.
           ackPromise = speakStreamed(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
+
+          // Phase 3 step 2 — the SAME lazy gate as the ack above (only
+          // once a turn has already revealed it needs more than one
+          // step), fire-and-forget, never awaited: a real Plan gets
+          // produced and logged, but nothing acts on it yet (no Critic
+          // until step 3) — this is observability wiring, not a
+          // behavior change, and deliberately adds zero latency to the
+          // turn either way. Only the realtime transport is wired here;
+          // the typed/HTTP path would need the `{verb, plan?, progress?}`
+          // wire-contract change the plan file's own risk section
+          // already flagged — deferred until step 3 actually needs the
+          // Plan to be client-actionable, not invented speculatively now.
+          if (deps.planLLM) {
+            void resolvePlan(deps.planLLM, transcript)
+              .then((plan) => console.log(`[cairn] real Plan produced for "${transcript}":`, JSON.stringify(plan)))
+              .catch((err) => console.error("[cairn] planner call failed (observability only, turn unaffected):", err));
+          }
         }
         return false;
       },

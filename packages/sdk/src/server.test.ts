@@ -5,6 +5,7 @@ import {
   GroqVerbLLM,
   buildVerbToolSchema,
   createCopilotHandlerWithLLM,
+  resolvePlan,
   type GroqLikeClient,
   type MessagesClient,
   type VerbLLM,
@@ -546,6 +547,35 @@ describe("AnthropicVerbLLM", () => {
     const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} });
     await expect(llm.respond("system", "user")).resolves.toBeUndefined();
   });
+
+  it("real Phase 3 requirement: an optional custom toolName/toolDescription lets the SAME provider class serve a different forced tool (e.g. the Planner's create_plan) — request and extraction both use the custom name", async () => {
+    let seenTools: any;
+    let seenToolChoice: any;
+    const fakeClient: MessagesClient = {
+      messages: {
+        create: async (params: any) => {
+          seenTools = params.tools;
+          seenToolChoice = params.tool_choice;
+          return { content: [{ type: "tool_use", name: "create_plan", input: { goal: "x", facts: [], tasks: [] } }] };
+        },
+      },
+    };
+    const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} }, "create_plan", "Submit a plan.");
+    await expect(llm.respond("system", "user")).resolves.toEqual({ goal: "x", facts: [], tasks: [] });
+    expect(seenTools[0].name).toBe("create_plan");
+    expect(seenTools[0].description).toBe("Submit a plan.");
+    expect(seenToolChoice).toEqual({ type: "tool", name: "create_plan" });
+  });
+
+  it("a custom toolName means a tool_use block under the DEFAULT verb tool name is correctly ignored, not accidentally matched", async () => {
+    const fakeClient: MessagesClient = {
+      messages: {
+        create: async () => ({ content: [{ type: "tool_use", name: "respond_with_verb", input: { verb: "explain", text: "wrong tool" } }] }),
+      },
+    };
+    const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} }, "create_plan", "Submit a plan.");
+    await expect(llm.respond("system", "user")).resolves.toBeUndefined();
+  });
 });
 
 describe("GroqVerbLLM", () => {
@@ -697,6 +727,90 @@ describe("GroqVerbLLM", () => {
     await llm.respond("s", "u");
     await llm.respond("s", "u");
     expect(seenKeys).toEqual(["key-a", "key-b", "key-a"]);
+  });
+
+  it("real Phase 3 requirement: an optional custom toolName/toolDescription puts the Planner's own tool (not respond_with_verb) in the request", async () => {
+    let seenTools: any;
+    let seenToolChoice: any;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async (params: any) => {
+            seenTools = params.tools;
+            seenToolChoice = params.tool_choice;
+            return { choices: [{ message: { tool_calls: [{ function: { name: "create_plan", arguments: JSON.stringify({ goal: "x", facts: [], tasks: [] }) } }] } }] };
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient, "create_plan", "Submit a plan.");
+    await expect(llm.respond("system", "user")).resolves.toEqual({ goal: "x", facts: [], tasks: [] });
+    expect(seenTools[0].function.name).toBe("create_plan");
+    expect(seenTools[0].function.description).toBe("Submit a plan.");
+    expect(seenToolChoice).toEqual({ type: "function", function: { name: "create_plan" } });
+  });
+});
+
+describe("resolvePlan", () => {
+  function fakePlanLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("sends the real goal and returns a real, fully-assembled Plan — version and per-task status filled in around the model's own output", async () => {
+    let seenSystemPrompt = "";
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (systemPrompt, userMessage) => {
+      seenSystemPrompt = systemPrompt;
+      seenUserMessage = userMessage;
+      return {
+        goal: "Archive my old invoices",
+        facts: ["Acme Co. is $1,200, over the $1000 threshold"],
+        tasks: [
+          { id: "t1", description: "Ask before archiving Acme Co.", doneContract: "The user has confirmed" },
+          { id: "t2", description: "Archive Globex Inc.", doneContract: "Globex Inc. shows status Archived" },
+        ],
+      };
+    });
+
+    const plan = await resolvePlan(llm, "Archive my old invoices");
+
+    expect(JSON.parse(seenUserMessage)).toEqual({ goal: "Archive my old invoices" });
+    expect(seenSystemPrompt).toContain("planning layer");
+    expect(plan.version).toBe(1);
+    expect(plan.goal).toBe("Archive my old invoices");
+    // The first task starts in_progress (it's what the Executor would act
+    // on first); every later task starts pending — real, harness-assigned
+    // bookkeeping the model was never asked to produce.
+    expect(plan.tasks[0].status).toBe("in_progress");
+    expect(plan.tasks[1].status).toBe("pending");
+    expect(plan.tasks).toHaveLength(2);
+  });
+
+  it("passes through a real non-default version, for a genuine Planner revision (later steps)", async () => {
+    const llm = fakePlanLLM(async () => ({ goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] }));
+    const plan = await resolvePlan(llm, "x", 3);
+    expect(plan.version).toBe(3);
+  });
+
+  it("degrades to a real, usable single-task fallback plan when the LLM call itself throws — never blocks the turn on a Planner hiccup", async () => {
+    const llm = fakePlanLLM(async () => {
+      throw new Error("network blip");
+    });
+    const plan = await resolvePlan(llm, "Archive my old invoices");
+    expect(plan).toEqual({
+      version: 1,
+      goal: "Archive my old invoices",
+      facts: [],
+      tasks: [{ id: "t1", description: "Archive my old invoices", doneContract: "The stated goal has been achieved.", status: "in_progress" }],
+    });
+  });
+
+  it("degrades to the same fallback plan when the model's response fails schema validation", async () => {
+    const llm = fakePlanLLM(async () => ({ not: "a valid planner output" }));
+    const plan = await resolvePlan(llm, "Archive my old invoices");
+    expect(plan.tasks).toEqual([
+      { id: "t1", description: "Archive my old invoices", doneContract: "The stated goal has been achieved.", status: "in_progress" },
+    ]);
   });
 });
 

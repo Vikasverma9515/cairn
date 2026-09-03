@@ -1466,6 +1466,96 @@ console errors in a fresh tab afterward.
 - `web-component.ts`'s own duplication/gap (found above) — not fixed,
   deliberately out of this step's scope.
 
+### Step 2: Plan/Progress types + a lazy-gated Planner, Critic absent
+
+**Built:**
+- `packages/core/src/plan.ts` (new, re-exported from `index.ts`) —
+  `Task`/`Plan`/`ProgressLedger` schemas (a flat ordered list, not a DAG;
+  versioned so a real revision is always a new version, never an
+  in-place mutation) plus `PlannerOutput`/`PlannerOutputTask` — a
+  deliberately NARROWER schema for what the model itself produces
+  (`version` and each task's `status` are harness-owned bookkeeping the
+  model has no way to correctly reason about, assembled around its raw
+  output instead of asked of it directly). Kept free of any import from
+  `index.ts` (a real circular-dependency risk given `index.ts` re-exports
+  this file) — confirmed live: `plan.test.ts`'s first test is specifically
+  a smoke test that importing via `index.ts` doesn't throw a TDZ error.
+- `packages/sdk/src/server.ts` — generalized `AnthropicVerbLLM`/
+  `GroqVerbLLM` to accept an optional `toolName`/`toolDescription` pair
+  (defaulting to the existing verb-resolution tool, so every existing
+  caller/test is unaffected) instead of hardcoding `VERB_TOOL_NAME` —
+  the same real rotation/retry/model-selection machinery now serves any
+  forced-tool-call shape, not just verb resolution. `createToolLLM`
+  factors out `createVerbLLM`'s own logic; `createPlanLLM` is the new
+  thin wrapper for the Planner's tool. `resolvePlan(llm, goal, version)`
+  mirrors `resolveVerb`'s own resilience discipline exactly — never
+  throws to the caller, degrades to a real single-task fallback plan
+  ("do the whole goal as one task") on any failure, so a Planner hiccup
+  can't block a turn.
+- `realtime-server.ts`'s `finalizeTurn` — a real Planner call wired into
+  the SAME lazy gate the existing Talker ack already uses (`!terminal &&
+  iteration === 0`), fire-and-forget, logged, never awaited — a real Plan
+  gets produced but nothing acts on it yet (no Critic until step 3).
+  `ConnectionDeps.planLLM` is optional specifically so this is additive:
+  every existing caller/test that doesn't pass it gets exactly today's
+  behavior, no Planner call at all.
+- **Real scoping finding, not an oversight**: only the realtime/voice
+  transport is wired this step. The typed/HTTP transport's `resolveVerb`
+  is called fresh per stateless POST with no iteration context of its
+  own — actually exposing a Plan there needs the `{verb, plan?,
+  progress?}` wire-contract change the plan file's own risk section
+  already named, which has real backward-compatibility implications for
+  published `@cairnvibe/core`/`@cairnvibe/sdk` consumers. Deferred
+  deliberately to step 3, when the Critic actually needs the Plan to be
+  client-actionable on both transports — not invented speculatively now
+  for a piece nothing yet uses.
+
+**Tests:** `plan.test.ts` (7, new) — schema validation plus the
+circular-import smoke test. `server.test.ts` gained 9 tests: custom
+`toolName`/`toolDescription` on both providers (including a real check
+that a tool_use block under the OLD default name is correctly ignored
+once the tool name has changed), and 5 for `resolvePlan` itself (real
+request shape, real Plan assembly with correct `status`/`version`
+bookkeeping, a custom version number, and both fallback paths — LLM
+throw, schema-invalid response). `realtime-server.test.ts` gained 2:
+the Planner call fires exactly once on the first continuing step and is
+provably non-blocking (a deliberately slow fake Planner client, awaited
+separately from the turn itself, confirms the turn's real outcome —
+`speakStreamed`'s final call — is unaffected), and a turn with no
+`planLLM` configured behaves exactly as before (opt-in, not required).
+Full monorepo typecheck + 322-test suite passing — `packages/core` and
+`packages/sdk` both rebuilt (`npm run build`) so Node-resolved `dist/`
+output actually reflects the new exports (a real gotcha hit live:
+`packages/core`'s `exports` map resolves `"."` to `dist/index.js` under
+Node, not raw source — `plan.ts`'s new exports were invisible to vitest
+until rebuilt).
+
+**Live-verified:** wrote a small script calling the real, unmocked
+`resolvePlan` against demo-app's real, live Groq credentials (independent
+of the voice-transport wiring, which is in-process/fire-and-forget and
+already covered by precise unit tests) — a real request for "Set up a
+workflow that emails ops@example.com whenever someone fills out my
+contact form" produced a real, coherent 3-task plan (navigate to
+workflow settings → configure the trigger/action and save → submit a
+test entry and verify the email arrives), each with a genuinely
+checkable `doneContract`, from the actual production model this repo
+runs on.
+
+**Pending / not yet started:**
+- The typed/HTTP transport's own Planner wiring — deliberately deferred
+  (see the scoping finding above) until the wire-contract change is
+  actually needed.
+- Steps 3-5 of Phase 3's build order (the Critic — the actual fix for
+  the diagnosed bug; Executor local retry; the Talker event stream) —
+  not started.
+- The realtime transport's Planner wiring was verified via `resolvePlan`
+  directly against real Groq, not through an actual live voice call over
+  the WebSocket relay (would need real audio via the fake-mic technique,
+  plus the same Groq-quota constraint noted in step 1) — the unit tests
+  proving the wiring's timing/opt-in behavior plus this direct real-model
+  check were judged sufficient for an observability-only, no-user-visible-
+  behavior-change step.
+
 ---
 
 ## Track B — the structure graph, phase by phase

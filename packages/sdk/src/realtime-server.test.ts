@@ -317,6 +317,83 @@ describe("handleDeepgramMessage", () => {
     expect(speakStreamed).toHaveBeenCalledWith("Quick answer.");
   });
 
+  it("Phase 3 step 2: a real Planner call fires exactly once on the first continuing step, fire-and-forget — never delays or changes the turn's real outcome", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      if (call <= 2) return { verb: "read", target: "archive-btn" };
+      return { verb: "explain", text: "Here's what I found." };
+    });
+    const deps = fakeDeps(respond);
+    let planCalls = 0;
+    let resolvePlanCall: () => void = () => {};
+    const planStarted = new Promise<void>((resolve) => {
+      resolvePlanCall = resolve;
+    });
+    deps.planLLM = {
+      respond: async () => {
+        planCalls++;
+        resolvePlanCall();
+        // Deliberately slow — proves the turn doesn't wait for this.
+        await new Promise((r) => setTimeout(r, 50));
+        return { goal: "check a couple things then tell me", facts: [], tasks: [{ id: "t1", description: "check things", doneContract: "checked" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    const turnPromise = handleDeepgramMessage(
+      resultsMessage("check a couple things then tell me", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    await planStarted; // the Planner call has started — prove it started DURING the turn, not after
+    await turnPromise;
+
+    expect(planCalls).toBe(1);
+    // The turn itself completed correctly, unaffected by the still-slower Planner call.
+    expect(speakStreamed).toHaveBeenNthCalledWith(2, "Here's what I found.");
+  });
+
+  it("Phase 3 step 2: no planLLM configured means no Planner call at all — the observability wiring is opt-in, not required", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "read", target: "archive-btn" } : { verb: "explain", text: "done" };
+    });
+    const deps = fakeDeps(respond); // no planLLM set
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("v");
+
+    await expect(
+      handleDeepgramMessage(
+        resultsMessage("check something", { isFinal: true, speechFinal: true }),
+        client,
+        deps,
+        getContextWithArchiveBtn,
+        speakStreamed,
+        history,
+        turnState,
+        () => 0,
+        waitForToolResult,
+      ),
+    ).resolves.not.toThrow();
+    expect(speakStreamed).toHaveBeenCalledWith("done");
+  });
+
   it("agent loop: hitting the iteration cap with no terminal verb degrades honestly instead of hanging", async () => {
     const { client, sent } = fakeClient();
     const respond = vi.fn().mockResolvedValue({ verb: "read", target: "archive-btn" });

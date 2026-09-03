@@ -7,17 +7,22 @@ import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
 import {
   CopilotRequestSchema,
+  PlannerOutputSchema,
   VERBS,
   VerbResponseSchema,
   type HistoryTurn,
   type LiveElement,
   type Manifest,
+  type Plan,
+  type PlannerOutput,
   type VerbResponse,
   type WebMcpTool,
 } from "@cairnvibe/core";
 import { KeyRotator } from "./key-rotator";
 
 const VERB_TOOL_NAME = "respond_with_verb";
+const PLAN_TOOL_NAME = "create_plan";
+const PLAN_TOOL_DESCRIPTION = "Submit an ordered task plan for achieving the user's real end goal.";
 
 /**
  * What the agent is allowed to do, independent of which specific "do"
@@ -230,10 +235,63 @@ export async function resolveVerb(
   return parsedVerb.data;
 }
 
-/** Builds the provider-appropriate VerbLLM from the same options createCopilotHandler accepts — reused by the realtime relay. */
-export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
-  const registeredActions = options.registeredActions ?? [];
-  const toolSchema = buildVerbToolSchema(registeredActions);
+/**
+ * Phase 3, step 2 (see DEVELOPMENT.md/the plan file) — the Planner half
+ * of the Planner/Executor/Critic/Talker redesign. Decomposes a real end
+ * goal into an ordered task list BEFORE any execution happens, mirroring
+ * resolveVerb's own resilience discipline: never throws to the caller,
+ * degrades to a real, usable single-task fallback plan on any failure
+ * (a bad LLM response, a schema mismatch, a network error) rather than
+ * blocking the turn on a Planner hiccup. `version`/each task's `status`
+ * are harness-owned, not asked of the model (PlannerOutputSchema's own
+ * doc comment) — assembled here around the model's raw output.
+ *
+ * Deliberately does NOT yet change what the loop actually does with the
+ * result — step 2's own scope is observability only (see the doc comment
+ * on this function's call site in realtime-server.ts). The Critic (step
+ * 3) is what makes a Plan's tasks/doneContracts actually drive behavior.
+ */
+export async function resolvePlan(llm: VerbLLM, goal: string, version = 1): Promise<Plan> {
+  let candidate: unknown;
+  try {
+    candidate = await llm.respond(buildPlannerSystemPrompt(), JSON.stringify({ goal }));
+  } catch (err) {
+    console.error("[cairn] planner LLM call failed:", err);
+    return fallbackPlan(goal, version);
+  }
+
+  const parsed = PlannerOutputSchema.safeParse(candidate);
+  if (!parsed.success) return fallbackPlan(goal, version);
+  return assemblePlan(parsed.data, version);
+}
+
+function assemblePlan(output: PlannerOutput, version: number): Plan {
+  return {
+    version,
+    goal: output.goal,
+    facts: output.facts,
+    tasks: output.tasks.map((task, i) => ({ ...task, status: i === 0 ? "in_progress" : "pending" })),
+  };
+}
+
+/** The real, single-task plan used when the Planner call itself fails —
+ * "do the whole goal as one task" is always a valid (if unstructured)
+ * plan, so a Planner hiccup degrades the redesign back to today's
+ * behavior instead of blocking the turn. */
+function fallbackPlan(goal: string, version: number): Plan {
+  return {
+    version,
+    goal,
+    facts: [],
+    tasks: [{ id: "t1", description: goal, doneContract: "The stated goal has been achieved.", status: "in_progress" }],
+  };
+}
+
+/** Builds a provider-appropriate forced-single-tool-call LLM for ANY tool
+ * shape (verb resolution, planning, ...) — the real rotation/model-
+ * selection logic every such caller needs, factored out once so
+ * createVerbLLM/createPlanLLM stay thin, tool-specific wrappers around it. */
+function createToolLLM(options: CreateCopilotHandlerOptions, toolSchema: Record<string, unknown>, toolName: string, toolDescription: string): VerbLLM {
   const provider = options.provider ?? "anthropic";
 
   if (provider === "groq") {
@@ -243,15 +301,27 @@ export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLL
         ? new KeyRotator([options.apiKey])
         : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
     if (!rotator) {
-      throw new Error("createVerbLLM: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
+      throw new Error("createToolLLM: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
     }
     const model = options.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
-    return new GroqVerbLLM(rotator, model, toolSchema);
+    return new GroqVerbLLM(rotator, model, toolSchema, undefined, toolName, toolDescription);
   }
 
   const client = new Anthropic({ apiKey: options.apiKey });
   const model = options.model ?? process.env.CAIRN_RUNTIME_MODEL ?? "claude-opus-5";
-  return new AnthropicVerbLLM(client, model, toolSchema);
+  return new AnthropicVerbLLM(client, model, toolSchema, toolName, toolDescription);
+}
+
+/** Builds the provider-appropriate VerbLLM from the same options createCopilotHandler accepts — reused by the realtime relay. */
+export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
+  const registeredActions = options.registeredActions ?? [];
+  return createToolLLM(options, buildVerbToolSchema(registeredActions), VERB_TOOL_NAME, VERB_TOOL_DESCRIPTION);
+}
+
+/** Same real rotation/model-selection logic as createVerbLLM, configured
+ * for the Planner's own tool instead — see resolvePlan. */
+export function createPlanLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
+  return createToolLLM(options, buildPlanToolSchema(), PLAN_TOOL_NAME, PLAN_TOOL_DESCRIPTION);
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +333,8 @@ export class AnthropicVerbLLM implements VerbLLM {
     private client: MessagesClient,
     private model: string,
     private toolSchema: Record<string, unknown>,
+    private toolName: string = VERB_TOOL_NAME,
+    private toolDescription: string = VERB_TOOL_DESCRIPTION,
   ) {}
 
   async respond(systemPrompt: string, userMessage: string): Promise<unknown> {
@@ -272,18 +344,18 @@ export class AnthropicVerbLLM implements VerbLLM {
       system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
       tools: [
         {
-          name: VERB_TOOL_NAME,
-          description: VERB_TOOL_DESCRIPTION,
+          name: this.toolName,
+          description: this.toolDescription,
           input_schema: this.toolSchema,
           strict: true,
         },
       ],
-      tool_choice: { type: "tool", name: VERB_TOOL_NAME },
+      tool_choice: { type: "tool", name: this.toolName },
       messages: [{ role: "user", content: userMessage }],
     });
 
     const toolUse = response.content.find(
-      (block: any): block is Anthropic.ToolUseBlock => block?.type === "tool_use" && block?.name === VERB_TOOL_NAME,
+      (block: any): block is Anthropic.ToolUseBlock => block?.type === "tool_use" && block?.name === this.toolName,
     );
     return toolUse?.input;
   }
@@ -311,6 +383,8 @@ export class GroqVerbLLM implements VerbLLM {
     private model: string,
     private toolSchema: Record<string, unknown>,
     private clientFactory: (apiKey: string) => GroqLikeClient = (apiKey) => new Groq({ apiKey }),
+    private toolName: string = VERB_TOOL_NAME,
+    private toolDescription: string = VERB_TOOL_DESCRIPTION,
   ) {}
 
   async respond(systemPrompt: string, userMessage: string): Promise<unknown> {
@@ -355,13 +429,13 @@ export class GroqVerbLLM implements VerbLLM {
         {
           type: "function",
           function: {
-            name: VERB_TOOL_NAME,
-            description: VERB_TOOL_DESCRIPTION,
+            name: this.toolName,
+            description: this.toolDescription,
             parameters: this.toolSchema,
           },
         },
       ],
-      tool_choice: { type: "function", function: { name: VERB_TOOL_NAME } },
+      tool_choice: { type: "function", function: { name: this.toolName } },
     });
 
     const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
@@ -652,4 +726,51 @@ function buildPageElements(manifest: Manifest, route: string): string {
   if (!page) return `(no manifest entry for route ${JSON.stringify(route)} — this may be a page cairn hasn't indexed yet)`;
   if (page.elements.length === 0) return "none";
   return page.elements.map((e) => `${e.id} (${e.does})`).join("; ");
+}
+
+/** Deliberately narrower than PlanSchema — no `version`/task `status`,
+ * see PlannerOutputSchema's own doc comment for why those stay
+ * harness-owned rather than something the model is asked to invent. */
+function buildPlanToolSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      goal: { type: "string", description: "The real end goal, restated in your own words." },
+      facts: {
+        type: "array",
+        items: { type: "string" },
+        description: "Real facts already known that are relevant to the goal, from the context you were given. Empty array if there's nothing worth carrying forward — never invent one.",
+      },
+      tasks: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "A short, stable id for this task, e.g. \"t1\"." },
+            description: { type: "string", description: "What this task achieves, in plain language, concrete enough to act on." },
+            doneContract: {
+              type: "string",
+              description: "What counts as this task being ACTUALLY done, checkable against real state — a real observable outcome, never \"the user is satisfied\" or similar.",
+            },
+          },
+          required: ["id", "description", "doneContract"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["goal", "facts", "tasks"],
+    additionalProperties: false,
+  };
+}
+
+function buildPlannerSystemPrompt(): string {
+  return `You are the planning layer of an in-app AI agent that operates a web app on a user's behalf. You do NOT act directly — you decompose the user's real end goal into an ordered list of concrete tasks a separate execution layer will carry out one at a time, using real clicks/fills/reads/tool calls against the real app.
+
+Break the goal into as FEW tasks as genuinely make sense — most goals need only 1-3 tasks; only split further when steps are genuinely independent or need to happen in a specific real order. Each task needs:
+- id: a short, stable id, e.g. "t1", "t2".
+- description: what this task achieves, concrete enough to act on.
+- doneContract: what counts as this task being ACTUALLY done, checkable against real state — a real observable outcome, never "the model thinks it's done" or "the user is satisfied."
+
+List any real facts already known that bear on the goal, in "facts" — leave it empty if there's nothing worth carrying forward. Never invent a task that isn't a real, necessary step toward the stated goal.`;
 }
