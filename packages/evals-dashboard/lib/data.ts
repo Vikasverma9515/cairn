@@ -134,3 +134,106 @@ export function getCapabilityBreakdown(): CapabilityBreakdownRow[] {
   }
   return CAPABILITY_TAGS.map((tag) => tally.get(tag)!);
 }
+
+export interface CommitInfo {
+  commit: string;
+  /** Most recent ran_at among this commit's runs — what the picker sorts by. */
+  ranAt: string;
+}
+
+/** Every distinct commit with recorded runs, most recent first — the
+ * comparison view's picker options. */
+export function getCommits(): CommitInfo[] {
+  const runs = allRuns(getDb());
+  const latestByCommit = new Map<string, string>();
+  for (const run of runs) {
+    const prev = latestByCommit.get(run.commit);
+    if (!prev || run.ranAt > prev) latestByCommit.set(run.commit, run.ranAt);
+  }
+  return Array.from(latestByCommit.entries())
+    .map(([commit, ranAt]) => ({ commit, ranAt }))
+    .sort((a, b) => b.ranAt.localeCompare(a.ranAt));
+}
+
+export interface CommitScenarioStat {
+  trialGroup: string;
+  passAtK: boolean;
+  trialCount: number;
+  avgTaskSuccess: number;
+  avgEfficiency: number;
+  avgCorrectness: number;
+  avgSafety: number;
+  avgLatency: number | null;
+}
+
+function statsForCommit(runs: StoredRun[], scenarioId: string, transport: string, commit: string): CommitScenarioStat | null {
+  const matching = runs.filter((r) => r.scenarioId === scenarioId && r.transport === transport && r.commit === commit);
+  if (matching.length === 0) return null;
+  // A commit can carry more than one trial group for the same scenario
+  // (re-run by hand) — take the most recent one, same "latest wins" rule
+  // the scenario list uses.
+  const latestGroup = matching.reduce((latest, r) => (r.id > latest.id ? r : latest), matching[0]).trialGroup;
+  const groupRuns = matching.filter((r) => r.trialGroup === latestGroup);
+  const avg = (select: (r: StoredRun) => number) => groupRuns.reduce((sum, r) => sum + select(r), 0) / groupRuns.length;
+  const latencies = groupRuns.map((r) => r.verdict.latency).filter((v): v is number => v !== null);
+  return {
+    trialGroup: latestGroup,
+    passAtK: groupRuns.every((r) => r.verdict.pass),
+    trialCount: groupRuns.length,
+    avgTaskSuccess: avg((r) => r.verdict.taskSuccess),
+    avgEfficiency: avg((r) => r.verdict.efficiency),
+    avgCorrectness: avg((r) => r.verdict.correctness),
+    avgSafety: avg((r) => r.verdict.safety),
+    avgLatency: latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null,
+  };
+}
+
+export interface ComparisonRow {
+  scenarioId: string;
+  scenarioName: string;
+  transport: string;
+  a: CommitScenarioStat | null;
+  b: CommitScenarioStat | null;
+  /** "regressed" when b newly fails pass^k or its taskSuccess drops
+   * noticeably vs a — the direct "regression detection highlighted"
+   * requirement from the plan's comparison-view spec. */
+  status: "regressed" | "improved" | "unchanged" | "new-in-b" | "missing-in-b";
+}
+
+const REGRESSION_THRESHOLD = 0.15;
+
+function compareStatus(a: CommitScenarioStat | null, b: CommitScenarioStat | null): ComparisonRow["status"] {
+  if (!a && b) return "new-in-b";
+  if (a && !b) return "missing-in-b";
+  if (!a || !b) return "unchanged";
+  if (a.passAtK && !b.passAtK) return "regressed";
+  if (!a.passAtK && b.passAtK) return "improved";
+  const delta = b.avgTaskSuccess - a.avgTaskSuccess;
+  if (delta <= -REGRESSION_THRESHOLD) return "regressed";
+  if (delta >= REGRESSION_THRESHOLD) return "improved";
+  return "unchanged";
+}
+
+/** Side-by-side score/latency diff per scenario between two commits, with
+ * regressions flagged — the plan's comparison-view spec. */
+export function getComparisonRows(commitA: string, commitB: string): ComparisonRow[] {
+  const runs = allRuns(getDb());
+  const pairKeys = new Set<string>();
+  for (const run of runs) {
+    if (run.commit === commitA || run.commit === commitB) pairKeys.add(`${run.scenarioId}::${run.transport}`);
+  }
+
+  const rows: ComparisonRow[] = [];
+  for (const key of pairKeys) {
+    const sepIndex = key.lastIndexOf("::");
+    const scenarioId = key.slice(0, sepIndex);
+    const transport = key.slice(sepIndex + 2);
+    const scenario = scenarios.find((s) => s.id === scenarioId);
+    const a = statsForCommit(runs, scenarioId, transport, commitA);
+    const b = statsForCommit(runs, scenarioId, transport, commitB);
+    rows.push({ scenarioId, scenarioName: scenario?.name ?? scenarioId, transport, a, b, status: compareStatus(a, b) });
+  }
+
+  rows.sort((x, y) => x.scenarioName.localeCompare(y.scenarioName) || x.transport.localeCompare(y.transport));
+  return rows;
+}

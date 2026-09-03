@@ -13,4 +13,5 @@ examples/demo-app/data/
 .vercel
 packages/evals/data/
 packages/evals/.cache/
+packages/evals-dashboard/.run-logs/
 packages/evals/scratch-test.ts

@@ -997,7 +997,7 @@ a group with correct verdict scores and expandable round-trip JSON; the
 capability breakdown renders correct per-tag ratios and "no coverage
 yet" for the 6 untagged dimensions. No console errors, no server errors.
 
-**Pending / not yet started:**
+**Pending / not yet started (at the time of the entry above):**
 - Step 5's remaining two views (comparison, run trigger) — scenario list
   + trace viewer were built first as the two highest-value views per the
   plan; not started yet.
@@ -1009,6 +1009,60 @@ yet" for the 6 untagged dimensions. No console errors, no server errors.
   the exact same store the seed script wrote to.
 - Step 6 (new primitives/genres) and step 7 (simulated-user mode,
   policy-constraint scoring) — not started, per the build order.
+
+**Update — step 5's last two views, closing it out:**
+
+**Built:**
+- `getCommits`/`getComparisonRows` (`lib/data.ts`) — every distinct
+  commit with recorded runs, and a side-by-side stat diff (pass^k +
+  averaged verdict dimensions) between any two of them for every
+  scenario×transport pair either commit touched.
+- **Comparison view** (`app/compare/page.tsx`) — a plain `<form
+  method="GET">` commit-picker (no client JS) rendering a diff table;
+  each row's `status` (`regressed`/`improved`/`unchanged`/`new-in-b`/
+  `missing-in-b`) is computed from a real rule — a pass^k flip, or a
+  ≥0.15 taskSuccess swing — not eyeballed from the raw numbers, per the
+  plan's "regression detection highlighted" requirement.
+- **Run trigger** (`lib/run.ts`, `app/run/`, `app/run/[id]/`) — a
+  `"use server"` action spawns the real `npm run evals` CLI as a child
+  process (cwd `packages/evals`), captures stdout/stderr to a log file,
+  and redirects to a live log page. Deliberately runs the actual CLI
+  command rather than reimplementing suite-running logic in the
+  dashboard — its failure modes are the CLI's own, not something new to
+  keep in sync.
+
+**Tests:** no new automated tests (same reasoning as the first half of
+this step — a rendering/process-spawning surface, `tsc --noEmit` is the
+real check); `packages/evals-dashboard` typechecks clean, full monorepo
+typecheck + 284-test suite still pass.
+
+**Live-verified**, all in a real browser against the seeded demo store:
+- Comparison view: `e9f8a7c` vs `a1b2c3d` correctly shows
+  `workflow-email-on-form-submit-1` as **regressed** (pass→fail,
+  taskSuccess −0.63) and two scenarios only present at `e9f8a7c` as
+  `missing in B`; the default (two most-recent commits) correctly shows
+  the real voice-regression fix as **improved** (fail→pass).
+- Run trigger: clicking "Run suite now" really spawned `npm run evals`,
+  the log page showed live output, and after it exited the page showed
+  `exited 1` with the CLI's own real error —
+  `cairn-evals: DEEPGRAM_API_KEY is not set — export it and re-run.` —
+  proving the whole spawn → capture → redirect → status pipeline works
+  end to end, using the real CLI's real failure, not a simulated one.
+- No console errors, no server errors, across both views.
+
+**Pending / not yet started:**
+- The dashboard still has never been run against a REAL (non-seeded,
+  fully-passing) trial history — the run-trigger live-check above
+  actually *proves* why: this repo has no real `ANTHROPIC_API_KEY` or
+  `DEEPGRAM_API_KEY` anywhere, so even triggering a run from the UI
+  fails at the same `requireEnv` gate the CLI always has. Once real keys
+  exist, delete `packages/evals/data/evals.db` and either run `npm run
+  evals` directly or use the new in-UI trigger — both paths are now
+  live-proven to work.
+- Step 5 is now complete (all 4 planned views: scenario list, trace
+  viewer, capability breakdown, comparison + run trigger). Step 6 (new
+  primitives/genres) and step 7 (simulated-user mode, policy-constraint
+  scoring) — not started, per the build order.
 
 ---
 
