@@ -1,0 +1,24 @@
+{
+  "name": "@cairnvibe/evals-dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The eval platform's real UI — a scenario list, an expandable trace viewer, and a capability breakdown, reading directly from @cairnvibe/evals's own SQLite run history. Never published, same status as examples/demo-app.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "seed-demo-data": "tsx scripts/seed-demo-data.ts"
+  },
+  "dependencies": {
+    "@cairnvibe/evals": "^0.0.1",
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  }
+}

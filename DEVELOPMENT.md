@@ -935,6 +935,81 @@ packages typecheck clean.
 - No CI/pre-publish wiring, same gap as the first pass — still a manual
   step.
 
+### Step 5: the dashboard app
+
+The plan's literal instruction was `packages/evals/app/`. Deviated from
+that on purpose: Next.js expects to own its package root's
+`tsconfig.json`, which would collide with `packages/evals`'s existing
+one (used by the CLI and vitest) the same way `examples/demo-app` is
+already kept separate from the library packages in this repo. Built a
+new sibling workspace package, `packages/evals-dashboard`, instead —
+same convention, not a new one.
+
+**Built:**
+- `packages/evals-dashboard` — a small Next.js 14 App Router app, plain
+  CSS (no Tailwind — avoids re-triggering the `lightningcss-darwin-
+  arm64` native-binary issue already hit earlier this session).
+- `lib/data.ts` — reads `@cairnvibe/evals`'s real SQLite store directly
+  (`openStore`/`allRuns`/`trialGroupResults`, same functions the CLI
+  uses) via new export-map entries (`./scenarios`, `./trace` added
+  alongside the existing `./store`/`./taxonomy`/`./judge`/`./primitives`
+  in `packages/evals/package.json`) — no separate API layer, since both
+  packages already share one filesystem. Resolves the db path relative
+  to the sibling `packages/evals` checkout by convention, overridable
+  via `CAIRN_EVALS_DB_PATH`. Groups raw rows into per-(scenario,
+  transport) summaries with real pass^k history, and a per-capability
+  pass-rate aggregate — the same grouping logic both the scenario list
+  and the capability breakdown read, computed once.
+- **Scenario list** (`app/page.tsx`) — every scenario × transport pair,
+  latest pass^k pill, capability tags, a real sparkline of every past
+  trial group's pass/fail.
+- **Trace viewer** (`app/runs/[trialGroup]/page.tsx`) — every trial in a
+  group as an expandable card: verdict dimensions, judge reasoning, and
+  every real copilot round trip / voice frame as its own drill-down
+  `<details>`, down to the raw request/response JSON — native HTML
+  disclosure widgets, no client-side JS needed for a v1.
+- **Capability breakdown** (`app/capabilities/page.tsx`) — pass rate per
+  taxonomy dimension, counting each scenario's latest trial group once;
+  an empty dimension renders as "no coverage yet" rather than 0%, so the
+  6 untagged gaps from step 1 read as gaps, not failures.
+- `.claude/launch.json` gained an `evals-dashboard` entry (port 3210, so
+  it can run alongside `demo-app` on 3000).
+
+**Tests:** no new automated tests this step (a rendering-focused Next.js
+app; `tsc --noEmit` is the real check here) — `packages/evals-dashboard`
+typechecks clean, and `packages/evals`'s own typecheck + full 284-test
+monorepo suite still pass after the new export-map entries.
+
+**Live-verified:** the real blocker — no `ANTHROPIC_API_KEY` or
+`DEEPGRAM_API_KEY` configured anywhere in this repo (same gap already
+tracked above), so there was no real trial history sitting in
+`packages/evals/data/evals.db` to load the dashboard against, and no way
+to generate one live in this environment. Built `scripts/seed-demo-data.ts`
+to seed the store through the **real** `openStore`/`recordRun` functions
+(not placeholder JSON, not a mocked data layer) with realistic-shaped
+`ScenarioRunResult`/`Verdict` rows matching this session's own documented
+history (the real archive-named-invoice flakiness, the real voice
+regression and its fix) — clearly labeled as seeded/demo data, not
+production runs. Ran the dashboard against that seeded store in a real
+browser: scenario list renders correct pass/fail pills, capability tags,
+and a real two-color sparkline; the trace viewer renders all 3 trials of
+a group with correct verdict scores and expandable round-trip JSON; the
+capability breakdown renders correct per-tag ratios and "no coverage
+yet" for the 6 untagged dimensions. No console errors, no server errors.
+
+**Pending / not yet started:**
+- Step 5's remaining two views (comparison, run trigger) — scenario list
+  + trace viewer were built first as the two highest-value views per the
+  plan; not started yet.
+- The dashboard has never been run against a REAL (non-seeded) trial
+  history — still blocked on the same missing `ANTHROPIC_API_KEY`/
+  `DEEPGRAM_API_KEY` gap. Once real keys exist, delete
+  `packages/evals/data/evals.db` and run `npm run evals` for real; the
+  dashboard code itself needs no changes to pick that up, since it reads
+  the exact same store the seed script wrote to.
+- Step 6 (new primitives/genres) and step 7 (simulated-user mode,
+  policy-constraint scoring) — not started, per the build order.
+
 ---
 
 ## Track B — the structure graph, phase by phase

@@ -4,6 +4,14 @@
   "private": true,
   "description": "Cairn's own eval + playground harness — never published. Runs real scenarios (typed and synthetic-voice) against real playground apps in a real browser, scores them with Claude as judge, and tracks results over time so a regression is caught before publish, not after.",
   "type": "module",
+  "exports": {
+    "./store": "./src/store.ts",
+    "./taxonomy": "./src/taxonomy.ts",
+    "./judge": "./src/judge.ts",
+    "./primitives": "./src/primitives/index.ts",
+    "./scenarios": "./src/scenarios/index.ts",
+    "./trace": "./src/trace.ts"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
