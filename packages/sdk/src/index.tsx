@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { TERMINAL_VERBS, safeParseVerbResponse, type HistoryTurn as HistoryEntry, type TourStep } from "@cairnvibe/core";
+import { driveAgentLoop } from "./agent-loop";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { createLiveElementRegistry } from "./runtime-scan";
@@ -435,8 +436,6 @@ export function Copilot({
     }
   }
 
-  const MAX_LOOP_ITERATIONS = 6; // a hard cap, not a target — see runTypedAgentLoop
-
   /**
    * Drives the agent loop over the stateless HTTP path: ask the server,
    * and if it comes back with a continuing step (click/fill/read/
@@ -449,60 +448,73 @@ export function Copilot({
    * still knows what it was actually asked. `historyRef` (the
    * conversation's real memory) is only ever committed once, at the end —
    * a turn that hits the cap mid-loop doesn't leave partial noise in it.
+   * The loop itself (the `for`/TERMINAL_VERBS/iteration-cap shape) lives
+   * in agent-loop.ts, shared with the realtime relay's own finalizeTurn —
+   * this function owns everything transport-specific: the actual fetch,
+   * the raw/untyped response handling a stateless HTTP call needs (unlike
+   * realtime's always-valid in-process resolveVerb call), and the real
+   * historyRef commit.
    */
   async function runTypedAgentLoop(q: string): Promise<void> {
-    let loopHistory = historyRef.current;
     const webMcpTools = await discoverWebMcpTools();
+    let lastRawResponse: unknown = null;
 
-    for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
-      const liveScan = liveRegistryRef.current.getSnapshot();
-      liveMapRef.current = liveScan.byId;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          route: pathname,
-          question: q,
-          visible: collectVisible(),
-          history: loopHistory,
-          liveElements: liveScan.elements,
-          webMcpTools,
-        }),
-      });
-      const data = await res.json().catch(() => null);
-      const parsed = safeParseVerbResponse(data);
+    const result = await driveAgentLoop(historyRef.current, {
+      async getNextStep(loopHistory) {
+        const liveScan = liveRegistryRef.current.getSnapshot();
+        liveMapRef.current = liveScan.byId;
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            route: pathname,
+            question: q,
+            visible: collectVisible(),
+            history: loopHistory,
+            liveElements: liveScan.elements,
+            webMcpTools,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        lastRawResponse = data;
+        return safeParseVerbResponse(data);
+      },
+      onStep({ verb, terminal }) {
+        // A continuing step — show it happening (execution itself
+        // happens in executeStep below). Terminal steps are handled once
+        // driveAgentLoop returns, via handleVerb — unchanged from before.
+        if (!terminal) setAnswer(summarizeVerbForHistory(verb));
+        return false;
+      },
+      executeStep: (verb) => executeToolStep(verb, pathname, liveMapRef.current).then((r) => r?.observation),
+    });
 
-      if (!parsed || TERMINAL_VERBS.has(parsed.verb)) {
-        handleVerb(data);
-        // Unlike the realtime relay (one persistent connection, memory
-        // lives server-side), each of these POSTs is stateless — the
-        // widget itself is what remembers, and resends it above so the
-        // model has context for "the first one" / "do that instead" on
-        // the next question.
-        historyRef.current = [
-          ...loopHistory,
-          { role: "user", text: q } satisfies HistoryEntry,
-          { role: "assistant", text: summarizeVerbForHistory(data) } satisfies HistoryEntry,
-        ].slice(-MAX_HISTORY_TURNS);
-        return;
-      }
-
-      // A continuing step — show it happening, execute it for real, and
-      // go around again with the real result instead of ending the turn.
-      setAnswer(summarizeVerbForHistory(data));
-      const stepResult = await executeToolStep(data, pathname, liveMapRef.current);
-      loopHistory = [
-        ...loopHistory,
-        {
-          role: "assistant",
-          text: `${summarizeVerbForHistory(data)}. Result: ${stepResult?.observation ?? "no result"}`,
-        } satisfies HistoryEntry,
+    if (result.outcome === "terminal" || result.outcome === "unparseable") {
+      handleVerb(lastRawResponse);
+      // Unlike the realtime relay (one persistent connection, memory
+      // lives server-side), each of these POSTs is stateless — the
+      // widget itself is what remembers, and resends it above so the
+      // model has context for "the first one" / "do that instead" on
+      // the next question. Summarized from the RAW response (not
+      // driveAgentLoop's typed finalVerb) via this file's own untyped
+      // summarizeVerbForHistory — deliberately, since a response that
+      // failed schema validation (outcome "unparseable") can still carry
+      // real, usable fields (e.g. a stray extra property tripped
+      // .strict() while `text` itself was fine) that only the untyped,
+      // duck-typed summarizer sees; there is no typed finalVerb at all
+      // for that outcome.
+      historyRef.current = [
+        ...result.workingHistory,
+        { role: "user", text: q } satisfies HistoryEntry,
+        { role: "assistant", text: summarizeVerbForHistory(lastRawResponse) } satisfies HistoryEntry,
       ].slice(-MAX_HISTORY_TURNS);
+      return;
     }
 
+    // "gave-up" — the iteration cap was hit with no terminal verb.
     setAnswer("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
     historyRef.current = [
-      ...loopHistory,
+      ...result.workingHistory,
       { role: "user", text: q } satisfies HistoryEntry,
       { role: "assistant", text: "(gave up after too many steps)" } satisfies HistoryEntry,
     ].slice(-MAX_HISTORY_TURNS);

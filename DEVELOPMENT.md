@@ -1366,6 +1366,106 @@ proving the harness mechanics, not the persona-quality half, which
   Critic/Talker multi-agent redesign, deep runtime context, memory) each
   get their own focused plan-and-approval pass when picked up.
 
+## Phase 3 — the multi-agent redesign (Planner/Executor/Critic/Talker)
+
+Reordered ahead of Phase 2 per explicit direction — the architecture
+change that actually makes the agent smarter (plan across a platform,
+stop fooling itself about completion) rather than the voice-latency
+work. Scoped with real external research (Agent S2, CODA, Skyvern 2.0's
+real production numbers, Magentic-One's dual-ledger pattern, "Are We
+Done Yet?", the scheduler-theoretic agent-loop framework, PIVOT,
+"Revisable by Design") plus a full reading of the actual current
+implementation — see the plan file's "Phase 3" section for the full
+design and 5-step build order. Working through that build order one
+step at a time, each independently shippable and verified.
+
+### Step 1: loop dedup — driveAgentLoop, zero behavior change
+
+The real problem this whole phase exists to fix (documented in this
+file's batch-verb commit notes): a batch of 2 clicks succeeded, and the
+model kept looping 4 more iterations before giving up, never recognizing
+its own success — because "are we done" today is purely "did the model
+pick a TERMINAL_VERBS verb," never a check against real state. Fixing
+that needs a real Critic; but the loop that Critic has to attach to was
+independently re-implemented TWICE (`index.tsx`'s `runTypedAgentLoop` for
+the HTTP/typed path, `realtime-server.ts`'s `finalizeTurn` for the
+WebSocket/voice relay) — a real, live duplication risk any later step
+would have had to fix twice, by hand, forever. This step retires that
+risk first, before any Planner/Critic code exists, with deliberately
+zero behavior change — nothing here is allowed to change what either
+transport actually does, only where the shared shape lives.
+
+**Built:**
+- `packages/sdk/src/agent-loop.ts` (new) — `driveAgentLoop`, the shared
+  skeleton: ask via `getNextStep`, check `TERMINAL_VERBS`, execute a
+  continuing step via `executeStep`, fold the observation into working
+  history, ask again, up to `maxIterations` (default 6, unchanged).
+  Deliberately does NOT own transport-specific side effects (sending a
+  client message, TTS, barge-in cancellation, committing to real
+  cross-turn memory) — those stay in each transport's own closures,
+  wired through `onStep`/`onStepResult` hooks that can abort the loop
+  (covers `finalizeTurn`'s two real generation/barge-in checkpoints) and
+  in what each caller does with the returned outcome
+  (`terminal`/`unparseable`/`gave-up`/`aborted`). Also carries the
+  `summarizeVerbForHistory`/`MAX_HISTORY_TURNS` helpers, which were
+  themselves independently duplicated in both loop drivers (byte-for-byte
+  identical) — moved here once, used by both.
+- `realtime-server.ts`'s `finalizeTurn` and `index.tsx`'s
+  `runTypedAgentLoop` both rewired to call `driveAgentLoop` — each kept
+  100% of its own real side-effecting code (the Talker ack sequencing,
+  the Deepgram single-utterance Speak-connection constraint, the raw/
+  untyped HTTP-response handling the stateless typed path genuinely needs
+  that realtime's always-valid in-process `resolveVerb` call doesn't),
+  just moved into hook closures instead of an inline `for` loop.
+- Found and fixed a real, additional duplication while doing this:
+  `summarizeVerbForHistory`/`MAX_HISTORY_TURNS`/`MAX_LOOP_ITERATIONS`
+  were actually triplicated, not just duplicated — a third, independent
+  copy lives in `web-component.ts` (the vanilla-JS widget), whose own
+  `summarizeVerbForHistory` is missing 5 of the 9 verb cases (it has no
+  multi-step loop at all today, single-shot only). Deliberately left
+  untouched — out of this step's scope (only the two loop-*driving*
+  transports), but noted here as a real, tracked gap: `web-component.ts`
+  would currently mishandle a continuing verb if the server ever sent it
+  one, and its history summaries silently degrade to "(no response)" for
+  click/fill/read/call_tool/batch.
+
+**Tests:** `agent-loop.test.ts` (new, 15 tests) covering the driver in
+isolation — terminal-on-first-call, continuing-then-terminal with real
+history folding, "no result" fallback, unparseable, gave-up at the
+iteration cap, both abort checkpoints (`onStep`/`onStepResult`), the
+terminal/continuing flag passed to `onStep`, `MAX_HISTORY_TURNS` capping,
+and real seed-history preservation. Critically: `realtime-server.test.ts`'s
+existing 9 tests — including the exact-twice-ack invariant, the barge-in/
+generation-drop test, batch-as-continuing-verb, and the iteration-cap
+gave-up path — all pass **completely unmodified**, which is the real
+proof this refactor didn't change `finalizeTurn`'s behavior. Full
+monorepo typecheck + 306-test suite passing.
+
+**Live-verified**: rebuilt `packages/sdk` (`npm run build`, so
+`dist/realtime-server.js` reflects the change) and ran a real multi-step
+"archive the overdue invoice" request through the refactored
+`runTypedAgentLoop` against a live demo-app and Cairn's real Groq-backed
+agent — two real `/api/copilot` round trips (a `click` then a terminal
+`explain`, the exact continuing-then-terminal shape this step's logic
+depends on), and Globex Inc. really ended up `Archived`. Confirmed zero
+console errors in a fresh tab afterward.
+
+**Pending / not yet started:**
+- The realtime/voice transport's refactored `finalizeTurn` was NOT
+  live-verified this step (only unit-tested) — this session's own Groq
+  daily token quota was already near-exhausted from step 7's testing
+  (real `rate_limit_exceeded` errors observed, ~28min retry windows).
+  The unit-test coverage here is unusually strong for this exact
+  function (9 precise, scenario-specific tests, all passing unmodified),
+  which is why this was judged an acceptable gap for this step rather
+  than blocking on it — worth a real live voice check once quota
+  recovers, before Step 3 (the Critic) lands on top of this.
+- Steps 2-5 of Phase 3's build order (Plan/Progress types + lazy-gated
+  Planner; the Critic — the actual bug fix; Executor local retry; the
+  Talker event stream) — not started.
+- `web-component.ts`'s own duplication/gap (found above) — not fixed,
+  deliberately out of this step's scope.
+
 ---
 
 ## Track B — the structure graph, phase by phase

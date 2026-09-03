@@ -27,7 +27,8 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import { TERMINAL_VERBS, type HistoryTurn, type LiveElement, type Manifest, type VerbResponse, type WebMcpTool } from "@cairnvibe/core";
+import type { HistoryTurn, LiveElement, Manifest, VerbResponse, WebMcpTool } from "@cairnvibe/core";
+import { driveAgentLoop, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import { buildSystemPrompt, createVerbLLM, resolveVerb, type CapabilityTier, type CreateCopilotHandlerOptions } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 
@@ -111,9 +112,6 @@ export interface ConnectionDeps {
   registeredActions: string[];
   capability: CapabilityTier;
 }
-
-const MAX_HISTORY_TURNS = 8; // 4 exchanges — enough for "the first one"/"do that instead" without growing the prompt unbounded over a long call
-const MAX_LOOP_ITERATIONS = 6; // a hard cap on one turn's agent-loop steps, not a target — see finalizeTurn
 
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
   // liveElements/webMcpTools refresh on every "context" resend (the client
@@ -396,12 +394,13 @@ export async function handleDeepgramMessage(
  * ones aren't) doesn't end the turn here: the server can't execute a DOM
  * action itself, so it sends the step to the client, awaits its real
  * result over waitForToolResult(), folds that into a *local* working copy
- * of history, and calls resolveVerb again — repeat up to
- * MAX_LOOP_ITERATIONS. The connection's real `history` only gets the
- * user's real question plus the turn's final answer, committed once at
- * the end — a turn that hits the cap mid-loop doesn't leave partial tool
- * noise in the conversation's real memory, same discipline the HTTP
- * path's runTypedAgentLoop (index.tsx) follows.
+ * of history, and calls resolveVerb again — repeat up to the iteration cap
+ * (driveAgentLoop's default of 6, in agent-loop.ts — the shared skeleton
+ * this function and the HTTP path's runTypedAgentLoop (index.tsx) both
+ * drive). The connection's real `history` only gets the user's real
+ * question plus the turn's final answer, committed once at the end here —
+ * a turn that hits the cap mid-loop doesn't leave partial tool noise in
+ * the conversation's real memory.
  */
 async function finalizeTurn(
   turnState: { buffer: string },
@@ -418,9 +417,8 @@ async function finalizeTurn(
   const myGeneration = getGeneration();
   safeSend(client, { type: "final", text: transcript });
 
-  let loopHistory = history;
   // The Talker: set once, the first time a turn turns out to need more
-  // than one step (see the loop below) — a real, in-flight speakStreamed()
+  // than one step (see onStep below) — a real, in-flight speakStreamed()
   // call, never awaited until we're actually ready to speak the real
   // answer. Deliberately not re-triggered per step: the Speak connection
   // (speakStreamed) only ever handles one utterance at a time, so a second
@@ -429,27 +427,28 @@ async function finalizeTurn(
   let ackPromise: Promise<void> | null = null;
 
   try {
-    for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
-      const { route, visible, liveElements, webMcpTools } = getContext();
-      const verb = await resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
-        route,
-        question: transcript,
-        visible,
-        liveElements,
-        webMcpTools,
-        history: loopHistory,
-      });
+    const result = await driveAgentLoop(history, {
+      async getNextStep(loopHistory) {
+        const { route, visible, liveElements, webMcpTools } = getContext();
+        return resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
+          route,
+          question: transcript,
+          visible,
+          liveElements,
+          webMcpTools,
+          history: loopHistory,
+        });
+      },
+      onStep({ verb, iteration, terminal }) {
+        if (myGeneration !== getGeneration()) return true; // superseded by a barge-in while this turn was resolving
 
-      if (myGeneration !== getGeneration()) return; // superseded by a barge-in while this turn was resolving
+        // Sent immediately — before speech synthesis even starts — so
+        // highlight/navigate/do execute in the browser right away instead
+        // of waiting on audio. The agent visibly acts while it's still
+        // about to speak, not after.
+        safeSend(client, { type: "verb", verb });
 
-      // Sent immediately — before speech synthesis even starts — so
-      // highlight/navigate/do execute in the browser right away instead of
-      // waiting on audio. The agent visibly acts while it's still about to
-      // speak, not after.
-      safeSend(client, { type: "verb", verb });
-
-      if (!TERMINAL_VERBS.has(verb.verb)) {
-        if (i === 0) {
+        if (!terminal && iteration === 0) {
           // This turn just revealed it needs more than one step — speak a
           // quick, cheap acknowledgment *now*, in parallel with the rest
           // of the loop's own real work below (not awaited here), so the
@@ -459,18 +458,20 @@ async function finalizeTurn(
           // at all, so they keep today's latency exactly as it is.
           ackPromise = speakStreamed(ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)]);
         }
-        // A continuing step itself stays silent (keeps the loop fast; the
-        // client still shows it visually) — wait for its real result and
-        // go around again instead of ending the turn.
-        const observation = await waitForToolResult();
-        if (myGeneration !== getGeneration()) return;
-        loopHistory = [
-          ...loopHistory,
-          { role: "assistant" as const, text: `${summarizeVerbForHistory(verb)}. Result: ${observation}` },
-        ].slice(-MAX_HISTORY_TURNS);
-        continue;
-      }
+        return false;
+      },
+      // A continuing step itself stays silent (keeps the loop fast; the
+      // client still shows it visually) — wait for its real result and go
+      // around again instead of ending the turn.
+      executeStep: () => waitForToolResult(),
+      onStepResult: () => myGeneration !== getGeneration(),
+    });
 
+    if (result.outcome === "aborted") return;
+
+    if (result.outcome === "terminal" || result.outcome === "unparseable") {
+      const verb: VerbResponse =
+        result.outcome === "terminal" ? result.finalVerb : { verb: "explain", text: "I'm not sure how to help with that." };
       history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
       history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
 
@@ -556,32 +557,3 @@ function parseWebMcpTools(raw: unknown): WebMcpTool[] {
   return tools;
 }
 
-/** A short text form of any verb for the history log — not shown to the
- * user, just fed back to the model on later turns so it knows what it
- * already did/said. */
-function summarizeVerbForHistory(verb: VerbResponse): string {
-  if ("text" in verb && verb.text) return verb.text;
-  switch (verb.verb) {
-    case "highlight":
-    case "open":
-      return `(highlighted ${verb.target})`;
-    case "navigate":
-      return `(navigated to ${verb.route})`;
-    case "do":
-      return `(ran ${verb.action}${verb.target ? ` on ${verb.target}` : ""})`;
-    case "tour":
-      return verb.steps.map((s) => s.text).join(" ");
-    case "click":
-      return `(clicked ${verb.target})`;
-    case "fill":
-      return `(typed "${verb.value}" into ${verb.target})`;
-    case "read":
-      return `(read ${verb.target})`;
-    case "call_tool":
-      return `(called ${verb.name})`;
-    case "batch":
-      return `(${verb.actions.length} steps: ${verb.actions.map((a) => a.verb).join(", ")})`;
-    default:
-      return "(no response)";
-  }
-}
