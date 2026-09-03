@@ -1980,6 +1980,100 @@ step deliberately doesn't chase yet — see Pending) rather than guessing.
 (cross-file type resolution) was caught by live verification against
 demo-app before being called done, not shipped and found later.
 
+### Step 2: wiring data shapes into what the model actually sees
+
+Step 1 built the extraction layer but deliberately stopped there —
+`Page.dataShapes` existed in the manifest but nothing read it. This step
+closes that loop: real data shapes now reach `resolveVerb` (shared by
+both the HTTP and realtime transports), the same place `currentPageElements`
+already does.
+
+**Built:**
+- `buildPageDataShapes(manifest, route)` in `packages/sdk/src/server.ts`
+  — mirrors `buildPageElements`'s own shape/placement exactly: per-request,
+  scoped to the current page only, never baked into the cached
+  route-independent system prompt (the same real-world token-budget
+  lesson `buildPageElements`'s own doc comment already documents — this
+  is more app-size-scaling detail, so it stays out of what has to scale
+  with page *count* only). Formats each shape as `Name { field: type,
+  field?: type }` — e.g. `Invoice { amount: string, client: string, id:
+  string, status: "Paid" | "Overdue" | "Archived" }` — a compact,
+  readable rendering of exactly the literal type text l1-data-shapes.ts
+  traced, optional fields marked with `?`.
+- `resolveVerb`'s userMessage gains a `currentPageDataShapes` field
+  alongside the existing `currentPageElements`, `liveElements`,
+  `webMcpTools`. Degrades to the string `"none"` — never a crash, never
+  an empty string — for a page with no traced shapes, a route with no
+  manifest entry at all, or a manifest built before this field existed
+  (the `Page.dataShapes` field is optional, from step 1).
+- `buildSystemPrompt` documents `currentPageDataShapes` as a fifth named
+  context source (alongside the route directory, currentPageElements,
+  liveElements, webMcpTools), with explicit guidance: use it to know a
+  field's REAL possible values (what `status` can actually be set to)
+  instead of guessing from a button label, and don't read `"none"` as
+  "this page has no data" — just don't invent field names/values for it.
+  This directly targets a failure mode a blind agent would otherwise
+  have no defense against: filling a status field with a plausible-
+  sounding value that isn't actually one of the app's real states.
+- Both `createCopilotHandlerWithLLM` (HTTP/typed) and `finalizeTurn`
+  (realtime/voice) get this for free — both call the same shared
+  `resolveVerb`, confirmed by re-reading `realtime-server.ts` before
+  touching anything, so there was no second call site to duplicate this
+  into.
+
+**Tests:**
+- `server.test.ts` (+4): the current page's real data shapes arrive in
+  the request payload scoped to that page only (using a new
+  `dataShapes: [Invoice {...}]` entry added to this file's shared
+  `manifest` fixture); a manifest that never sets `dataShapes` at all
+  (the `manifestWithPages` 17-page fixture — the genuine "pre-existing
+  manifest" case) degrades to `"none"`, not a crash; a route with no
+  manifest entry also gets `"none"`; data shapes never leak into the
+  cached system prompt (only the *concept* is documented there, not any
+  page's real field data) — the same discipline the existing
+  12,402-token production-bug regression tests already enforce for
+  `currentPageElements`, extended to cover this new field explicitly.
+- Full regression gate: 376/376 tests pass repo-wide, zero regressions
+  (61/61 in `server.test.ts` alone, 57 pre-existing + 4 new). Full
+  repo-wide `npm run typecheck` clean across all 6 workspaces.
+
+**Live-verified:** built a REAL manifest from the real `examples/demo-app`
+source (`scanL1` → `computeL2` → `assembleManifest`, L3's LLM describe
+step skipped on purpose — not needed to prove this step's wiring and
+avoids spending a live LLM call on a check that isn't testing L3), ran
+it through the actual `createCopilotHandlerWithLLM` with a
+capturing fake LLM (same technique `server.test.ts` already uses), and
+asked "what statuses can an invoice have?" on `/invoices`. The real
+captured `userMessage` carried:
+`currentPageDataShapes: Invoice { amount: string, client: string, id:
+string, status: "Paid" | "Overdue" | "Archived" }` — the exact real
+literal union, delivered end-to-end from real source code through the
+real manifest through the real prompt-construction path, with zero
+hand-authored test data anywhere in the chain. Confirmed the system
+prompt correctly documents the new concept. Scratch script deleted
+after use, same convention as step 1's and this session's other
+disposable live checks.
+
+**Pending:**
+- Not yet wired into `resolvePlan` — the Planner still decomposes a
+  goal knowing only the bare goal string, no page/data context at all.
+  This is a real, bigger gap than this step closes: it needs a design
+  decision (which pages' context is even relevant to a given goal, how
+  to keep it within the Planner's own token budget for an app with many
+  data-shaped pages) rather than the same direct wire-through this step
+  used for the single-page-scoped Executor prompt. Real follow-up work,
+  not started.
+- No live voice-call verification of this step specifically (it's a
+  shared-`resolveVerb` change, and step 1's realtime coverage precedent
+  already established why a full voice-call setup is disproportionate
+  for a change with no realtime-specific code path — same reasoning
+  applies again here, not re-litigated).
+- Remaining Phase 4 layers (business rules & state machines, docs/copy
+  mining, the unified tools/skills inventory, the runtime dependency
+  graph) — still not started.
+
+**Failed:** nothing.
+
 ---
 
 ## Track B — the structure graph, phase by phase

@@ -144,7 +144,11 @@ export async function resolveVerb(
     // per-request and was never cached, so there's nothing to lose by
     // making it bigger; the system prompt is what has to stay small and
     // route-independent.
-    const userMessage = JSON.stringify({ ...input, currentPageElements: buildPageElements(manifest, input.route) });
+    const userMessage = JSON.stringify({
+      ...input,
+      currentPageElements: buildPageElements(manifest, input.route),
+      currentPageDataShapes: buildPageDataShapes(manifest, input.route),
+    });
     candidate = await llm.respond(systemPrompt, userMessage);
   } catch (err) {
     console.error("[cairn] copilot LLM call failed:", err);
@@ -651,9 +655,17 @@ directory below plus three things attached to each request:
   directly (name, description, and its own input schema) — when a real
   tool exists for what the user's asking, it's the most reliable way to do
   it (see "call_tool" below), more so than clicking around.
+- "currentPageDataShapes": the real shape of the data this page works
+  with — a type name and its real fields, e.g. Invoice { status: "Paid" |
+  "Overdue" | "Archived" }. Use this to know a field's REAL possible
+  values (e.g. what "status" can actually be set to) or what a record on
+  this page actually looks like, instead of guessing from a button label
+  or making up a value. "none" means this page's real data shape wasn't
+  traced — don't treat that as "this page has no data," just don't invent
+  field names or values for it.
 Never invent a page, route, id, action, or tool name that isn't listed in
-one of these four places (the route directory, currentPageElements,
-liveElements, or webMcpTools). If a question is about a page other than
+one of these five places (the route directory, currentPageElements,
+liveElements, webMcpTools, or currentPageDataShapes). If a question is about a page other than
 the current one, you know its route and purpose from the directory but not
 its elements — say so and offer to navigate there rather than guessing at
 a button that page might have.
@@ -775,6 +787,27 @@ function buildPageElements(manifest: Manifest, route: string): string {
   if (!page) return `(no manifest entry for route ${JSON.stringify(route)} — this may be a page cairn hasn't indexed yet)`;
   if (page.elements.length === 0) return "none";
   return page.elements.map((e) => `${e.id} (${e.does})`).join("; ");
+}
+
+/**
+ * Phase 4, layer 2's own consumer — the real interface/type-alias fields
+ * l1-data-shapes.ts traced for the current page (e.g. Invoice's actual
+ * status: "Paid" | "Overdue" | "Archived" union), so a fill/do/explain can
+ * reason about a field's REAL possible values instead of guessing from a
+ * button label. Same per-request, uncached placement as buildPageElements,
+ * for the same reason — this is app-size-scaling detail, not something the
+ * route-independent system prompt should carry. Absent/empty dataShapes
+ * (a page with no explicit-return-typed data call, or a manifest built
+ * before this field existed) degrades to "none", same shape as
+ * buildPageElements' own no-elements case — never a crash, never invented.
+ */
+function buildPageDataShapes(manifest: Manifest, route: string): string {
+  const page = manifest.pages.find((p) => p.route === route);
+  const shapes = page?.dataShapes;
+  if (!shapes || shapes.length === 0) return "none";
+  return shapes
+    .map((s) => `${s.name} { ${s.fields.map((f) => `${f.name}${f.optional ? "?" : ""}: ${f.type}`).join(", ")} }`)
+    .join("; ");
 }
 
 /** Deliberately narrower than PlanSchema — no `version`/task `status`,

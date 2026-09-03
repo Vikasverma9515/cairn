@@ -47,6 +47,16 @@ const manifest: Manifest = {
           apiCall: { method: "POST", url: "/api/calls/start" },
         },
       ],
+      dataShapes: [
+        {
+          name: "Invoice",
+          source: "lib/invoices.ts",
+          fields: [
+            { name: "status", type: '"Paid" | "Overdue" | "Archived"', optional: false },
+            { name: "amount", type: "string", optional: false },
+          ],
+        },
+      ],
     },
   ],
   dead: [],
@@ -525,6 +535,51 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(result.status).toBe(200);
     const parsed = JSON.parse(calls[0].userMessage);
     expect(parsed.currentPageElements).toMatch(/no manifest entry/);
+  });
+
+  // Phase 4 step 2 — real data shapes (traced by l1-data-shapes.ts) reach
+  // the model the same way currentPageElements does: per-request, scoped
+  // to the current page only, never baked into the cached system prompt.
+  it("the current page's real data shapes arrive in the request payload, scoped to that page only", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what statuses can an invoice have?", visible: [] });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.currentPageDataShapes).toContain("Invoice");
+    expect(parsed.currentPageDataShapes).toContain('"Paid" | "Overdue" | "Archived"');
+  });
+
+  it("a page with no traced data shapes (or a manifest built before this field existed) degrades to 'none', not a crash or an empty string", async () => {
+    const big = manifestWithPages(17, 40); // this fixture never sets dataShapes at all — the pre-existing-manifest case
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(big, llm);
+
+    await handler({ route: "/page-0", question: "what is this?", visible: [] });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.currentPageDataShapes).toBe("none");
+  });
+
+  it("a route with no manifest entry also gets 'none' for data shapes, not a crash", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "I don't recognize that page." });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/does-not-exist", question: "help", visible: [] });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.currentPageDataShapes).toBe("none");
+  });
+
+  it("data shapes never leak into the cached, route-independent system prompt", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what is this?", visible: [] });
+
+    expect(calls[0].systemPrompt).not.toContain('"Paid" | "Overdue" | "Archived"');
+    expect(calls[0].systemPrompt).toContain("currentPageDataShapes"); // documented as a concept, just not populated here
   });
 });
 
