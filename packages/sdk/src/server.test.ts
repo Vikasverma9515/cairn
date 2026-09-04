@@ -860,6 +860,44 @@ describe("GroqVerbLLM", () => {
     expect(attempt).toBe(2);
   });
 
+  it("real bug found live AFTER the above test already passed: retries against the REAL, doubly-nested Groq error shape (err.error.error.code), not just the shallow one-level shape the test above used", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            if (attempt === 1) {
+              // The exact real shape dumped live by the Groq SDK — TWO
+              // levels of `.error` nesting, matching isRateLimitError's
+              // own real-shape fix. A shallow `err.error = {code, message}`
+              // mock (the test above) doesn't catch a regression back to
+              // only checking one level — this one does.
+              const err: any = new Error(
+                "400 {\"error\":{\"message\":\"Tool call validation failed: tool call validation failed: attempted to call tool 'response_with_verb' which was not in request.tools\",\"type\":\"invalid_request_error\",\"code\":\"tool_use_failed\"}}",
+              );
+              err.status = 400;
+              err.error = {
+                error: {
+                  message: "Tool call validation failed: tool call validation failed: attempted to call tool 'response_with_verb' which was not in request.tools",
+                  type: "invalid_request_error",
+                  code: "tool_use_failed",
+                },
+              };
+              throw err;
+            }
+            return {
+              choices: [{ message: { tool_calls: [{ function: { name: "respond_with_verb", arguments: JSON.stringify({ verb: "explain", text: "recovered" }) } }] } }],
+            };
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "recovered" });
+    expect(attempt).toBe(2);
+  });
+
   it("does NOT retry a tool_use_failed error unrelated to a hallucinated tool name", async () => {
     let attempt = 0;
     const fakeClient: GroqLikeClient = {

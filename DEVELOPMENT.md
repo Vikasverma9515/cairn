@@ -3783,6 +3783,140 @@ this up, same as the prior two entries.
 
 ---
 
+## Live bug-fix pass: the actual structural race behind "two speakers" — a superseded typed reply's stream kept scheduling audio after being "stopped"
+
+The user kept hitting the same-sounding symptom a FOURTH time, this time
+with sharper evidence: two clearly different, overlapping voices, one
+starting about a second after the other, with the terminal log showing
+TWO separate `/api/copilot/speak` calls (two distinct real LLM replies,
+not one duplicated) resolving close together — this time nothing to do
+with the realtime call at all. That pointed straight at the shared
+typed/mic-reply playback machinery (`playPcmStream`/`stopTypedPlayback`,
+`index.tsx`) rather than another narrow trigger point like the prior
+three entries.
+
+Reading `playPcmStream` found the actual structural gap underneath all
+of this: `stopTypedPlayback()` only ever stops audio nodes that ALREADY
+exist in `typedScheduledSourcesRef.current` at the moment it runs — it
+has no way to tell an EARLIER, STILL-STREAMING `playPcmStream()` call's
+own async reader loop to stop producing MORE of them. That loop
+(`for (;;) { const {done, value} = await reader.read(); ...
+scheduleChunk(...) }`) has zero cancellation awareness — once started,
+nothing stops it from continuing to read and schedule new audio chunks
+into the shared graph for as long as its own HTTP stream keeps
+delivering bytes, even after a second call has already run
+`stopTypedPlayback()` and started its own, unrelated reply. Two replies
+resolving within a few seconds of each other (exactly what a slow, rate-
+limited `/api/copilot/speak` call — see the earlier key-failover entry —
+makes more likely, not less) is enough to reproduce this every time.
+This is the same class of problem `tourGenerationRef`/`myGeneration`
+already solve elsewhere in this same file for an analogous race (a
+stale tour step, a superseded realtime turn) — just missing here.
+
+**Built:** a new `typedPlaybackGenerationRef` counter, bumped inside
+`stopTypedPlayback()` every time it runs. `playPcmStream()` captures the
+generation at call time and checks it against the current value both
+BEFORE and AFTER every `reader.read()` await inside its reader loop —
+the moment a newer call supersedes it, the older loop stops scheduling
+further chunks on its very next iteration instead of continuing
+indefinitely. `scheduleChunk`'s own `onended` cleanup needed no
+matching change: a stopped node's handler is already nulled out by
+`stopTypedPlayback()` before it's force-stopped, so it never fires for
+a superseded node in the first place — only nodes that finish
+naturally (which, by construction, only ever belong to the current,
+non-superseded generation) ever reach it.
+
+**Tests:** no new automated test — same honest limitation as the two
+entries above (a real ReadableStream/Web-Audio timing race, not a pure
+function); real coverage would need a fake-stream test harness with
+controlled chunk timing, not attempted this pass. Full regression suite
+re-run instead: 517/517 tests pass repo-wide (unchanged — no test file
+touched), zero regressions. Full `npm run typecheck` clean across all 6
+workspaces. `npm run build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment (still no live mic here) — traced directly from the user's
+own terminal output showing the two real, distinct `/api/copilot/speak`
+calls and their timing, not guessed at. Needs the demo app's dev server
+restarted and the browser tab hard-refreshed to pick this up, same as
+every fix in this bug-fix-pass series today.
+
+**Pending:**
+- This closes the STRUCTURAL race, not necessarily every possible
+  trigger of two typed replies firing close together in the first
+  place (e.g. why two separate `ask()`/`speak()` calls happened within
+  a few seconds of each other in the user's own session is still
+  unconfirmed — a double-submit, a retried request, or genuinely two
+  separate real questions asked back to back). The fix means that
+  regardless of why it happens, it can no longer produce overlapping
+  audio — but the "why two calls" question itself wasn't chased down
+  further this pass.
+- Same fake-stream/fake-timer test-harness gap as the other three
+  entries in this series — flagged, not built, given the immediate
+  priority was landing the real fix each time.
+
+**Failed:** nothing.
+
+---
+
+## Live bug-fix pass: the hallucinated-tool-name retry never actually fired against the real error shape
+
+Live testing surfaced a NEW, genuinely different bug this time — the
+user pasted a terminal error whose `failed_generation` field showed the
+model had produced a perfectly good, useful answer ("Sure thing! To
+create a new agent, I need to know the name you'd like to give it...")
+but the UI showed the generic "Something went wrong on my end" fallback
+instead. The error was a `tool_use_failed` — the model calling a
+hallucinated tool name (`response_with_verb`) instead of the real one —
+exactly the failure mode `isRetryableToolCallFailure`'s own doc comment
+already claims to retry and recover from. It didn't fire.
+
+Reading the real error object dumped in the terminal against the
+function's actual code found why: the real Groq SDK error is doubly-
+nested (`err.error.error.code`) — the SAME shape this session's own
+earlier `isRateLimitError` fix (two entries up) had to account for —
+but `isRetryableToolCallFailure` only ever checked ONE level
+(`err.error?.code`). Against the real shape, `code` always evaluated to
+`undefined`, so the `code === "tool_use_failed"` condition never
+matched, and the retry never ran — despite passing 100% of its own unit
+tests, because every one of those tests hand-built a shallow, one-level
+mock (`err.error = {code, message}`) that simply never exercised the
+real nesting depth. A genuinely dangerous shape of bug: the code
+*looked* tested and correct, and had shipped with a doc comment
+confidently claiming it fixed a real, previously-diagnosed issue, while
+silently never actually working against the real API.
+
+**Built:** `isRetryableToolCallFailure` now reads `e.code ?? e.error?.code
+?? e.error?.error?.code` — the same three-level fallback chain
+`isRateLimitError` already used correctly. The `tool_use_failed` branch's
+logic is otherwise unchanged (still requires BOTH the code AND the
+message to match, so the existing "does NOT retry a tool_use_failed
+error unrelated to a hallucinated tool name" test still holds).
+
+**Tests:** `server.test.ts` (+1): a new test using the REAL, doubly-
+nested error shape verbatim from the live terminal dump (including the
+real `status: 400` and the real hallucinated tool name
+`'response_with_verb'`) — this is the test that would have caught the
+regression the existing shallow-mock test couldn't. 518/518 tests pass
+repo-wide (up from 517, +1 new), zero regressions. Full `npm run
+typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment — traced directly from the user's own pasted terminal error
+dump, reproduced verbatim as the new test's fixture rather than
+approximated.
+
+**Pending:**
+- Worth auditing whether any OTHER error-shape-detection helper in this
+  codebase has the same "tested against a mock that doesn't match the
+  real shape" gap — not done this pass, given the immediate priority
+  was landing this specific, already-confirmed-live fix.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

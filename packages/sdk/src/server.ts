@@ -744,11 +744,26 @@ export class GroqStreamingTextLLM implements StreamingTextLLM {
  * against, so this checks defensively across the ways the real error has
  * actually been observed to surface — a thrown APIError with a nested
  * `.error.code`, a plain `.code`, or just the code string showing up
- * somewhere in the message — rather than relying on exactly one of them. */
+ * somewhere in the message — rather than relying on exactly one of them.
+ *
+ * Real, live bug found AFTER this function had already shipped and been
+ * unit-tested: the actual Groq SDK error is doubly-nested
+ * (`err.error.error.code`, matching isRateLimitError's own real-shape
+ * fix below) but this only ever checked ONE level (`err.error?.code`) —
+ * so `code` always came back `undefined` against the real API surface,
+ * and the retry this function exists for NEVER actually fired, despite
+ * every unit test passing (they all hand-built a shallow, one-level
+ * mock that doesn't match what Groq really throws). Caught live: a
+ * `tool_use_failed`/hallucinated-tool-name error with a perfectly good
+ * answer sitting right there in `failed_generation` fell straight to
+ * the generic "Something went wrong on my end" fallback instead of
+ * retrying — exactly the failure mode this function's own doc comment
+ * already claimed to fix. Now checks the same depth `isRateLimitError`
+ * does. */
 function isRetryableToolCallFailure(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { code?: unknown; error?: { code?: unknown }; message?: unknown };
-  const code = e.code ?? e.error?.code;
+  const e = err as { code?: unknown; error?: { code?: unknown; error?: { code?: unknown } }; message?: unknown };
+  const code = e.code ?? e.error?.code ?? e.error?.error?.code;
   const message = typeof e.message === "string" ? e.message : "";
   if (code === "output_parse_failed" || message.includes("output_parse_failed")) return true;
   // "attempted to call tool 'json' which was not in request.tools" — the

@@ -175,6 +175,18 @@ export function Copilot({
   const typedPlaybackGainRef = useRef<GainNode | null>(null);
   const typedNextPlayTimeRef = useRef(0);
   const typedScheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Bumped by stopTypedPlayback() every time it runs — playPcmStream's own
+  // async reader loop checks this before scheduling each chunk, so a
+  // superseded call (two speak()/ask() replies resolving close together)
+  // actually STOPS reading and scheduling more audio once a newer call has
+  // taken over, instead of continuing to push nodes into the shared
+  // playback graph behind the newer call's back. stopTypedPlayback() on
+  // its own only ever stopped nodes that already existed at the moment it
+  // ran — it never told an in-flight stream reader to stop producing MORE
+  // of them, which is exactly what let two replies' audio genuinely
+  // overlap (one starting, then a second call's audio starting on top of
+  // it moments later) — a real, live-found race, not a guess.
+  const typedPlaybackGenerationRef = useRef(0);
   // Watchdog for the "rt-thinking" state: started on every "final" transcript,
   // cleared the moment the server responds with anything for that turn
   // (verb/speaking_start/speaking_end/turn_complete/error). If it ever
@@ -554,8 +566,12 @@ export function Copilot({
 
   /** Stops whatever's currently playing on the typed/mic path's playback
    * graph, so two responses (e.g. a rapid double-click, or two answers
-   * resolved close together) can never be heard overlapping. */
+   * resolved close together) can never be heard overlapping. Also bumps
+   * typedPlaybackGenerationRef — see its own doc comment for why that's
+   * required for this to actually hold when a NEW reply's audio is still
+   * arriving as a stream, not just already fully scheduled. */
   function stopTypedPlayback() {
+    typedPlaybackGenerationRef.current++;
     for (const source of typedScheduledSourcesRef.current) {
       source.onended = null;
       try {
@@ -585,6 +601,7 @@ export function Copilot({
    */
   function playPcmStream(stream: ReadableStream<Uint8Array>): Promise<void> {
     stopTypedPlayback();
+    const myGeneration = typedPlaybackGenerationRef.current;
     const { ctx, gain } = ensureTypedPlaybackGraph();
     void ctx.resume().catch(() => {});
 
@@ -625,7 +642,14 @@ export function Copilot({
         const reader = stream.getReader();
         try {
           for (;;) {
+            // A newer call already ran stopTypedPlayback() (bumping the
+            // generation) while we were mid-read — stop here instead of
+            // scheduling more chunks behind its back. Checked both before
+            // AND after the await: a supersede can land at any point while
+            // this loop is blocked waiting on the next chunk.
+            if (typedPlaybackGenerationRef.current !== myGeneration) break;
             const { done, value } = await reader.read();
+            if (typedPlaybackGenerationRef.current !== myGeneration) break;
             if (done) break;
             if (!value || value.length === 0) continue;
             // PCM16 samples are 2 bytes each — a chunk boundary can split a
