@@ -2573,6 +2573,120 @@ the speaker promise once eligible) was live-tested, found to
 occasionally be a real regression, and fixed before being called done —
 not shipped and found later. Documented under Built, not hidden.
 
+### Step 2: confirm-or-reverse — the STT-confirmation half of barge-in
+
+**A real correction to the plan's own premise, found before writing any
+code**: the plan describes today's barge-in trigger as "wait for a
+Deepgram transcript" — that's stale. A read-only research pass (Explore
+agent) found a client-side RMS-energy heuristic already triggers
+barge-in immediately, client-side, with zero STT involvement (added in
+an earlier commit, `39f1ea8`). The REAL gap isn't "swap STT for a local
+trigger" — it's that today's RMS trigger has **no confirmation and no
+way back**: a cough or a door slam cuts the agent off exactly as hard as
+real speech does, permanently. This step builds exactly that missing
+half — confirm via STT, reverse if wrong — entirely server-side, since
+the client's existing trigger already fires within milliseconds (the
+plan's own actual ask) and needs no changes.
+
+**Built:**
+- `createBargeInConfirmation(windowMs)` (`packages/sdk/src/realtime-server.ts`,
+  exported) — a small, standalone timer state machine, deliberately
+  extracted rather than left inline inside `handleConnection`'s own
+  giant closure (where the equivalent logic would have been
+  untestable): `start(onUnconfirmed)` begins a grace window (a second
+  `start()` before the first resolves restarts it, never stacks two
+  timers), `confirm()` cancels it the moment real speech is recognized,
+  `cancel()` is the connection-teardown escape hatch.
+- `triggerServerBargeIn()` now starts a `BARGE_IN_CONFIRM_WINDOW_MS =
+  600` window on every barge-in (using `lastSpokenText`, a new field
+  `speakStreamed` itself records right before queuing anything — real
+  content, not guessed). If nothing confirms within the window, this
+  concludes the RMS trigger was a false positive and re-speaks the SAME
+  text from the top via a real, fresh `speakStreamed()` call — sending a
+  new `resume_speaking` message first (purely informational; confirmed
+  by reading the client's `ws.onmessage` handler before writing this
+  that a fresh `speaking_start`/`audio_chunk` sequence is ALREADY
+  handled identically to any other turn starting to speak, so **zero
+  client-code changes were needed** for reversal to actually work).
+  Explicit, honest simplification: this is "resume" as "restart from the
+  top," not a byte-exact continuation from the interrupted point — real,
+  separate work this doesn't attempt.
+- `handleDeepgramMessage` gains a 10th, optional parameter,
+  `onRealTranscript?: () => void`, called once for every message
+  carrying real (non-empty) transcript content — interim OR final, so
+  confirmation arrives at the fastest possible moment, before
+  `speech_final` would otherwise end the turn. The realtime connection's
+  own `confirmRealSpeech` (calling `bargeInConfirmation.confirm()`) is
+  wired in at the one real call site. Optional and a no-op by default —
+  every existing call site (own and every pre-existing test) keeps
+  working completely unchanged.
+- `ServerMessage` gains `{ type: "resume_speaking" }`.
+
+**Tests:**
+- `createBargeInConfirmation` (new, 5 tests, real `vi.useFakeTimers()` —
+  deterministic, not timing-flaky): fires `onUnconfirmed` exactly when
+  the window elapses (599ms nothing, 600ms fires); `confirm()` before
+  the window elapses cancels it entirely; a second `start()` before the
+  first resolves correctly restarts the window instead of stacking two
+  timers (an explicit, real multi-barge-in scenario); `cancel()` stops a
+  pending window; `confirm()` with nothing pending is a safe no-op.
+- `handleDeepgramMessage` (+3): `onRealTranscript` fires on a non-final
+  (interim) transcript — the fastest-possible-confirmation case; never
+  fires for a message with no real transcript content; omitting the
+  parameter entirely is a safe no-op (every one of the 22 pre-existing
+  `handleDeepgramMessage`/`handleConnection`-path tests re-ran completely
+  unmodified and passed).
+- Full regression gate: 434/434 tests pass repo-wide (up from 426), zero
+  regressions. Full `npm run typecheck` clean across all 6 workspaces.
+
+**Live-verified, real end to end, not mocked**: spun up a REAL
+`createRealtimeServer` (real Groq LLM, real Deepgram API key from
+`examples/demo-app/.env`) and connected a real `ws` client to it — no
+Playwright, no fake mic needed for this specific check, since the
+existing `{type: "speak", text}` message (already built for tour
+narration) is a real, legitimate way to get the server actively
+speaking via a genuinely real Deepgram TTS call. Sequence observed,
+timestamped against real wall-clock time:
+```
+[1472ms] speaking_start          (real TTS audio genuinely started)
+          -> sent {type:"barge_in"} with NO follow-up speech
+[2082ms] resume_speaking         (610ms later — the 600ms window, confirmed)
+[2082ms] speaking_start          (a fresh, real TTS call, unprompted by any new client code)
+```
+This proves the full mechanism end to end against real infrastructure:
+the grace window timing, the false-positive conclusion, the resume
+message, and the fresh real speech — all real, none mocked. The
+CONFIRMED path (a real transcript arriving and cancelling the window)
+is not separately live-verified this way — it would need real PCM audio
+routed through Deepgram's actual STT, the same class of setup
+`packages/evals`'s Playwright-based fake-mic technique solves for but
+which wasn't reused here; the confirmation LOGIC itself (`confirm()`
+correctly cancelling a pending window) is unit-tested with fake timers
+instead, which is complete coverage.
+
+**Pending:**
+- The trigger itself is still the pre-existing RMS-energy heuristic, not
+  a trained VAD (Silero or otherwise) — research before this step found
+  swapping it in is real, scoped, mechanical work on a known call site
+  (`onaudioprocess` in both `index.tsx` and `web-component.ts`), but
+  carries a genuinely serious, undecided tradeoff: an ONNX runtime +
+  Silero VAD model would add roughly 1-2MB+ to `dist/cairn-widget.js`
+  (today ~100KB, single flat IIFE, no code-splitting available), a
+  20-30x payload increase for a widget meant to drop into a third-party
+  page — lazy-loading the model at realtime-session-start is the only
+  way to avoid inflating the always-loaded bundle, but that's a real
+  design/hosting decision (CDN placement, load-time latency on a real
+  device) this session doesn't have enough information to make well.
+  Deliberately not attempted speculatively — flagged honestly as the
+  next real decision point, not silently deferred.
+- No real-hardware VAD/RMS calibration — `BARGE_IN_RMS_THRESHOLD`'s own
+  existing comment already says as much; `BARGE_IN_CONFIRM_WINDOW_MS =
+  600` is a reasonable, documented guess, not tuned against real human
+  speech-onset timing either.
+- Workstream 3 (the Talker's actual persona) — not started.
+
+**Failed:** nothing.
+
 ---
 
 ## Track B — the structure graph, phase by phase

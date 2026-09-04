@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { HistoryTurn, Manifest } from "@cairnvibe/core";
 import type { StreamingTextLLM, VerbLLM } from "./server";
-import { handleDeepgramMessage, type ConnectionDeps } from "./realtime-server";
+import { createBargeInConfirmation, handleDeepgramMessage, type ConnectionDeps } from "./realtime-server";
 
 function fakeSpeakerLLM(respondStreamed: StreamingTextLLM["respondStreamed"]): StreamingTextLLM {
   return { respondStreamed };
@@ -53,6 +53,69 @@ function resultsMessage(transcript: string, opts: { isFinal: boolean; speechFina
   });
 }
 
+// Phase 2 step 2 — the timer state machine behind confirm-or-reverse
+// barge-in, extracted specifically so it could be tested in isolation
+// with real fake timers, rather than left buried inside
+// handleConnection's own closure where nothing about it was reachable.
+describe("createBargeInConfirmation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fires onUnconfirmed after the window elapses with no confirm() call", () => {
+    const confirmation = createBargeInConfirmation(600);
+    const onUnconfirmed = vi.fn();
+
+    confirmation.start(onUnconfirmed);
+    vi.advanceTimersByTime(599);
+    expect(onUnconfirmed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onUnconfirmed).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm() before the window elapses cancels onUnconfirmed entirely — the real speech case", () => {
+    const confirmation = createBargeInConfirmation(600);
+    const onUnconfirmed = vi.fn();
+
+    confirmation.start(onUnconfirmed);
+    vi.advanceTimersByTime(300);
+    confirmation.confirm();
+    vi.advanceTimersByTime(1000);
+    expect(onUnconfirmed).not.toHaveBeenCalled();
+  });
+
+  it("a second start() before the first resolves restarts the window instead of stacking two timers", () => {
+    const confirmation = createBargeInConfirmation(600);
+    const onUnconfirmed = vi.fn();
+
+    confirmation.start(onUnconfirmed);
+    vi.advanceTimersByTime(500);
+    confirmation.start(onUnconfirmed); // a second barge-in before the first window elapsed
+    vi.advanceTimersByTime(500); // 500ms since the restart — the ORIGINAL window (600ms from the first start) would have already fired if not properly reset
+    expect(onUnconfirmed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(100); // now 600ms since the restart
+    expect(onUnconfirmed).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancel() before the window elapses stops it — the connection-teardown case", () => {
+    const confirmation = createBargeInConfirmation(600);
+    const onUnconfirmed = vi.fn();
+
+    confirmation.start(onUnconfirmed);
+    confirmation.cancel();
+    vi.advanceTimersByTime(1000);
+    expect(onUnconfirmed).not.toHaveBeenCalled();
+  });
+
+  it("confirm() with no pending window is a safe no-op", () => {
+    const confirmation = createBargeInConfirmation(600);
+    expect(() => confirmation.confirm()).not.toThrow();
+  });
+});
+
 describe("handleDeepgramMessage", () => {
   it("a single speech_final segment triggers exactly one turn", async () => {
     const { client, sent } = fakeClient();
@@ -76,6 +139,59 @@ describe("handleDeepgramMessage", () => {
     expect(respond).toHaveBeenCalledTimes(1);
     const finals = sent.filter((m: any) => m.type === "final");
     expect(finals).toEqual([{ type: "final", text: "hello" }]);
+  });
+
+  // Phase 2 step 2 — onRealTranscript is the confirmation signal
+  // triggerServerBargeIn's grace window waits for.
+  it("Phase 2 step 2: onRealTranscript fires on a non-final (interim) transcript — the fastest possible confirmation, before speech_final ever arrives", async () => {
+    const { client } = fakeClient();
+    const deps = fakeDeps(vi.fn());
+    const onRealTranscript = vi.fn();
+
+    await handleDeepgramMessage(
+      resultsMessage("hel", { isFinal: false }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      onRealTranscript,
+    );
+
+    expect(onRealTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("Phase 2 step 2: onRealTranscript never fires for a message with no real transcript content", async () => {
+    const { client } = fakeClient();
+    const deps = fakeDeps(vi.fn());
+    const onRealTranscript = vi.fn();
+
+    await handleDeepgramMessage(
+      JSON.stringify({ type: "Results", is_final: false, channel: { alternatives: [{ transcript: "" }] } }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      onRealTranscript,
+    );
+
+    expect(onRealTranscript).not.toHaveBeenCalled();
+  });
+
+  it("Phase 2 step 2: omitting onRealTranscript entirely is a safe no-op — every existing call site keeps working unchanged", async () => {
+    const { client } = fakeClient();
+    const deps = fakeDeps(vi.fn());
+
+    await expect(
+      handleDeepgramMessage(resultsMessage("hello", { isFinal: false }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
+    ).resolves.not.toThrow();
   });
 
   it("real bug: two is_final chunks for ONE utterance (a natural mid-sentence pause) do NOT trigger two turns — only the speech_final one does", async () => {
