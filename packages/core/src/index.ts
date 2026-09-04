@@ -49,6 +49,20 @@ export const ApiCallSchema = z.object({
    * real page state instead of guessing from the id string.
    */
   url: z.string(),
+  /**
+   * Phase 4, layer 6 — the real, imported, project-local function name(s)
+   * this apiCall's own route handler actually calls, traced from
+   * app/api/.../route.ts back to their real lib/*.ts implementations
+   * (l1-api-routes.ts) — e.g. `["createInvoice"]` for a button that POSTs
+   * to /api/invoices. Absent/empty when no route handler was found for
+   * this exact {method, url} (a route Cairn didn't scan, a dynamic route
+   * this apiCall's own literal-path restriction already excludes, or a
+   * handler with no traceable internal call) — never invented. Optional
+   * for the same additive/backward-compatible reason as everything else
+   * added to this schema after v1: an ApiCall built before this field
+   * existed still validates.
+   */
+  handledBy: z.array(z.string()).optional(),
 });
 export type ApiCall = z.infer<typeof ApiCallSchema>;
 

@@ -109,4 +109,10 @@ describe("scanL1", () => {
     const home = facts.pages.find((p) => p.route === "/")!;
     expect(home.dataShapes).toEqual([]);
   });
+
+  it("wires apiRouteHandlers onto RawFacts — this fixture's only API route is Pages Router (pages/api/ping.ts), correctly out of scope for v1's App-Router-only extraction", () => {
+    const facts = scanL1(FIXTURE);
+    expect(Array.isArray(facts.apiRouteHandlers)).toBe(true);
+    expect(facts.apiRouteHandlers).toEqual([]);
+  });
 });

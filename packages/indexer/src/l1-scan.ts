@@ -8,6 +8,7 @@ import { Project, Node, SyntaxKind, ts } from "ts-morph";
 import type { SourceFile } from "ts-morph";
 import { routeFromPagePath, routeFromPagesRouterPath } from "./routes";
 import { extractDataShapes } from "./l1-data-shapes";
+import { mapApiRouteHandlers } from "./l1-api-routes";
 import type { InteractiveTag, RawElement, RawFacts, RawPage } from "./types";
 
 const INTERACTIVE_TAGS = new Set<InteractiveTag>(["button", "a", "form", "input"]);
@@ -119,6 +120,7 @@ export function scanL1(rootDir: string): RawFacts {
     allScannedFiles,
     frameworkReachableFiles: Array.from(frameworkReachable).sort(),
     frameworkElements: frameworkElements.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file))),
+    apiRouteHandlers: mapApiRouteHandlers(project, absRoot),
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, CopilotRequestSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
+import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -58,6 +58,16 @@ describe("DataShapeSchema / PageSchema.dataShapes (Phase 4, layer 2 — real dat
 
   it("PageSchema still accepts a page with dataShapes entirely omitted — additive/backward-compatible with manifests written before this field existed", () => {
     expect(() => PageSchema.parse(basePage)).not.toThrow();
+  });
+});
+
+describe("ApiCallSchema.handledBy (Phase 4, layer 6 — real backend dependency graph)", () => {
+  it("accepts an apiCall with real handledBy function names", () => {
+    expect(() => ApiCallSchema.parse({ method: "POST", url: "/api/invoices", handledBy: ["createInvoice"] })).not.toThrow();
+  });
+
+  it("still accepts an apiCall with handledBy entirely omitted — additive/backward-compatible with manifests written before this field existed", () => {
+    expect(() => ApiCallSchema.parse({ method: "POST", url: "/api/invoices" })).not.toThrow();
   });
 });
 

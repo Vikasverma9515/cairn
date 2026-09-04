@@ -151,6 +151,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<RawFacts> {
     allScannedFiles: [],
     frameworkReachableFiles: [],
     frameworkElements: [],
+    apiRouteHandlers: [], // no source file to read in crawl mode
   };
 }
 

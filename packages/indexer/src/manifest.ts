@@ -1,20 +1,25 @@
 import { execFileSync } from "node:child_process";
 import type { ApiCall, Element, Manifest, Page } from "@cairnvibe/core";
 import type { RawElement, RawFacts } from "./types";
+import type { ApiRouteHandler } from "./l1-api-routes";
 import type { L2Result } from "./l2-reachability";
 import type { ElementDescription } from "./llm";
 import type { L3Result } from "./l3-describe";
 
 export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result, l3: L3Result): Manifest {
+  // Phase 4, layer 6 — keyed once per build, not per element, so
+  // enriching every element's apiCall stays a cheap map lookup.
+  const routeHandlersByKey = new Map(facts.apiRouteHandlers.map((h) => [`${h.method} ${h.url}`, h]));
+
   const globalElements: Element[] = facts.frameworkElements.map((el) =>
-    toManifestElement(el, l3.globalElements.find((e) => e.id === el.id), "present in the root layout"),
+    toManifestElement(el, l3.globalElements.find((e) => e.id === el.id), "present in the root layout", routeHandlersByKey),
   );
 
   const pages: Page[] = facts.pages.map((rawPage) => {
     const desc = l3.descriptions.get(rawPage.route);
 
     const ownElements: Element[] = rawPage.elements.map((el) =>
-      toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`),
+      toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`, routeHandlersByKey),
     );
 
     return {
@@ -72,7 +77,12 @@ export function parseApiCall(handlerCall: string | null): ApiCall | null {
   return { method: method as ApiCall["method"], url };
 }
 
-function toManifestElement(el: RawElement, elDesc: ElementDescription | undefined, baseEvidence: string): Element {
+function toManifestElement(
+  el: RawElement,
+  elDesc: ElementDescription | undefined,
+  baseEvidence: string,
+  routeHandlersByKey: Map<string, ApiRouteHandler>,
+): Element {
   const evidence = [baseEvidence];
   if (el.handlerCall) evidence.push(`onClick calls ${el.handlerCall}`);
   if (el.dataAi) evidence.push(`has data-ai="${el.dataAi}"`);
@@ -85,8 +95,20 @@ function toManifestElement(el: RawElement, elDesc: ElementDescription | undefine
     does: elDesc?.does ?? "Unknown — no description generated for this element.",
     confidence: elDesc?.confidence ?? 0,
     evidence,
-    apiCall: parseApiCall(el.handlerCall),
+    apiCall: enrichApiCall(parseApiCall(el.handlerCall), routeHandlersByKey),
   };
+}
+
+/** Phase 4, layer 6 — attaches the real backend function name(s) that
+ * actually run when this apiCall fires, when Cairn found and traced the
+ * matching route handler (l1-api-routes.ts). Absent when no handler
+ * matched — a route Cairn didn't scan, or one whose body called nothing
+ * traceable — never invented. */
+function enrichApiCall(apiCall: ApiCall | null, routeHandlersByKey: Map<string, ApiRouteHandler>): ApiCall | null {
+  if (!apiCall) return null;
+  const handler = routeHandlersByKey.get(`${apiCall.method} ${apiCall.url}`);
+  if (!handler || handler.calls.length === 0) return apiCall;
+  return { ...apiCall, handledBy: handler.calls };
 }
 
 function elementFallbackSelector(el: RawElement): string {

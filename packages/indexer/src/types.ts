@@ -3,6 +3,7 @@
 // determinism regression test diffs this JSON byte-for-byte across two runs).
 
 import type { DataShape } from "@cairnvibe/core";
+import type { ApiRouteHandler } from "./l1-api-routes";
 
 export type InteractiveTag = "button" | "a" | "form" | "input";
 
@@ -50,4 +51,6 @@ export interface RawFacts {
   frameworkReachableFiles: string[];
   /** Interactive elements found in those same framework files — present on every page, not attributable to just one. */
   frameworkElements: RawElement[];
+  /** Deployment-wide, not per-page (a route isn't owned by one page) — see l1-api-routes.ts. Empty in crawl mode (no source file to read). */
+  apiRouteHandlers: ApiRouteHandler[];
 }

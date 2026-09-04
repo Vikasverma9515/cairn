@@ -67,6 +67,7 @@ describe("assembleManifest", () => {
       allScannedFiles: [],
       frameworkReachableFiles: [],
       frameworkElements: [],
+      apiRouteHandlers: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -83,6 +84,7 @@ describe("assembleManifest", () => {
       allScannedFiles: [],
       frameworkReachableFiles: [],
       frameworkElements: [],
+      apiRouteHandlers: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -90,5 +92,80 @@ describe("assembleManifest", () => {
     const manifest = assembleManifest("/repo", facts, l2, l3);
 
     expect(manifest.pages[0].dataShapes).toEqual([]);
+  });
+
+  // Phase 4 step 5 — an element's apiCall gets enriched with the real
+  // backend function name(s) its route handler traced back to, when one
+  // was found for this exact {method, url}.
+  it("enriches an element's apiCall with handledBy when a matching route handler was traced", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/invoices",
+          file: "app/invoices/page.tsx",
+          reachableFiles: [],
+          elements: [
+            {
+              id: "create-invoice",
+              tag: "button",
+              dataAi: "create-invoice",
+              ariaLabel: null,
+              text: "New Invoice",
+              handlerCall: "POST /api/invoices",
+              file: "components/CreateInvoiceButton.tsx",
+              line: 7,
+            },
+          ],
+          dataShapes: [],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+      apiRouteHandlers: [{ method: "POST", url: "/api/invoices", file: "app/api/invoices/route.ts", calls: ["createInvoice"] }],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].elements[0].apiCall).toEqual({ method: "POST", url: "/api/invoices", handledBy: ["createInvoice"] });
+  });
+
+  it("leaves apiCall exactly as parsed when no route handler matches — never invents handledBy", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/invoices",
+          file: "app/invoices/page.tsx",
+          reachableFiles: [],
+          elements: [
+            {
+              id: "create-invoice",
+              tag: "button",
+              dataAi: "create-invoice",
+              ariaLabel: null,
+              text: "New Invoice",
+              handlerCall: "POST /api/invoices",
+              file: "components/CreateInvoiceButton.tsx",
+              line: 7,
+            },
+          ],
+          dataShapes: [],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+      apiRouteHandlers: [], // no route was traced for this url at all
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].elements[0].apiCall).toEqual({ method: "POST", url: "/api/invoices" });
   });
 });

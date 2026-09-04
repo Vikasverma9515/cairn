@@ -2275,6 +2275,142 @@ Scratch script deleted after use, same convention as steps 1-3.
 
 **Failed:** nothing.
 
+### Step 5: the API-route dependency graph (Phase 4, layer 6 — first slice)
+
+Before building this, ran a read-only research pass on layer 3
+("business rules & state machines") since it was the next item in the
+plan's own listed order. Honest finding: `demo-app`'s real mutating
+functions (`archiveInvoice`, `moveCard`, `updateCard`, `connectNodes`,
+`configureNode`) have ZERO transition/permission guards — `archiveInvoice`
+unconditionally sets status to Archived for ANY existing id, and there is
+no role/permission concept anywhere in the app. The one real domain rule
+found (`isLoggedIn()` gating checkout) is exactly the kind of thing layer
+3 would want to surface, but building a whole extraction layer against a
+codebase that has almost nothing else to find would mean either shipping
+something that mostly reports "no rule found," or being tempted to
+retrofit fake guards into demo-app just to give it something to extract
+— which inverts the actual methodology that made layer 2 work (build the
+extractor to match what's REALLY written, never add fake material to
+match a planned extractor). Recommendation from that research: build
+layer 6 (dependency graph) instead — real, plentiful, unambiguous
+material already in this codebase, and it reuses two already-solved
+halves (l1-scan.ts's click→fetch trace, l1-data-shapes.ts's import
+resolution) instead of starting from nothing. Layer 3 stays explicitly
+un-started, for the honest reason above, not skipped by oversight.
+
+**Built:**
+- `packages/indexer/src/l1-api-routes.ts` (new) — `mapApiRouteHandlers(
+  project, absRoot): ApiRouteHandler[]`. For every `app/api/**/route.ts`
+  file, resolves each exported HTTP-method handler (`export async
+  function POST()` or `export const POST = async () => {}` — both
+  shapes handled via `sf.getExportedDeclarations()`) and walks its body
+  for calls to imported, project-local (non-`node_modules`) functions —
+  reusing the exact same "identifier callee, resolves to a real project
+  file" filter `l1-data-shapes.ts`'s `resolveImportedFunction` already
+  established, so a library/global call (`NextResponse.json`,
+  `db.prepare`) is never mistaken for real app logic. Deliberately App
+  Router only — Pages Router API routes (`pages/api/*.ts`) export one
+  default handler that dispatches on `req.method` internally, a
+  materially different shape; skipped rather than guessed at, same
+  "only claim what's genuinely traceable" boundary layer 2 already set
+  with explicit-return-type-only resolution.
+- `ApiCallSchema.handledBy?: string[]` (`packages/core/src/index.ts`) —
+  additive, optional, same backward-compatible pattern as every other
+  Phase 4 schema addition. This is the second hop of a real, two-part
+  dependency graph: the FIRST hop (a click's onClick → a real `fetch(url,
+  {method})` call) was already traced by `l1-scan.ts` and shipped in the
+  original manifest; this step traces the SECOND hop (that same URL →
+  the real route handler → the real backend function it calls) and
+  connects them — an element's `apiCall` now carries not just THAT it
+  calls `POST /api/invoices`, but WHAT REAL CODE runs when it does.
+- `RawFacts.apiRouteHandlers` (new, deployment-wide — a route isn't
+  owned by one page, unlike `dataShapes`) — computed once in `scanL1`,
+  alongside `pages`/`frameworkElements`. `manifest.ts`'s
+  `assembleManifest` builds a `{method, url}` → handler lookup once per
+  build and enriches each element's `apiCall` via a new `enrichApiCall`
+  helper — a plain map lookup, not a re-scan, so this stays cheap
+  regardless of app size. `crawl.ts`'s runtime-DOM mode sets
+  `apiRouteHandlers: []` explicitly (no source file to read).
+- Deliberately NOT wired into any model-facing prompt this step —
+  unlike layers 2/5, `apiCall` itself was never shown to the model as
+  text in the first place (confirmed against `buildSystemPrompt`'s own
+  wording: the model never sees the word "apiCall," only picks a
+  `target` id, and the apiCall is attached server-side as an execution
+  detail). `handledBy` follows that exact same existing boundary rather
+  than inventing a new one — see Pending for where this real graph data
+  is actually headed next.
+
+**Tests:**
+- `l1-api-routes.test.ts` (new, 9 tests, isolated in-memory ts-morph
+  projects, same style as `l1-data-shapes.test.ts`): a real POST handler
+  traced to its real called function; the arrow-function export shape
+  resolved the same way as a function declaration; a library call
+  (`NextResponse.json`) never mistaken for a real project function;
+  dedup + sorted `calls`; a `route.ts` outside `app/api/` correctly
+  skipped; a Pages Router `pages/api/*.ts` file correctly skipped;
+  correct URL derivation for a nested route; only genuinely-exported
+  HTTP methods reported, no phantom handlers; deterministic sort order.
+- `manifest.test.ts` (+2): an element's `apiCall` gets enriched with
+  `handledBy` when a matching route handler was traced; `apiCall` is
+  left exactly as parsed (no `handledBy` key at all) when no route
+  handler matches — never invented.
+- `core/index.test.ts` (+2): `ApiCallSchema` accepts a real `handledBy`
+  array; still accepts an `apiCall` with the field entirely omitted
+  (backward compatibility with manifests built before this field
+  existed).
+- `l1-scan.test.ts` (+1): `apiRouteHandlers` is wired onto the real
+  `RawFacts` shape — using the shared `simple-app` fixture's own REAL
+  API route (`pages/api/ping.ts`, Pages Router) as a genuine "correctly
+  out of scope" case rather than inventing a synthetic one.
+- Full regression gate: 404/404 tests pass repo-wide (up from 392),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces.
+
+**Live-verified:** ran `scanL1` directly against `examples/demo-app`'s
+REAL source. Found 28 real API route handlers across the whole app,
+correctly resolving real backend functions for every one that calls
+project-local code (`GET /api/invoices -> listInvoices`, `POST
+/api/board/cards -> createCard`, `POST /api/workflows/edges ->
+connectNodes`, etc.) and correctly reporting `calls: []` for the 5
+`/api/copilot/*` routes (they call the `@cairnvibe/sdk` package itself —
+a `node_modules` import, correctly excluded). Confirmed the enrichment
+reaches real manifest elements: `/invoices`'s `create-invoice` button
+now carries `handledBy: ["createInvoice"]`; `/shop`'s "Add to cart"
+button carries `handledBy: ["addToCart", "listCart"]` (both real calls
+in that one handler, deduped/sorted); `/shop/checkout`'s place-order
+button carries `handledBy: ["isLoggedIn", "placeOrder"]` — the app's
+one real domain policy gate (found in step 5's own research pass),
+now traceable all the way from a UI element to the real function that
+enforces it. Scratch script deleted after use, same convention as
+every prior Phase 4 step.
+
+**Pending:**
+- Not wired into any prompt — deliberate, matching `apiCall`'s own
+  existing boundary (see Built). The most concrete, honestly-scoped
+  next application of this real graph data: cross-mechanism capability
+  DEDUP, explicitly deferred as Pending in step 4 ("a page with both a
+  registered action and an equivalent WebMCP tool for the same real
+  capability, shown as two unrelated options") — `handledBy` is
+  exactly the missing signal that could let Cairn recognize two
+  elements (or an element and a future WebMCP-tool trace) that call the
+  SAME real backend function are the SAME underlying capability. Not
+  built here — noted as the concrete follow-up this step's data
+  actually unlocks, not attempted speculatively.
+- Only covers elements whose `apiCall` already passed `parseApiCall`'s
+  existing literal-static-path filter — a per-row/dynamic apiCall (e.g.
+  `/api/invoices/[id]/archive`, a real route this step DID trace and
+  find `archiveInvoice` for) never gets enriched today, because the
+  ELEMENT side never produces a matchable static apiCall for it in the
+  first place. This is `ApiCallSchema`'s own pre-existing, already-
+  documented gap (see its own doc comment) — this step doesn't close
+  it, just doesn't make it worse.
+- Layer 3 (business rules & state machines) — explicitly not started,
+  for the honest reason documented above (near-empty real material in
+  this codebase today, not a build-effort tradeoff).
+- Layer 4 (docs & in-app copy mining) — still not started.
+
+**Failed:** nothing.
+
 ---
 
 ## Track B — the structure graph, phase by phase
