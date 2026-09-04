@@ -43,6 +43,7 @@ import {
   type CreateCopilotHandlerOptions,
 } from "./server";
 import { DeepgramSpeakStream, splitFlushableSentences } from "./tts-stream";
+import type { MemoryStore, MemoryTurnRecord } from "./memory-sqlite";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
 const DEFAULT_STT_MODEL = "nova-2";
@@ -79,6 +80,13 @@ export interface CreateRealtimeServerOptions extends CreateCopilotHandlerOptions
   deepgramApiKey: string;
   sttModel?: string;
   ttsVoice?: string;
+  /** Phase 5 — real cross-session memory (packages/sdk/src/memory-sqlite.ts,
+   * or any store implementing the same interface). Optional — omitting it
+   * keeps every connection exactly as memory-less as before this existed.
+   * Scoped by whatever `scopeId` string a connection's own client sends in
+   * its "context" message (see ConnectionDeps' own doc comment) — this SDK
+   * invents no identity of its own. */
+  memory?: MemoryStore;
 }
 
 type ServerMessage =
@@ -121,6 +129,22 @@ export interface BargeInConfirmation {
   start(onUnconfirmed: () => void): void;
   confirm(): void;
   cancel(): void;
+}
+
+/**
+ * Phase 5 — pure, standalone, directly testable (no closures, no DB, no
+ * WebSocket) so the "what does a fresh connection's starting history
+ * look like, given N prior turns from memory" question doesn't have to
+ * be tested by proxy through a real store or a real connection. Prior
+ * turns go FIRST (oldest overall), any in-connection history already
+ * accumulated stays after them, then the whole thing is capped to
+ * `maxTurns` — same cap `history` itself already uses everywhere else,
+ * just applied once more here so a scope with a long real memory can't
+ * blow past it the moment a connection opens.
+ */
+export function seedHistoryFromMemory(existingHistory: readonly HistoryTurn[], priorTurns: readonly MemoryTurnRecord[], maxTurns: number): HistoryTurn[] {
+  const combined: HistoryTurn[] = [...priorTurns.map((t): HistoryTurn => ({ role: t.role, text: t.content })), ...existingHistory];
+  return combined.slice(Math.max(0, combined.length - maxTurns));
 }
 
 export function createBargeInConfirmation(windowMs: number): BargeInConfirmation {
@@ -180,7 +204,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, speakerLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, speakerLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability, memory: options.memory }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -225,6 +249,11 @@ export interface ConnectionDeps {
    * (own or a test's) keeps working with every action rendered bare. */
   actionDescriptions?: Record<string, string>;
   capability: CapabilityTier;
+  /** Phase 5 — see CreateRealtimeServerOptions' own doc comment. Optional,
+   * same backward-compatibility reason as every other addition here:
+   * absent means no memory read/write happens for any connection, ever
+   * — today's exact behavior. */
+  memory?: MemoryStore;
 }
 
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
@@ -243,6 +272,21 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   // one WebSocket per call — so this is accumulated here directly rather
   // than round-tripped through the client.
   const history: HistoryTurn[] = [];
+  // Phase 5 — real cross-session memory. `scopeId` is set from the FIRST
+  // "context" message that carries one (see the "context" handler below)
+  // and never changed again for the life of this connection — a real,
+  // deliberate v1 simplification (no attempt to handle a scopeId that
+  // legitimately changes mid-connection, e.g. a mid-session login) rather
+  // than guessed-at complexity. `historySeededFromMemory` guards the
+  // ONE-TIME load of this scope's prior turns into `history` — a later
+  // "context" resend (route changes send fresh ones routinely) must never
+  // re-seed and duplicate them.
+  let scopeId: string | null = null;
+  let historySeededFromMemory = false;
+  function recordMemoryTurn(role: "user" | "assistant", text: string): void {
+    if (!deps.memory || !scopeId) return;
+    deps.memory.recordTurn(scopeId, role, text);
+  }
   // Resolves the agent loop's in-flight waitForToolResult() call once the
   // client reports back what a click/fill/read/call_tool step actually
   // did — same "a mutable pending-callback slot, resolved when the right
@@ -409,7 +453,7 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   const turnState = { buffer: "" };
 
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech);
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech, recordMemoryTurn);
   });
 
   dg.on("error", (err) => {
@@ -433,6 +477,24 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
           liveElements: parseLiveElements(msg.liveElements),
           webMcpTools: parseWebMcpTools(msg.webMcpTools),
         };
+        // Phase 5 — `scopeId` is whatever opaque id the CUSTOMER's own
+        // client code chooses to send (their own end-user id if they have
+        // login, anything else stable otherwise) — this SDK never invents
+        // one. Only the first real scopeId this connection ever sees is
+        // used; a later "context" resend's scopeId (route changes send
+        // these routinely) is ignored, and the one-time prior-turn load
+        // below never repeats.
+        if (!scopeId && typeof msg.scopeId === "string" && msg.scopeId) {
+          const newScopeId: string = msg.scopeId;
+          scopeId = newScopeId;
+          if (deps.memory && !historySeededFromMemory) {
+            historySeededFromMemory = true;
+            const priorTurns = deps.memory.recentTurns(newScopeId);
+            const seeded = seedHistoryFromMemory(history, priorTurns, MAX_HISTORY_TURNS);
+            history.length = 0;
+            history.push(...seeded);
+          }
+        }
       } else if (msg.type === "tool_result" && typeof msg.observation === "string") {
         // The client finished executing a click/fill/read/call_tool step
         // the agent loop sent it — this is what finalizeTurn's
@@ -499,6 +561,13 @@ export async function handleDeepgramMessage(
    * barge-in timer when this fires — see triggerServerBargeIn's own
    * doc comment for the full mechanism. */
   onRealTranscript?: () => void,
+  /** Phase 5 — called with each real (role, text) turn as it's finalized,
+   * right alongside the same-shaped `history.push`. Optional and a no-op
+   * by default so every existing call site keeps working unchanged. The
+   * realtime connection's own recordMemoryTurn writes it to durable
+   * storage when memory + a scopeId are both configured for this
+   * connection — see ConnectionDeps.memory's own doc comment. */
+  recordMemoryTurn?: (role: "user" | "assistant", text: string) => void,
 ): Promise<void> {
   let msg: any;
   try {
@@ -512,7 +581,7 @@ export async function handleDeepgramMessage(
     // after utterance_end_ms of silence — a safety net for the rare case a
     // Results message never carries speech_final:true, so a turn can't get
     // permanently stuck with real transcript sitting in the buffer forever.
-    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult);
+    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn);
     return;
   }
 
@@ -542,7 +611,7 @@ export async function handleDeepgramMessage(
     return;
   }
 
-  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult);
+  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn);
 }
 
 /**
@@ -583,6 +652,7 @@ async function finalizeTurn(
   history: HistoryTurn[],
   getGeneration: () => number,
   waitForToolResult: () => Promise<string>,
+  recordMemoryTurn?: (role: "user" | "assistant", text: string) => void,
 ): Promise<void> {
   const transcript = turnState.buffer;
   turnState.buffer = "";
@@ -841,6 +911,8 @@ async function finalizeTurn(
             : { verb: "explain", text: "I'm not sure how to help with that." };
       history.push({ role: "user", text: transcript }, { role: "assistant", text: summarizeVerbForHistory(verb) });
       history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+      recordMemoryTurn?.("user", transcript);
+      recordMemoryTurn?.("assistant", summarizeVerbForHistory(verb));
 
       if (ackPromise) {
         // Never start a second speakStreamed call before the first (the
@@ -891,8 +963,11 @@ async function finalizeTurn(
     // fallback below — use it when there is one.
     const giveUpText =
       result.outcome === "critic-give-up" ? result.verdict.reasoning : "I wasn't able to finish that — try asking again or breaking it into smaller steps.";
-    history.push({ role: "user", text: transcript }, { role: "assistant", text: result.outcome === "critic-give-up" ? giveUpText : "(gave up after too many steps)" });
+    const gaveUpSummary = result.outcome === "critic-give-up" ? giveUpText : "(gave up after too many steps)";
+    history.push({ role: "user", text: transcript }, { role: "assistant", text: gaveUpSummary });
     history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
+    recordMemoryTurn?.("user", transcript);
+    recordMemoryTurn?.("assistant", gaveUpSummary);
     safeSend(client, { type: "verb", verb: { verb: "explain", text: giveUpText } });
     if (ackPromise) {
       await ackPromise;

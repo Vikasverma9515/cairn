@@ -2781,6 +2781,165 @@ mechanism.
 
 ---
 
+## Phase 5 — memory
+
+The plan's own text: "Extends today's `history` (per-turn, never
+persisted past one session) into real cross-session memory... shape-
+inspired by (not copied from) Track B's `memory.py` facts/turns tables
+— reimplemented... since Track B's version has no tenant isolation and
+wasn't built for this." A research pass (Explore agent, read-only) into
+Track B's actual `memory.py` and Track A's actual runtime before writing
+any code found two real constraints the plan's own text only gestures
+at, both load-bearing for what this phase could honestly build:
+
+- **Track A has no identity concept anywhere.** Grepped
+  `packages/sdk/src` and `packages/core/src` for `userId`/`sessionId`/
+  `tenantId`/`tenant` — zero hits, beyond LLM-provider API keys. Unlike
+  Track B's `customer_id` (one string, no verification, effectively
+  single-tenant-per-process), Track A is deployed by a third-party
+  developer FOR their own end users — two identity layers, neither of
+  which this SDK has ever had a concept of. "Tenant isolation" can't be
+  implemented by inventing an auth system here; it has to mean "accept
+  whatever opaque id the caller already has, and be honest about what
+  isolation that string does and doesn't give" — the same real
+  boundary Track B's own `customer_id` already draws, just made
+  explicit instead of assumed.
+- **Only the realtime relay is a safe place for local SQLite.**
+  `server.ts`'s handler runs inside the CUSTOMER's own Next.js API
+  route — possibly serverless, with no durable local disk across
+  invocations, and nothing in this SDK can detect or guarantee
+  otherwise. `realtime-cli.ts`/`realtime-server.ts` is confirmed (by
+  its own existing in-closure `history: HistoryTurn[]` state) to be a
+  genuine long-lived Node process with real filesystem access — the one
+  place a SQLite file dropped next to it would actually persist.
+
+Given both, this phase's first slice deliberately matches Phase 4's own
+scoping discipline: build the real store, wire it into the one
+transport where it's honestly buildable today, and say plainly that the
+other transport doesn't get it yet — rather than guess at either.
+
+### Step 1: a real SQLite memory store, wired into the realtime relay
+
+**Built:**
+- `packages/sdk/src/memory-sqlite.ts` (new, exported as
+  `@cairnvibe/sdk/memory-sqlite`, mirroring `dashboard-sqlite.ts`'s own
+  already-shipped shape exactly — file-or-shared-`Database`, a
+  namespaced table, plain `better-sqlite3`, no new dependency) —
+  `createSqliteMemoryStore(target)` returns a `MemoryStore`:
+  `rememberFact`/`recallFact`/`recallFacts` (explicit upsert by
+  `(scopeId, key)`, matching Track B's own "remember is an explicit
+  act, never automatic") and `recordTurn`/`recentTurns` (append-only,
+  recency-ordered — no search, matching Track B's own real capability,
+  not an invented one). `scopeId` is deliberately opaque: this store
+  makes no claim about who a scope actually is, only that facts/turns
+  under the same string are isolated from every other string.
+- `ConnectionDeps.memory?: MemoryStore` and
+  `CreateRealtimeServerOptions.memory?: MemoryStore` (both optional,
+  same backward-compatible pattern as every prior addition — absent
+  means every connection stays exactly as memory-less as before this
+  existed).
+- The "context" message (already client-sent on every route change)
+  gains an optional `scopeId` field — whatever id the CUSTOMER's own
+  client code already has for this end user (their own login id, or
+  any other stable string they choose; this SDK invents nothing). Only
+  the FIRST context message carrying one is used for the whole
+  connection — a real, documented v1 simplification, not an attempt at
+  handling a scopeId that legitimately changes mid-connection (e.g. a
+  login completing partway through a session).
+- `seedHistoryFromMemory(existingHistory, priorTurns, maxTurns)` — a
+  small, pure, standalone function (same "extract anything genuinely
+  testable" discipline as `splitFlushableSentences`/
+  `createBargeInConfirmation`): prior turns from memory go first
+  (oldest overall), any in-connection history already accumulated
+  stays after them, the whole thing capped to `MAX_HISTORY_TURNS` —
+  called once, the first time a real `scopeId` arrives, to seed a
+  fresh connection's `history` with what actually happened in a PRIOR
+  session with the same scope. This is the actual cross-session part:
+  before this step, `history` died with the WebSocket every time.
+- `finalizeTurn` gains an optional `recordMemoryTurn` callback, called
+  alongside both of its existing `history.push(...)` sites (the
+  terminal-outcome path and the give-up path) — every real turn this
+  scope has, recorded automatically, matching Track B's own "turns are
+  automatic, facts are explicit" split. `handleConnection`'s own
+  `recordMemoryTurn` closure is a plain `if (!deps.memory ||
+  !scopeId) return;` guard — writes nothing when either is absent.
+  Explicit fact-remembering (a tool the model could call mid-
+  conversation to save a preference/pitfall on purpose) is real,
+  valuable future work — not built this step, see Pending.
+
+**Tests:**
+- `memory-sqlite.test.ts` (new, 12 tests, mirroring
+  `dashboard-sqlite.test.ts`'s own conventions exactly, real
+  `better-sqlite3` throughout, no mocks): facts upsert correctly
+  (overwrite, not duplicate); facts and turns are isolated per
+  `scopeId`; `recentTurns` returns oldest-first and respects a limit by
+  keeping the MOST RECENT turns; an empty scope returns `[]`, not an
+  error; persistence across separate store instances pointed at the
+  same file (the actual point of a durable store); accepts an
+  already-open `Database` to share a file with a consumer's own tables.
+- `realtime-server.test.ts` (+6): `seedHistoryFromMemory` (4 tests,
+  pure-function, no closures) — prior turns ordered ahead of existing
+  history; caps to `maxTurns` keeping the most recent overall; both
+  empty-input edge cases. `recordMemoryTurn` (2 tests) — called with
+  the exact real (role, text) pairs for a real terminal turn; omitting
+  it entirely is a safe no-op (every one of the 31 pre-existing tests
+  re-ran completely unmodified and passed, confirming the memory-less
+  path is byte-for-byte unchanged).
+- Full regression gate: 455/455 tests pass repo-wide (up from 437),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces (one real TS narrowing gotcha hit and fixed along the
+  way — a `let scopeId` captured by an outer closure and reassigned
+  inside an inner one doesn't narrow the same way a local variable
+  would; fixed by binding the assigned value to a local `const` first,
+  same fix already applied to `speakerText` in Phase 2 step 1).
+
+**Live-verified:** a real `createRealtimeServer`, configured with a
+real `createSqliteMemoryStore` (a real temp SQLite file, real
+`better-sqlite3`), pre-seeded with two real "prior session" turns for
+`scopeId: "live-user-1"` written directly through the store (simulating
+an earlier real connection). Connected a real `ws` client, sent a real
+`{type: "context", scopeId: "live-user-1", ...}` message against the
+real running server — confirmed the connection stayed healthy (no
+`error` message), proving the wiring doesn't crash a real server with
+memory actually configured. Did **not** additionally live-verify a
+full write-then-reload round trip through real STT-driven speech
+(would need real synthesized audio routed through real Deepgram STT to
+trigger a genuine `finalizeTurn` call — the same class of gap already
+documented honestly for Phase 2 step 2's "confirmed" barge-in path, not
+re-litigated here); the actual read/write correctness is instead fully
+covered by `memory-sqlite.test.ts`'s real-SQLite tests plus
+`realtime-server.test.ts`'s direct proof that `recordMemoryTurn` fires
+with the real data at the real call site.
+
+**Pending:**
+- **The typed/HTTP transport (`server.ts`) gets no memory in this
+  slice** — deliberately, per the research above: that handler runs
+  inside a customer's own route of unknown (possibly serverless)
+  deployment shape, and nothing in the SDK can detect or guarantee
+  durable local disk there. A real path forward exists (accept an
+  injected store interface — same shape as `MissesStore`/`MemoryStore`
+  — rather than Cairn owning a file) but wasn't attempted speculatively
+  this step.
+- **Explicit fact-remembering** (a tool call the model itself decides
+  to invoke mid-conversation, Track B's own `remember_tool`/
+  `recall_tool` MCP-tool pattern) is not built — this step wires up
+  only the automatic turn-recording half. A real, valuable next slice:
+  a new verb or `call_tool`-shaped capability letting the agent
+  actually say "remember that this selector is flaky" or "remember the
+  user prefers metric units," queryable back via `recallFacts`.
+- **No keyword/semantic search over memory** — matches Track B's own
+  real capability exactly (recency only), not a gap introduced here.
+- **No UI/dashboard surface for a deployment's stored memory** — the
+  store is a real, working backend; nothing yet exposes "what does
+  Cairn remember about this user" to a developer or end user.
+- The `scopeId`-changes-mid-connection case (e.g. a login completing
+  partway through a voice session) is explicitly not handled — the
+  first `scopeId` a connection sees is the only one ever used.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

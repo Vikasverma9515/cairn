@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { HistoryTurn, Manifest } from "@cairnvibe/core";
 import type { StreamingTextLLM, VerbLLM } from "./server";
-import { createBargeInConfirmation, handleDeepgramMessage, type ConnectionDeps } from "./realtime-server";
+import { createBargeInConfirmation, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
+import type { MemoryTurnRecord } from "./memory-sqlite";
 
 function fakeSpeakerLLM(respondStreamed: StreamingTextLLM["respondStreamed"]): StreamingTextLLM {
   return { respondStreamed };
@@ -57,6 +58,42 @@ function resultsMessage(transcript: string, opts: { isFinal: boolean; speechFina
 // barge-in, extracted specifically so it could be tested in isolation
 // with real fake timers, rather than left buried inside
 // handleConnection's own closure where nothing about it was reachable.
+// Phase 5 — the pure transformation behind seeding a fresh connection's
+// starting history from real cross-session memory.
+describe("seedHistoryFromMemory", () => {
+  it("puts prior turns from memory first, oldest overall, ahead of any already-accumulated in-connection history", () => {
+    const priorTurns: MemoryTurnRecord[] = [
+      { role: "user", content: "archive my old invoices", createdAt: "t1" },
+      { role: "assistant", content: "done, archived 3", createdAt: "t2" },
+    ];
+    const existing = [{ role: "user" as const, text: "what's this page for" }, { role: "assistant" as const, text: "it's the invoices page" }];
+
+    const result = seedHistoryFromMemory(existing, priorTurns, 10);
+
+    expect(result).toEqual([
+      { role: "user", text: "archive my old invoices" },
+      { role: "assistant", text: "done, archived 3" },
+      { role: "user", text: "what's this page for" },
+      { role: "assistant", text: "it's the invoices page" },
+    ]);
+  });
+
+  it("caps to maxTurns, keeping the MOST RECENT turns overall — never silently unbounded", () => {
+    const priorTurns: MemoryTurnRecord[] = Array.from({ length: 6 }, (_, i) => ({ role: "user" as const, content: `prior ${i}`, createdAt: `t${i}` }));
+    const result = seedHistoryFromMemory([], priorTurns, 4);
+    expect(result.map((t) => t.text)).toEqual(["prior 2", "prior 3", "prior 4", "prior 5"]);
+  });
+
+  it("with no prior turns at all, returns the existing history unchanged", () => {
+    const existing = [{ role: "user" as const, text: "hi" }];
+    expect(seedHistoryFromMemory(existing, [], 10)).toEqual(existing);
+  });
+
+  it("with no existing history and no prior turns, returns an empty array", () => {
+    expect(seedHistoryFromMemory([], [], 10)).toEqual([]);
+  });
+});
+
 describe("createBargeInConfirmation", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -139,6 +176,41 @@ describe("handleDeepgramMessage", () => {
     expect(respond).toHaveBeenCalledTimes(1);
     const finals = sent.filter((m: any) => m.type === "final");
     expect(finals).toEqual([{ type: "final", text: "hello" }]);
+  });
+
+  // Phase 5 — recordMemoryTurn is called with the same real (role, text)
+  // pairs history.push already records, right alongside it.
+  it("Phase 5: recordMemoryTurn is called with the real user question and the real assistant answer for a terminal turn", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "hi there" });
+    const deps = fakeDeps(respond);
+    const recordMemoryTurn = vi.fn();
+
+    await handleDeepgramMessage(
+      resultsMessage("hello", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      recordMemoryTurn,
+    );
+
+    expect(recordMemoryTurn).toHaveBeenCalledWith("user", "hello");
+    expect(recordMemoryTurn).toHaveBeenCalledWith("assistant", "hi there");
+  });
+
+  it("Phase 5: omitting recordMemoryTurn entirely is a safe no-op — every existing call site keeps working unchanged", async () => {
+    const { client } = fakeClient();
+    const deps = fakeDeps(vi.fn().mockResolvedValue({ verb: "explain", text: "ok" }));
+
+    await expect(
+      handleDeepgramMessage(resultsMessage("hello", { isFinal: true, speechFinal: true }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
+    ).resolves.not.toThrow();
   });
 
   // Phase 2 step 2 — onRealTranscript is the confirmation signal

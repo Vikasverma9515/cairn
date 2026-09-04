@@ -23,6 +23,7 @@
     "./server": "./dist/server.js",
     "./dashboard": "./dist/dashboard.js",
     "./dashboard-sqlite": "./dist/dashboard-sqlite.js",
+    "./memory-sqlite": "./dist/memory-sqlite.js",
     "./transcribe-server": "./dist/transcribe-server.js",
     "./speak-server": "./dist/speak-server.js",
     "./realtime-server": "./dist/realtime-server.js",
