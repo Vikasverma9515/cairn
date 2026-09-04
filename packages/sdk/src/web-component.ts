@@ -25,6 +25,7 @@ import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
+import { createVadDetector } from "./vad";
 
 type Status = "idle" | "asking" | "recording" | "rt-connecting" | "rt-listening" | "rt-thinking" | "rt-speaking";
 
@@ -946,6 +947,7 @@ export class CairnWidgetElement extends HTMLElement {
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       const silence = audioCtx.createGain();
       silence.gain.value = 0;
+      const bargeInVad = createVadDetector();
 
       // Only flips back to "listening" (and lets the mic resume sending)
       // once BOTH the server has said no more audio is coming for this
@@ -1020,8 +1022,7 @@ export class CairnWidgetElement extends HTMLElement {
         // sent yet, and cut the agent off the instant the user starts
         // talking over it instead of making them wait for it to finish.
         if (this.status === "rt-speaking" && !this.touringActive) {
-          const rms = computeRms(e.inputBuffer.getChannelData(0));
-          if (rms > BARGE_IN_RMS_THRESHOLD) triggerBargeIn();
+          if (bargeInVad.process(e.inputBuffer.getChannelData(0)).isSpeech) triggerBargeIn();
           return;
         }
 
@@ -1201,18 +1202,6 @@ function summarizeVerbForHistory(raw: unknown): string {
 // Audio helpers (real-time PCM16 capture — standard Web Audio API patterns,
 // identical to index.tsx's — same protocol, same math, ported directly)
 // ---------------------------------------------------------------------------
-
-// Heuristic energy gate for barge-in: real speech into a laptop/phone mic
-// typically sits well above this; normal room noise and the mic's own
-// noise floor typically sit below it. Same threshold as the React widget —
-// not independently recalibrated, since it's the same audio pipeline.
-const BARGE_IN_RMS_THRESHOLD = 0.02;
-
-function computeRms(channelData: Float32Array): number {
-  let sumSquares = 0;
-  for (let i = 0; i < channelData.length; i++) sumSquares += channelData[i] * channelData[i];
-  return Math.sqrt(sumSquares / channelData.length);
-}
 
 function downsampleTo16k(input: Float32Array, inputSampleRate: number): Float32Array {
   const targetRate = 16000;

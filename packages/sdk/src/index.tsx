@@ -23,6 +23,7 @@ import { findElement, highlightElement, logMiss, type MissContext } from "./elem
 import { createLiveElementRegistry } from "./runtime-scan";
 import { discoverWebMcpTools } from "./webmcp-client";
 import { executeToolStep, executeVerbResponse } from "./verb-executor";
+import { createVadDetector } from "./vad";
 
 export interface CopilotProps {
   /** Reserved for a future client-side manifest fetch. Not required — the server handler owns the manifest. */
@@ -789,6 +790,7 @@ export function Copilot({
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       const silence = audioCtx.createGain();
       silence.gain.value = 0;
+      const bargeInVad = createVadDetector();
 
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -808,8 +810,7 @@ export function Copilot({
         // whole window — found live as "not listening while speaking... no
         // interrupting system", not just a missed nice-to-have.
         if (rtStateRef.current === "rt-speaking" || rtStateRef.current === "rt-thinking") {
-          const rms = computeRms(e.inputBuffer.getChannelData(0));
-          if (rms > BARGE_IN_RMS_THRESHOLD) triggerBargeIn();
+          if (bargeInVad.process(e.inputBuffer.getChannelData(0)).isSpeech) triggerBargeIn();
           return;
         }
 
@@ -1298,20 +1299,6 @@ function CairnMark() {
 // ---------------------------------------------------------------------------
 // Audio helpers (real-time PCM16 capture — standard Web Audio API patterns)
 // ---------------------------------------------------------------------------
-
-// Heuristic energy gate for barge-in: real speech into a laptop/phone mic
-// typically sits well above this; normal room noise and the mic's own
-// noise floor typically sit below it. Not calibrated against real hardware
-// in this environment (no live mic here) — reasonable starting point, may
-// need tuning against a real device if it proves too trigger-happy or too
-// insensitive in practice.
-const BARGE_IN_RMS_THRESHOLD = 0.02;
-
-function computeRms(channelData: Float32Array): number {
-  let sumSquares = 0;
-  for (let i = 0; i < channelData.length; i++) sumSquares += channelData[i] * channelData[i];
-  return Math.sqrt(sumSquares / channelData.length);
-}
 
 function downsampleTo16k(input: Float32Array, inputSampleRate: number): Float32Array {
   const targetRate = 16000;

@@ -2978,7 +2978,99 @@ mechanism.
   text, unchanged here.
 - The VAD-swap tradeoff from step 2 (Silero VAD's real bundle-size
   cost) remains the one real, undecided design question left open in
-  this phase.
+  this phase. Closed by step 4, below — not by making the deferred
+  hosting decision, but by sidestepping the tradeoff entirely.
+
+**Failed:** nothing.
+
+### Step 4: the VAD swap — closed by sidestepping the tradeoff, not deciding it
+
+Step 2 left one real, explicitly undecided question open: swap the bare
+RMS-energy barge-in trigger for a real VAD, but a trained model (Silero)
+carries a genuine 1-2MB+/20-30x bundle-size cost for a widget meant to
+drop into a third-party page — a real hosting/CDN decision this session
+didn't have enough information to make well. Re-reading that tradeoff
+now: the actual ask was never "use Silero specifically," it was "replace
+a heuristic that fires on any loud sound with something that actually
+distinguishes speech." A second, dependency-free heuristic can close
+most of that real gap without the bundle cost at all — so this step
+builds that instead of making the deferred hosting decision.
+
+**Built:**
+- `packages/sdk/src/vad.ts` (new, shared, framework-free — imported by
+  both `index.tsx` and `web-component.ts`, replacing what was previously
+  intentional duplication of `computeRms`/`BARGE_IN_RMS_THRESHOLD` in
+  both files with one real shared module, the same "reuse, don't
+  duplicate" discipline every other pure-logic module in this session
+  has followed). `createVadDetector()` returns a stateful `process()`
+  that gates on TWO features instead of one:
+  - **Energy (RMS)** — the original signal, kept.
+  - **Zero-crossing rate (ZCR)** — a coarse, FFT-free frequency-content
+    proxy (fraction of adjacent-sample sign changes). Real speech
+    (voiced pitch + harmonics, unvoiced fricatives) sits in a broad
+    middle band; a low-frequency hum/rumble sits near zero; hiss/
+    static-like broadband noise sits near the ceiling. The band used
+    (`[0.003, 0.4]`) is deliberately wide — documented explicitly in
+    the module's own header as rejecting only those two extremes, not
+    a precise speech classifier, since there's no live mic in this
+    environment to tune it more precisely against (the same honest
+    caveat step 2's own `BARGE_IN_RMS_THRESHOLD` comment already
+    carried, carried forward here rather than overclaimed away).
+  - **Adaptive noise floor** — the real, independent improvement beyond
+    matching Silero's job: instead of one flat absolute RMS cutoff, an
+    EMA of the ambient RMS (updated only on frames NOT classified as
+    speech) raises the effective energy threshold in a noisy room
+    automatically, while never dropping below the original 0.02
+    absolute floor — so a quiet room is never MORE trigger-happy than
+    the step-2 baseline, only a noisy one gets genuinely harder to
+    false-trigger.
+- Both `index.tsx` and `web-component.ts`: removed their duplicated
+  `computeRms`/`BARGE_IN_RMS_THRESHOLD`, added one `createVadDetector()`
+  instance scoped to the realtime connection (fresh state per connect,
+  same lifecycle the rest of that connection's state already has), and
+  replaced the bare `rms > BARGE_IN_RMS_THRESHOLD` check with
+  `bargeInVad.process(...).isSpeech` at each file's existing
+  `onaudioprocess` call site — a mechanical, scoped swap on exactly the
+  known call sites step 2's own research had already identified.
+
+**Tests:**
+- `vad.test.ts` (new, 16 tests): `computeRms`/`computeZcr` verified
+  against hand-computable synthetic arrays (constant/alternating/single-
+  crossing signals with exactly derivable expected values, not
+  approximated sine waves); `createVadDetector` verified to accept a
+  loud speech-band-frequency frame, reject a loud pure-hum frame (zcr
+  too low), reject loud Nyquist-rate noise (zcr too high), reject a
+  quiet speech-band frame (energy gate), and — the one genuinely novel
+  behavior beyond a static two-feature gate — demonstrates the adaptive
+  floor directly: the IDENTICAL speech-band frame at rms=0.09 is
+  accepted by a fresh detector but rejected by one already primed with
+  60 frames of rms=0.06 ambient hum, and `reset()` restores fresh-
+  detector behavior.
+- Full regression gate: 512/512 tests pass repo-wide (up from 496, +16
+  new), zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces.
+
+**Live-verified:** no live mic in this environment (documented,
+unchanged limitation from step 2) — the closest real verification
+available: rebuilt `dist/cairn-widget.js` before and after this change
+and measured the actual bundle, the concrete number step 2's own
+tradeoff was about. Before: 100,531 bytes (98.2kb). After: 100,871
+bytes (98.5kb) — **a 340-byte increase**, not the 1-2MB+/20-30x cost a
+trained-model VAD would have carried. This is the real, checkable proof
+the tradeoff was genuinely sidestepped, not just asserted.
+
+**Pending:**
+- This is still a heuristic, not a trained VAD — it will not match
+  Silero's real accuracy on genuinely ambiguous audio (quiet speech
+  under loud broadband noise, music with vocals). If real-world
+  false-trigger/miss rates on this heuristic prove unacceptable once
+  there's a way to measure them against real hardware, the Silero path
+  (and its lazy-loading/CDN-hosting decision) remains open — this step
+  narrows that gap, it doesn't foreclose the alternative.
+- Still no real-hardware calibration for either the ZCR band or the
+  noise-floor EMA constants — same honest limitation as
+  `BARGE_IN_RMS_THRESHOLD` always carried, now extended to the two new
+  parameters.
 
 **Failed:** nothing.
 
