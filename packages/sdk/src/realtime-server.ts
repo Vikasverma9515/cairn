@@ -43,7 +43,7 @@ import {
   type CreateCopilotHandlerOptions,
 } from "./server";
 import { DeepgramSpeakStream, splitFlushableSentences } from "./tts-stream";
-import type { MemoryStore, MemoryTurnRecord } from "./memory-sqlite";
+import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
 const DEFAULT_STT_MODEL = "nova-2";
@@ -165,37 +165,12 @@ export interface BargeInConfirmation {
   cancel(): void;
 }
 
-/**
- * Phase 5 — pure, standalone, directly testable (no closures, no DB, no
- * WebSocket) so the "what does a fresh connection's starting history
- * look like, given N prior turns from memory" question doesn't have to
- * be tested by proxy through a real store or a real connection. Prior
- * turns go FIRST (oldest overall), any in-connection history already
- * accumulated stays after them, then the whole thing is capped to
- * `maxTurns` — same cap `history` itself already uses everywhere else,
- * just applied once more here so a scope with a long real memory can't
- * blow past it the moment a connection opens.
- */
-export function seedHistoryFromMemory(existingHistory: readonly HistoryTurn[], priorTurns: readonly MemoryTurnRecord[], maxTurns: number): HistoryTurn[] {
-  const combined: HistoryTurn[] = [...priorTurns.map((t): HistoryTurn => ({ role: t.role, text: t.content })), ...existingHistory];
-  return combined.slice(Math.max(0, combined.length - maxTurns));
-}
-
-/**
- * Phase 5 step 3 — closes the loop step 2 opened: a fact the model
- * explicitly remembered was being written but never read back into a
- * LATER turn's context, only `recentTurns`' raw conversation text
- * (unstructured, unreliable) had any chance of mentioning it. Pure and
- * standalone for the same reason as `seedHistoryFromMemory` — directly
- * testable with a plain object, no store, no connection. Returns null
- * for an empty fact set (nothing to say) rather than an empty string,
- * so a caller can cleanly skip adding a turn at all.
- */
-export function formatRememberedFacts(facts: Readonly<Record<string, string>>): string | null {
-  const entries = Object.entries(facts);
-  if (entries.length === 0) return null;
-  return `Remembered from a previous conversation with this user: ${entries.map(([key, value]) => `${key} — ${value}`).join("; ")}.`;
-}
+// seedHistoryFromMemory/formatRememberedFacts moved to memory-sqlite.ts
+// (Phase 5 step 4) — the SAME shared, storage-agnostic logic both the
+// realtime relay and the typed/HTTP transport need. Re-exported here
+// (not just imported) so every existing import from "./realtime-server"
+// keeps working unchanged.
+export { seedHistoryFromMemory, formatRememberedFacts };
 
 export function createBargeInConfirmation(windowMs: number): BargeInConfirmation {
   let timer: ReturnType<typeof setTimeout> | null = null;

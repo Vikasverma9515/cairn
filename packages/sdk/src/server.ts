@@ -9,6 +9,7 @@ import {
   CopilotRequestSchema,
   CriticVerdictSchema,
   PlannerOutputSchema,
+  TERMINAL_VERBS,
   VERBS,
   VerbResponseSchema,
   type CriticVerdict,
@@ -21,7 +22,8 @@ import {
   type VerbResponse,
   type WebMcpTool,
 } from "@cairnvibe/core";
-import { summarizeVerbForHistory } from "./agent-loop";
+import { MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
+import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import { KeyRotator } from "./key-rotator";
 
 const VERB_TOOL_NAME = "respond_with_verb";
@@ -73,6 +75,22 @@ export interface CreateCopilotHandlerOptions {
   capability?: CapabilityTier;
   /** Display name / identity for the agent, woven into its system prompt and shown in the widget. Defaults to "Cairn". */
   persona?: string;
+  /**
+   * Phase 5 step 4 — real cross-session memory for the typed/HTTP
+   * transport (packages/sdk/src/memory-sqlite.ts, or any store
+   * implementing the same interface). Optional — omitting it keeps
+   * every request exactly as memory-less as before this existed.
+   * Scoped by whatever `scopeId` string the request itself carries
+   * (`CopilotRequestSchema.scopeId`) — this SDK invents no identity of
+   * its own. Unlike the realtime relay (one persistent connection
+   * remembers a scopeId once), this transport is stateless per
+   * request: `resolveVerb`'s own callers seed from memory only when the
+   * REQUEST's own `history` arrives empty (a genuinely fresh session —
+   * see `createCopilotHandlerWithLLM`), never on every request, so a
+   * session already accumulating its own history client-side isn't
+   * re-seeded on top of itself.
+   */
+  memory?: MemoryStore;
 }
 
 export interface CopilotHandlerResult {
@@ -109,6 +127,7 @@ export function createCopilotHandler(manifest: Manifest, options: CreateCopilotH
     capability,
     persona: options.persona,
     actionDescriptions: options.actionDescriptions,
+    memory: options.memory,
   });
 }
 
@@ -116,7 +135,7 @@ export function createCopilotHandler(manifest: Manifest, options: CreateCopilotH
 export function createCopilotHandlerWithLLM(
   manifest: Manifest,
   llm: VerbLLM,
-  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string; actionDescriptions?: Record<string, string> } = {},
+  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string; actionDescriptions?: Record<string, string>; memory?: MemoryStore } = {},
 ): CopilotHandler {
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
@@ -128,7 +147,34 @@ export function createCopilotHandlerWithLLM(
     if (!parsedRequest.success) {
       return { status: 400, body: { error: "invalid request body" } };
     }
-    const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, parsedRequest.data);
+    const input = parsedRequest.data;
+
+    // Phase 5 step 4 — real cross-session memory for the typed/HTTP
+    // transport. Unlike the realtime relay (one persistent connection,
+    // seeded once), this is stateless per request — seeded only when
+    // the CLIENT's own history arrives empty, the real signal for "this
+    // is a genuinely fresh session" (a session already accumulating its
+    // own history client-side is never re-seeded on top of itself; see
+    // CreateCopilotHandlerOptions.memory's own doc comment).
+    let effectiveHistory = input.history ?? [];
+    if (options.memory && input.scopeId && effectiveHistory.length === 0) {
+      const priorTurns = options.memory.recentTurns(input.scopeId);
+      effectiveHistory = seedHistoryFromMemory([], priorTurns, MAX_HISTORY_TURNS);
+      const factsSummary = formatRememberedFacts(options.memory.recallFacts(input.scopeId));
+      if (factsSummary) effectiveHistory = [{ role: "assistant", text: factsSummary }, ...effectiveHistory];
+    }
+
+    const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, { ...input, history: effectiveHistory });
+
+    // Recorded only for a TERMINAL verb — matching the realtime relay's
+    // own discipline exactly: a continuing step (click/fill/read/
+    // call_tool/batch) is an internal implementation detail of one
+    // logical exchange, never its own remembered "turn".
+    if (options.memory && input.scopeId && TERMINAL_VERBS.has(verb.verb)) {
+      options.memory.recordTurn(input.scopeId, "user", input.question);
+      options.memory.recordTurn(input.scopeId, "assistant", summarizeVerbForHistory(verb));
+    }
+
     return { status: 200, body: verb };
   };
 }

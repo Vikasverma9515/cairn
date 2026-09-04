@@ -436,6 +436,20 @@ export const CopilotRequestSchema = z.object({
   liveElements: z.array(LiveElementSchema).max(60).optional(),
   /** Real tools the page registered via WebMCP — see WebMcpToolSchema. */
   webMcpTools: z.array(WebMcpToolSchema).max(30).optional(),
+  /**
+   * Phase 5 step 4 — real cross-session memory for the typed/HTTP
+   * transport. Whatever opaque id the CUSTOMER's own client code
+   * already has for this end user (their own login id, or any other
+   * stable string they choose) — this SDK invents no identity of its
+   * own, same discipline as the realtime relay's own `scopeId` (see
+   * `realtime-server.ts`'s "context" message). Unlike the realtime
+   * relay (one persistent connection remembers it once), this
+   * transport is stateless per request — a client wanting cross-session
+   * memory sends this on EVERY request, not just the first. Optional;
+   * omitting it (or a deployment with no `memory` store configured at
+   * all) means this request behaves exactly as it always has.
+   */
+  scopeId: z.string().optional(),
 });
 export type CopilotRequest = z.infer<typeof CopilotRequestSchema>;
 

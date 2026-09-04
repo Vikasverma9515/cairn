@@ -3111,8 +3111,107 @@ on direct code review rather than a live capture.
 **Pending:**
 - The "ask a question that can only be answered using a remembered
   fact" full live round trip, per the honest gap above — real future
-  verification work, not a known defect.
+  verification work, not a known defect. (Closed for the typed
+  transport in step 4 below — this exact scenario IS live-verified
+  there, since that transport doesn't need real audio to trigger a
+  turn.)
 - Same typed/HTTP-transport gap as steps 1-2.
+
+**Failed:** nothing.
+
+### Step 4: the typed/HTTP transport gets real memory too
+
+Steps 1-3 explicitly scoped memory to the realtime relay only — the
+research behind that decision (Phase 5's own intro) was about WHERE
+Cairn itself could safely own a local SQLite file, not about whether
+the typed transport could ever use memory at all. Re-reading that
+research: the actual blocker was Cairn managing its OWN file inside a
+customer's possibly-serverless route — it was never a blocker on the
+transport ACCEPTING an already-built `MemoryStore` the customer owns
+and persists however they want (their own Redis, Postgres, or yes,
+their own SQLite file on their own persistent server). This step closes
+that gap.
+
+**Built:**
+- `seedHistoryFromMemory`/`formatRememberedFacts` moved from
+  `realtime-server.ts` to `memory-sqlite.ts` — the same shared,
+  storage-agnostic logic BOTH transports need, re-exported from
+  `realtime-server.ts` so every existing import keeps working
+  unchanged. One real, disciplined fix instead of a second, drifting
+  copy.
+- `CopilotRequestSchema` gains an optional `scopeId?: string` — same
+  opaque, caller-supplied discipline as the realtime relay's own
+  `scopeId` (this SDK invents no identity of its own). Unlike the
+  realtime relay (one persistent connection, seeded once),
+  this transport is stateless per request — a client wanting
+  cross-session memory sends this on EVERY request.
+- `CreateCopilotHandlerOptions` (the shared base both
+  `CreateCopilotHandlerOptions` and `CreateRealtimeServerOptions` build
+  on) gains `memory?: MemoryStore`. `createCopilotHandlerWithLLM`
+  seeds from memory ONLY when the request's own `history` arrives
+  EMPTY — the real, correct signal for "this is a genuinely fresh
+  session," since a session already accumulating its own history
+  client-side (the widget's `historyRef`, resent each call) must never
+  be re-seeded with the same prior turns on top of itself, request
+  after request. Records a NEW turn to memory only for a TERMINAL verb
+  (`TERMINAL_VERBS.has(verb.verb)`) — matching the realtime relay's own
+  discipline exactly: a continuing step (click/fill/read/call_tool/
+  batch) is an internal implementation detail of one logical exchange,
+  never its own remembered "turn."
+- Explicit `remember_fact`-style tool calling is deliberately NOT built
+  for this transport in this step — see Pending for the real reason
+  (it needs a materially different mechanism than the realtime relay's
+  own server-side interception, since the typed transport has no
+  persistent in-process loop to absorb a step into).
+
+**Tests:**
+- `core/index.test.ts` (+2): `scopeId` is optional (existing callers
+  unaffected); accepts a real scopeId string.
+- `server.test.ts` (+6): a genuinely fresh session (empty history)
+  seeds real prior turns AND facts from memory, in the correct order;
+  a session with its OWN existing history is never re-seeded on top of
+  itself (`memory.recentTurns` provably not even called); a terminal
+  verb is recorded with the real question and real answer; a
+  CONTINUING verb (click) is never recorded; memory configured but no
+  `scopeId` on the request means no seeding and no recording at all;
+  no memory configured behaves exactly as before. All 81 pre-existing
+  `server.test.ts` tests re-ran completely unmodified and passed.
+- Full regression gate: 470/470 tests pass repo-wide (up from 462),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces.
+
+**Live-verified, real end to end, and this closes a real gap step 3
+left open:** unlike the realtime relay (which needs real STT-driven
+audio to trigger a genuine turn — the honest gap steps 2 and 3 both
+documented), the typed transport's `createCopilotHandlerWithLLM` is
+directly callable with NO audio involved at all. Pre-seeded a real
+fact (`preferredCurrency: euros`) and a real prior turn into a real
+SQLite store for `scopeId: "typed-user-1"`, then called the handler
+with a FRESH (empty) client history and the SAME scopeId, asking "What
+did I ask about last time, and what currency do I prefer?" — using the
+real Groq model. The real answer: *"Last time you asked what the
+invoices page is for, and you prefer to work in euros."* — genuinely
+using BOTH the seeded prior turn and the remembered fact, not
+guessed. Confirmed the new turn was also correctly recorded back
+(`memory.recentTurns` showed all 4 turns — 2 prior, 2 new — after the
+call). Scratch script deleted after use.
+
+**Pending:**
+- Explicit `remember_fact`-style tool calling for the typed transport.
+  The realtime relay's own mechanism (server-side interception inside
+  `executeStep`, invisible to the client) doesn't translate directly:
+  the typed transport has no persistent in-process loop to absorb a
+  step into — a `call_tool` verb resolved server-side would need to be
+  followed by an INTERNAL second `resolveVerb` call (with the tool's
+  real observation folded into history) before returning anything to
+  the client, effectively a mini-loop inside one HTTP request/response
+  — including its own max-iteration guard, given step 2's own live-
+  found finding that this exact model can repeat a tool call rather
+  than recognizing success. Real, valuable follow-up work; a
+  materially different, more involved mechanism than a quick port,
+  deliberately not rushed into this step.
+- No dashboard/UI surface for typed-transport memory, same as
+  realtime's own still-open gap.
 
 **Failed:** nothing.
 

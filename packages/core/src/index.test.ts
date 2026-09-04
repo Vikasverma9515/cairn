@@ -359,6 +359,16 @@ describe("CopilotRequestSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("Phase 5 step 4: scopeId is optional — existing callers that don't send it still parse", () => {
+    expect(CopilotRequestSchema.safeParse({ route: "/", question: "hi", visible: [] }).success).toBe(true);
+  });
+
+  it("Phase 5 step 4: accepts a real scopeId string", () => {
+    const result = CopilotRequestSchema.safeParse({ route: "/", question: "hi", visible: [], scopeId: "end-user-42" });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.scopeId).toBe("end-user-42");
+  });
 });
 
 describe("AgentEventSchema (Phase 3 step 5 — the Talker's event stream)", () => {

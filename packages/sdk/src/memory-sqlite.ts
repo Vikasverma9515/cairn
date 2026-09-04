@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import type { HistoryTurn } from "@cairnvibe/core";
 
 const FACTS_TABLE = "cairn_memory_facts";
 const TURNS_TABLE = "cairn_memory_turns";
@@ -105,4 +106,37 @@ export function createSqliteMemoryStore(target: string | Database.Database): Mem
 function openFile(filePath: string): Database.Database {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   return new Database(filePath);
+}
+
+/**
+ * Phase 5 step 4 — pure, standalone, directly testable (no closures, no
+ * DB, no WebSocket), storage-agnostic (works from a `MemoryStore`
+ * however it's actually backed) — shared by BOTH transports (the
+ * realtime relay, which seeds this once per connection, and the typed/
+ * HTTP handler, which seeds it once per genuinely fresh session — see
+ * server.ts's own use). Prior turns go FIRST (oldest overall), any
+ * already-accumulated history stays after them, then the whole thing is
+ * capped to `maxTurns` — same cap `history` itself already uses
+ * everywhere else, just applied once more here so a scope with a long
+ * real memory can't blow past it the moment a session starts.
+ */
+export function seedHistoryFromMemory(existingHistory: readonly HistoryTurn[], priorTurns: readonly MemoryTurnRecord[], maxTurns: number): HistoryTurn[] {
+  const combined: HistoryTurn[] = [...priorTurns.map((t): HistoryTurn => ({ role: t.role, text: t.content })), ...existingHistory];
+  return combined.slice(Math.max(0, combined.length - maxTurns));
+}
+
+/**
+ * Phase 5 step 3 — closes the loop step 2 opened: a fact the model
+ * explicitly remembered was being written but never read back into a
+ * LATER turn's context, only `recentTurns`' raw conversation text
+ * (unstructured, unreliable) had any chance of mentioning it. Pure and
+ * standalone for the same reason as `seedHistoryFromMemory` — directly
+ * testable with a plain object, no store, no connection. Returns null
+ * for an empty fact set (nothing to say) rather than an empty string,
+ * so a caller can cleanly skip adding a turn at all.
+ */
+export function formatRememberedFacts(facts: Readonly<Record<string, string>>): string | null {
+  const entries = Object.entries(facts);
+  if (entries.length === 0) return null;
+  return `Remembered from a previous conversation with this user: ${entries.map(([key, value]) => `${key} — ${value}`).join("; ")}.`;
 }

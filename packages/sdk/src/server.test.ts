@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { VerbResponseSchema, type Manifest, type Task } from "@cairnvibe/core";
 import {
   AnthropicStreamingTextLLM,
@@ -88,6 +88,16 @@ function capturingFakeLLM(payload: unknown): { llm: VerbLLM; calls: { systemProm
   };
 }
 
+function fakeMemoryStore() {
+  return {
+    rememberFact: vi.fn(),
+    recallFact: vi.fn().mockReturnValue(null),
+    recallFacts: vi.fn().mockReturnValue({}),
+    recordTurn: vi.fn(),
+    recentTurns: vi.fn().mockReturnValue([]),
+  };
+}
+
 function manifestWithPages(pageCount: number, elementsPerPage: number): Manifest {
   return {
     version: "1",
@@ -131,6 +141,76 @@ describe("createCopilotHandlerWithLLM", () => {
     const result = await handler({ route: "/invoices", question: "what is this page for?", visible: ["create-invoice"] });
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ verb: "explain", text: "This page lists your invoices." });
+  });
+
+  // Phase 5 step 4 — real cross-session memory for the typed/HTTP
+  // transport, mirroring the realtime relay's own steps 1-3.
+  it("Phase 5 step 4: a genuinely fresh session (empty history) seeds real prior turns and facts from memory", async () => {
+    const memory = fakeMemoryStore();
+    memory.recentTurns.mockReturnValue([{ role: "user", content: "archive my old invoices", createdAt: "t1" }, { role: "assistant", content: "done", createdAt: "t2" }]);
+    memory.recallFacts.mockReturnValue({ preferredCurrency: "euros" });
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({ route: "/invoices", question: "what's on this page?", visible: [], scopeId: "end-user-1" });
+
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory[0]).toEqual({ role: "assistant", text: "Remembered from a previous conversation with this user: preferredCurrency — euros." });
+    expect(seenHistory).toContainEqual({ role: "user", text: "archive my old invoices" });
+    expect(seenHistory).toContainEqual({ role: "assistant", text: "done" });
+  });
+
+  it("Phase 5 step 4: a session with its OWN existing history is never re-seeded from memory on top of itself", async () => {
+    const memory = fakeMemoryStore();
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({
+      route: "/invoices",
+      question: "and the other one?",
+      visible: [],
+      scopeId: "end-user-1",
+      history: [{ role: "user", text: "archive the first invoice" }, { role: "assistant", text: "done" }],
+    });
+
+    expect(memory.recentTurns).not.toHaveBeenCalled();
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory).toEqual([{ role: "user", text: "archive the first invoice" }, { role: "assistant", text: "done" }]);
+  });
+
+  it("Phase 5 step 4: a terminal verb is recorded to memory with the real question and real answer", async () => {
+    const memory = fakeMemoryStore();
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "It lists your invoices." }), { memory });
+
+    await handler({ route: "/invoices", question: "what is this page for?", visible: [], scopeId: "end-user-1" });
+
+    expect(memory.recordTurn).toHaveBeenCalledWith("end-user-1", "user", "what is this page for?");
+    expect(memory.recordTurn).toHaveBeenCalledWith("end-user-1", "assistant", "It lists your invoices.");
+  });
+
+  it("Phase 5 step 4: a CONTINUING verb (e.g. click) is never recorded — only a terminal one is a real remembered turn", async () => {
+    const memory = fakeMemoryStore();
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "click", target: "create-invoice" }), { memory });
+
+    await handler({ route: "/invoices", question: "create a new invoice", visible: [], scopeId: "end-user-1" });
+
+    expect(memory.recordTurn).not.toHaveBeenCalled();
+  });
+
+  it("Phase 5 step 4: memory configured but no scopeId on the request means no seeding and no recording at all", async () => {
+    const memory = fakeMemoryStore();
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "ok" }), { memory });
+
+    await handler({ route: "/invoices", question: "what is this page for?", visible: [] });
+
+    expect(memory.recentTurns).not.toHaveBeenCalled();
+    expect(memory.recordTurn).not.toHaveBeenCalled();
+  });
+
+  it("Phase 5 step 4: no memory configured at all behaves exactly as before — no crash, no memory calls possible", async () => {
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "ok" }));
+    const result = await handler({ route: "/invoices", question: "what is this page for?", visible: [], scopeId: "end-user-1" });
+    expect(result.status).toBe(200);
   });
 
   it("unknown route in the request never crashes — graceful explain, HTTP 200", async () => {
