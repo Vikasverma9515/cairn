@@ -199,6 +199,26 @@ export function Copilot({
   // still audibly speaking.
   const rtAudioDoneArrivingRef = useRef(true);
 
+  // Safety net for a live realtime call outliving this component instance:
+  // without this, unmounting (a parent removing the widget, a route change
+  // that remounts it, or — the real, live-hit case — Next.js Fast Refresh
+  // remounting the component on every dev-mode source edit while a call is
+  // open) left the WebSocket, the open getUserMedia mic stream, and both
+  // AudioContexts running completely orphaned: nothing ever called
+  // rtSocketRef.current?.close() or stopped the mic tracks. The old,
+  // zombie connection then kept transcribing and replying in parallel with
+  // whatever the newly-mounted instance does next — the literal
+  // "two things running in parallel, the agent answering twice" bug found
+  // live. endRealtime() is safe to call from an unmount cleanup even
+  // though it also calls React state setters: it only reads stable refs
+  // (never a stale closure over props/state), and React 18 silently no-ops
+  // a setState call on an already-unmounted component.
+  useEffect(() => {
+    return () => {
+      if (rtSocketRef.current || rtCleanupRef.current) endRealtime();
+    };
+  }, []);
+
   // Starts false on both server and client's first render (avoids a
   // hydration mismatch — `navigator` doesn't exist during SSR), then
   // updated after mount, once we're only ever running in the browser.
@@ -928,6 +948,22 @@ export function Copilot({
         } else if (msg.type === "final") {
           archiveCurrentExchange(); // the previous turn's pair is complete — move it into history before this one starts overwriting caption/answer
           setCaption(msg.text);
+          // Without this, `answer` still held the PREVIOUS turn's reply
+          // text at the moment this new turn's own reply — if it ever
+          // arrives — would overwrite it. Usually invisible (the previous
+          // reply lands well before the next "final"), but a barge-in can
+          // supersede an in-flight turn before its reply ever arrives (see
+          // realtime-server.ts's onStep generation check) — with no reply
+          // ever coming for THIS caption, the stale previous-turn answer
+          // sat there and got archived alongside the wrong question on the
+          // NEXT final, showing as a mismatched or duplicated-looking
+          // reply. Found live: two turns' worth of the same fallback error
+          // text ("Something went wrong on my end") appearing back to back
+          // with only one visible question between them. Clearing to null
+          // here means an abandoned turn now correctly archives with NO
+          // reply bubble (archiveText skips empty text) instead of someone
+          // else's.
+          setAnswer(null);
           setRtStatus("rt-thinking");
           armThinkingWatchdog();
         } else if (msg.type === "verb") {

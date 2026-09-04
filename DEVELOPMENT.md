@@ -3512,6 +3512,106 @@ call). Scratch script deleted after use.
 
 ---
 
+## Live bug-fix pass: "the agent is answering twice"
+
+Found via real-app testing against `examples/demo-app` — the user reported
+the realtime widget replying twice in parallel to one utterance, garbled/
+mismatched transcript ordering in the scrollback history, and frequent
+"Something went wrong on my end" replies. Investigated all three as real,
+separate findings rather than one guessed bug — reading the demo-app's own
+live dev-server terminal output was what actually separated them.
+
+**Root causes found (three, not one):**
+1. **Groq daily token quota (TPD) genuinely exhausted** — the running
+   dev server's own terminal output showed explicit `429
+   rate_limit_exceeded` errors on nearly every LLM call ("Limit 200000,
+   Used 197844..."), each one independently falling back to
+   `server.ts`'s canned `"Something went wrong on my end — try again in
+   a moment."` text. Not a code bug — external quota exhaustion, almost
+   certainly from this session's own many live-verification runs against
+   the same Groq key over the course of the day. No code fix possible;
+   flagged honestly as external, not silently worked around.
+2. **Orphaned/zombie realtime connections — the real cause of "answering
+   twice, in parallel."** Neither client entry point
+   (`packages/sdk/src/index.tsx`'s `Copilot` React component, nor
+   `web-component.ts`'s vanilla custom element) ever tore down an open
+   realtime WebSocket connection, mic `getUserMedia` stream, or the two
+   `AudioContext`s on unmount/disconnect — `endRealtime()` /
+   `this.endRealtime()` already existed and did the correct full
+   teardown, but nothing ever called it except the hangup button.
+   Because `@cairnvibe/sdk`'s package `exports` map points `"."`
+   straight at `src/index.tsx` (not a built `dist/` file), Next.js dev
+   mode recompiles and Fast-Refreshes that component on every source
+   edit — and this session was actively editing `index.tsx` (the VAD
+   swap, earlier this same session) while the user very plausibly had a
+   live call open in the browser. Each Fast Refresh remounted the
+   component with fresh state while the OLD WebSocket/mic
+   stream/AudioContexts kept running underneath, completely orphaned —
+   a genuine second, independent realtime session, replying in parallel
+   to whatever the newly-mounted instance does next. This isn't
+   exclusively a dev-mode artifact either: any real integration that
+   conditionally renders/removes the widget (a route change, a modal
+   close) would leak the exact same way in production, today.
+3. **Stale-answer transcript mis-pairing — the real cause of duplicated-
+   looking or mismatched history bubbles.** `index.tsx`'s WebSocket
+   `"final"` handler called `archiveCurrentExchange()` (correctly moving
+   the PREVIOUS caption+answer pair into the scrollback log) but never
+   cleared `answer` afterward — so if the current turn's own reply never
+   arrived (the exact case when a barge-in supersedes an in-flight turn:
+   `realtime-server.ts`'s `onStep` silently drops a superseded step via
+   its `myGeneration !== getGeneration()` check, never sending a `verb`
+   message for it at all), the STALE answer from an earlier, unrelated
+   turn stayed in state and got archived alongside the WRONG caption on
+   the next `"final"` — surfacing as a reply that looks duplicated or
+   attached to the wrong question.
+
+**Built:**
+- `index.tsx` (+1 `useEffect`): an unmount safety net that calls
+  `endRealtime()` if a connection/cleanup ref is still set when the
+  component unmounts — closes the WebSocket, stops the mic tracks,
+  closes both AudioContexts. Reads only stable refs, so it's correct to
+  call regardless of which render's closure it's attached to; React 18
+  safely no-ops the state-setter calls inside `endRealtime()` on an
+  already-unmounted component.
+- `web-component.ts` (+1 `disconnectedCallback()`): the same fix,
+  ported to the custom-element lifecycle hook that was simply never
+  implemented — `connectedCallback` existed, its natural counterpart
+  didn't.
+- `index.tsx`'s `"final"` handler: added `setAnswer(null)` right after
+  `setCaption(msg.text)` — a turn that never gets a reply (superseded by
+  a barge-in, or any other silent drop) now correctly archives with NO
+  reply bubble at all (`archiveText` already skips empty text) instead
+  of someone else's answer.
+
+**Tests:** no new automated tests this pass — both are timing/lifecycle
+races that depend on real component mount/unmount and real WebSocket
+message ordering, not pure functions; full existing regression suite
+re-run as the safety check instead. 512/512 tests pass repo-wide (all
+pre-existing — no test file touched this pass), zero regressions. Full
+`npm run typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly (`dist/cairn-widget.js` 98.6kb).
+
+**Live-verified:** not yet re-tested against a real mic by a human in
+this environment (still no live mic here) — these are real, traced-to-
+source fixes for symptoms directly observed in the user's own dev-server
+terminal output and screenshots, not guesses. The one thing this fix
+CANNOT do: retroactively kill an already-orphaned zombie connection from
+before it landed — a full browser tab reload is needed to clear any
+currently-running orphaned session before re-testing.
+
+**Pending:**
+- The Groq daily quota exhaustion (root cause 1) has no code fix — needs
+  either waiting for the daily TPD window to reset, or a different/
+  upgraded API key.
+- No automated regression test added for the two lifecycle/race fixes —
+  real coverage would need a DOM-mount/unmount test harness with a fake
+  WebSocket, not attempted this pass given the immediate priority was
+  landing the real fix.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -364,6 +364,16 @@ export class CairnWidgetElement extends HTMLElement {
     if (name === "persona" && this.panel) this.panel.setAttribute("aria-label", `${this.persona} help panel`);
   }
 
+  // Same real gap index.tsx's own unmount-safety-net closes, ported here:
+  // without this, removing the element from the DOM (an SPA route change,
+  // conditional rendering) while a realtime call is open left the
+  // WebSocket, the open mic stream, and both AudioContexts running
+  // orphaned — a zombie connection that keeps transcribing and replying
+  // in parallel with whatever comes next.
+  disconnectedCallback() {
+    if (this.rtSocket || this.rtCleanup) this.endRealtime();
+  }
+
   // --- attributes -----------------------------------------------------
   private get endpoint(): string { return this.getAttribute("endpoint") ?? "/api/copilot"; }
   private get speakEndpoint(): string | null { return this.getAttribute("speak-endpoint"); }
