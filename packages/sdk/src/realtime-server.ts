@@ -181,6 +181,22 @@ export function seedHistoryFromMemory(existingHistory: readonly HistoryTurn[], p
   return combined.slice(Math.max(0, combined.length - maxTurns));
 }
 
+/**
+ * Phase 5 step 3 — closes the loop step 2 opened: a fact the model
+ * explicitly remembered was being written but never read back into a
+ * LATER turn's context, only `recentTurns`' raw conversation text
+ * (unstructured, unreliable) had any chance of mentioning it. Pure and
+ * standalone for the same reason as `seedHistoryFromMemory` — directly
+ * testable with a plain object, no store, no connection. Returns null
+ * for an empty fact set (nothing to say) rather than an empty string,
+ * so a caller can cleanly skip adding a turn at all.
+ */
+export function formatRememberedFacts(facts: Readonly<Record<string, string>>): string | null {
+  const entries = Object.entries(facts);
+  if (entries.length === 0) return null;
+  return `Remembered from a previous conversation with this user: ${entries.map(([key, value]) => `${key} — ${value}`).join("; ")}.`;
+}
+
 export function createBargeInConfirmation(windowMs: number): BargeInConfirmation {
   let timer: ReturnType<typeof setTimeout> | null = null;
   return {
@@ -527,6 +543,14 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
             const seeded = seedHistoryFromMemory(history, priorTurns, MAX_HISTORY_TURNS);
             history.length = 0;
             history.push(...seeded);
+
+            // Prepended AFTER the cap above, deliberately exempt from
+            // it — a remembered fact ("prefers metric units") should
+            // stay in context for the WHOLE connection, not age out the
+            // same way an ordinary conversation turn does once enough
+            // new turns accumulate.
+            const factsSummary = formatRememberedFacts(deps.memory.recallFacts(newScopeId));
+            if (factsSummary) history.unshift({ role: "assistant", text: factsSummary });
           }
         }
       } else if (msg.type === "tool_result" && typeof msg.observation === "string") {

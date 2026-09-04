@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { HistoryTurn, Manifest } from "@cairnvibe/core";
 import type { StreamingTextLLM, VerbLLM } from "./server";
-import { createBargeInConfirmation, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
+import { createBargeInConfirmation, formatRememberedFacts, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
 import type { MemoryTurnRecord } from "./memory-sqlite";
 
 function fakeSpeakerLLM(respondStreamed: StreamingTextLLM["respondStreamed"]): StreamingTextLLM {
@@ -101,6 +101,24 @@ describe("seedHistoryFromMemory", () => {
 
   it("with no existing history and no prior turns, returns an empty array", () => {
     expect(seedHistoryFromMemory([], [], 10)).toEqual([]);
+  });
+});
+
+// Phase 5 step 3 — closes the loop step 2 opened: a remembered fact is
+// only useful if a LATER turn's context actually contains it.
+describe("formatRememberedFacts", () => {
+  it("returns null for an empty fact set — nothing to say, not an empty string", () => {
+    expect(formatRememberedFacts({})).toBeNull();
+  });
+
+  it("formats a single fact into a real, readable sentence", () => {
+    expect(formatRememberedFacts({ preferredCurrency: "euros" })).toBe("Remembered from a previous conversation with this user: preferredCurrency — euros.");
+  });
+
+  it("formats multiple facts, each on its own key — value pair", () => {
+    const result = formatRememberedFacts({ a: "1", b: "2" });
+    expect(result).toContain("a — 1");
+    expect(result).toContain("b — 2");
   });
 });
 

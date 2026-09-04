@@ -3040,18 +3040,81 @@ deleted after use.
   a clean confirmation. Not chased further this step — the honest,
   demonstrated fix is running the full Phase 3 architecture, which any
   real deployment wiring up memory should already be doing.
-- No `recallFacts`-driven prompt injection yet — a remembered fact
-  isn't automatically surfaced back into a LATER turn's system/user
-  prompt (only `recentTurns`, wired in step 1, actually reaches
-  `history`). A real, valuable next slice: fold a scope's remembered
-  facts into the same per-request context `currentPageDataShapes`/
-  `currentPageElements` already occupy.
 - Same typed/HTTP-transport gap as step 1 — this tool is realtime-only,
   for the same durable-disk reason.
 
 **Failed:** the repeated-call behavior without Planner/Critic — not
 silently avoided, documented above with the real transcript and the
 real (partial) fix.
+
+### Step 3: reading remembered facts back — closing the loop step 2 opened
+
+Step 2's own Pending list named this directly: a fact the model
+explicitly remembered was being WRITTEN correctly, but nothing read it
+back into a LATER turn's context — only `recentTurns`' raw, unstructured
+conversation text (wired in step 1) had any chance of mentioning it.
+This step closes that.
+
+**Built:**
+- `formatRememberedFacts(facts)` — a small, pure, standalone function
+  (same "extract anything genuinely testable" discipline as
+  `seedHistoryFromMemory`/`splitFlushableSentences`/
+  `createBargeInConfirmation`): turns a scope's `Record<string,string>`
+  of remembered facts into one real, readable sentence ("Remembered
+  from a previous conversation with this user: preferredCurrency —
+  euros, not dollars."), or `null` for an empty set so a caller can
+  cleanly skip adding anything at all.
+- Wired into the SAME "context" handler that seeds `history` from
+  `recentTurns` (step 1) — right after that seeding, `deps.memory
+  .recallFacts(scopeId)` is formatted and, if non-empty, `unshift`ed
+  onto `history` as a synthetic `assistant`-role turn. Deliberately
+  placed AFTER `seedHistoryFromMemory`'s own `MAX_HISTORY_TURNS` cap is
+  already applied, not before — a remembered fact ("prefers metric
+  units") should stay in context for the WHOLE connection, not age out
+  the same way an ordinary conversation turn does once enough new turns
+  accumulate. No changes needed to `resolveVerb`'s own request schema —
+  this reuses the EXISTING `history` mechanism entirely, rather than
+  inventing a new context channel.
+
+**Tests:**
+- `realtime-server.test.ts` (+3): `formatRememberedFacts` returns
+  `null` for an empty fact set; formats a single fact into the real
+  expected sentence; formats multiple facts, each its own key — value
+  pair. All 41 pre-existing tests re-ran completely unmodified and
+  passed.
+- Full regression gate: 462/462 tests pass repo-wide (up from 459),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces.
+
+**Live-verified (partial, by design):** the context-message wiring
+(scopeId capture, history seeding, fact injection) lives entirely
+inside `handleConnection`'s own message handler — unlike
+`handleDeepgramMessage`, it isn't independently exported/callable, so
+it can't be exercised the same way step 2's `handleDeepgramMessage`-
+direct live checks were. Confirmed instead that a REAL running server
+(real Groq LLM, real memory store) with a REAL fact pre-seeded for a
+scope accepts a real `{type:"context", scopeId}` message from a real
+`ws` client without error — the connection stays healthy. A full
+"ask a question the model can only answer correctly using the
+remembered fact" live check would need a genuinely finalized turn,
+which (like step 2's own bare-`createVerbLLM` repeated-call scenario)
+requires either real STT-driven audio or a path that bypasses
+`resolveVerb` entirely (the `speak` shortcut used elsewhere doesn't
+touch `history` at all) — judged the same real, honest gap already
+documented for other audio-gated checks this session, not silently
+assumed to work. The actual data transformation
+(`recallFacts` → `formatRememberedFacts` → a real sentence) is fully,
+directly proven by the unit tests above; only the LAST hop (does the
+context handler call it at the right moment with the right data) rests
+on direct code review rather than a live capture.
+
+**Pending:**
+- The "ask a question that can only be answered using a remembered
+  fact" full live round trip, per the honest gap above — real future
+  verification work, not a known defect.
+- Same typed/HTTP-transport gap as steps 1-2.
+
+**Failed:** nothing.
 
 ---
 
