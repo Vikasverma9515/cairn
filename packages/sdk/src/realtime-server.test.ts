@@ -40,6 +40,16 @@ function fakeDeps(respond: VerbLLM["respond"]): ConnectionDeps {
   };
 }
 
+function fakeMemoryStore() {
+  return {
+    rememberFact: vi.fn(),
+    recallFact: vi.fn().mockReturnValue(null),
+    recallFacts: vi.fn().mockReturnValue({}),
+    recordTurn: vi.fn(),
+    recentTurns: vi.fn().mockReturnValue([]),
+  };
+}
+
 const getContext = () => ({ route: "/", visible: [] as string[], liveElements: [], webMcpTools: [] });
 const neverCalledWaitForToolResult = () => {
   throw new Error("waitForToolResult should not be called for a terminal-verb-only turn");
@@ -211,6 +221,127 @@ describe("handleDeepgramMessage", () => {
     await expect(
       handleDeepgramMessage(resultsMessage("hello", { isFinal: true, speechFinal: true }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
     ).resolves.not.toThrow();
+  });
+
+  // Phase 5 step 2 — explicit fact-remembering, handled entirely
+  // server-side via a synthetic call_tool the client never sees.
+  it("Phase 5 step 2: a remember_fact call_tool is handled server-side — writes to memory, never reaches the client as a verb, never awaits the client's own tool round trip", async () => {
+    const { client, sent } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "call_tool", name: "remember_fact", args: { key: "preferredUnits", value: "metric" } } : { verb: "explain", text: "Got it, remembered." };
+    });
+    const deps = fakeDeps(respond);
+    const memory = fakeMemoryStore();
+    deps.memory = memory;
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("remember I prefer metric units", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      history,
+      turnState,
+      () => 0,
+      neverCalledWaitForToolResult, // if this were ever called, it would throw — proving the client round trip is genuinely skipped
+      undefined,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(memory.rememberFact).toHaveBeenCalledWith("user-1", "preferredUnits", "metric");
+    expect(respond).toHaveBeenCalledTimes(2); // resolveVerb called again after the in-process "tool result", same as any other continuing step
+    const verbMessages = sent.filter((m: any) => m.type === "verb");
+    expect(verbMessages.every((m: any) => !(m.verb.verb === "call_tool" && m.verb.name === "remember_fact"))).toBe(true);
+  });
+
+  it("Phase 5 step 2: remember_fact is offered to the model only when memory AND a scopeId are both present", async () => {
+    const { client } = fakeClient();
+    let seenWebMcpTools: any;
+    const respond = vi.fn().mockImplementation(async (_systemPrompt: string, userMessage: string) => {
+      seenWebMcpTools = JSON.parse(userMessage).webMcpTools;
+      return { verb: "explain", text: "ok" };
+    });
+    const deps = fakeDeps(respond);
+    deps.memory = fakeMemoryStore();
+
+    await handleDeepgramMessage(
+      resultsMessage("hi", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(seenWebMcpTools.some((t: any) => t.name === "remember_fact")).toBe(true);
+  });
+
+  it("Phase 5 step 2: remember_fact is NOT offered when memory is configured but this connection has no scopeId yet", async () => {
+    const { client } = fakeClient();
+    let seenWebMcpTools: any;
+    const respond = vi.fn().mockImplementation(async (_systemPrompt: string, userMessage: string) => {
+      seenWebMcpTools = JSON.parse(userMessage).webMcpTools;
+      return { verb: "explain", text: "ok" };
+    });
+    const deps = fakeDeps(respond);
+    deps.memory = fakeMemoryStore();
+
+    await handleDeepgramMessage(
+      resultsMessage("hi", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      undefined,
+      () => null, // no scopeId for this connection
+    );
+
+    expect(seenWebMcpTools.some((t: any) => t.name === "remember_fact")).toBe(false);
+  });
+
+  it("Phase 5 step 2: with no key/value in args, remembers nothing and returns an honest observation instead of crashing", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "call_tool", name: "remember_fact", args: {} } : { verb: "explain", text: "done" };
+    });
+    const deps = fakeDeps(respond);
+    const memory = fakeMemoryStore();
+    deps.memory = memory;
+
+    await handleDeepgramMessage(
+      resultsMessage("remember something", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(memory.rememberFact).not.toHaveBeenCalled();
   });
 
   // Phase 2 step 2 — onRealTranscript is the confirmation signal

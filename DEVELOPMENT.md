@@ -2926,7 +2926,8 @@ with the real data at the real call site.
   only the automatic turn-recording half. A real, valuable next slice:
   a new verb or `call_tool`-shaped capability letting the agent
   actually say "remember that this selector is flaky" or "remember the
-  user prefers metric units," queryable back via `recallFacts`.
+  user prefers metric units," queryable back via `recallFacts`. Built
+  next, in step 2.
 - **No keyword/semantic search over memory** — matches Track B's own
   real capability exactly (recency only), not a gap introduced here.
 - **No UI/dashboard surface for a deployment's stored memory** — the
@@ -2937,6 +2938,120 @@ with the real data at the real call site.
   first `scopeId` a connection sees is the only one ever used.
 
 **Failed:** nothing.
+
+### Step 2: explicit fact-remembering — the deliberate half, and a real live-found model quirk
+
+Step 1 built automatic turn-recording (every real turn, logged without
+being asked). Track B's own `remember_tool`/`recall_tool` pattern is
+explicit — the model decides to save something on purpose. This step
+builds that half for Track A.
+
+**Built:**
+- A synthetic WebMCP tool, `remember_fact` (name/description/
+  inputSchema `{key, value}`), injected into `webMcpTools` by
+  `getNextStep` ONLY when both `deps.memory` and a real `scopeId` exist
+  for this connection — never offered as a capability with nowhere real
+  to write. Modeled as a `call_tool`, not a new verb: reuses the
+  EXISTING call_tool grammar and validation the model already knows
+  (`isKnownTool`'s check against the request's own `webMcpTools`, in
+  `server.ts`, untouched) instead of inventing a new one.
+- Handled entirely SERVER-SIDE, in `executeStep` — never routed through
+  the client's real WebMCP tool-execution round trip at all. This is
+  the real, load-bearing correctness point, not an optimization: today's
+  `waitForToolResult()` has exactly ONE pending-callback slot
+  (`pendingToolResultResolve`). If the client had been told about this
+  step (`{type:"verb", verb}`) and tried to execute a tool it doesn't
+  actually have registered, its own failure response would arrive
+  asynchronously and could land on whatever a LATER, genuinely unrelated
+  step was waiting for — a real, silent data-corruption risk. `onStep`
+  now explicitly suppresses sending the verb for a `remember_fact` call,
+  closing that risk at the root rather than trying to filter it out
+  after the fact.
+- `finalizeTurn`/`handleDeepgramMessage` both gain an optional
+  `getScopeId` parameter (a getter, same pattern as `getContext`/
+  `getGeneration` — necessary because a scopeId can arrive, via a
+  "context" message, after a turn has already started) threaded through
+  to reach `executeStep`/`getNextStep`, which live inside `finalizeTurn`,
+  not `handleConnection`'s own closure where `scopeId` is actually
+  declared.
+
+**A real bug found live, not theoretical — and a real, honest limit on
+how far a prompt fix alone gets you:** live-testing this against the
+actual Groq model (bare `createVerbLLM`, no Planner/Critic configured)
+with a real instruction to remember a preference showed the model
+calling `remember_fact` **repeatedly** — 6+ times, identical args each
+time — instead of recognizing success and moving to a terminal verb,
+eventually hitting the iteration cap and giving up despite the fact
+having been correctly saved on the very first call. Tried the direct
+fix first: rewrote the tool's description to explicitly say "call this
+AT MOST ONCE... immediately give your final answer... do not call this
+again." Re-tested live — **no change**, still repeated. This is a real,
+observed model-reliability limit (consistent with this same model's
+other already-documented live quirks — `GroqVerbLLM`'s own
+`output_parse_failed`/`tool_use_failed` retry logic exists for exactly
+this class of problem), not something a better sentence in a tool
+description reliably fixes alone.
+Re-tested the SAME scenario with `planLLM`+`criticLLM` also configured
+(Phase 3's own architecture — what a real production deployment should
+actually run) — **resolved correctly in exactly 2 iterations.** The
+Critic's own real reasoning (visible in the live "thk" event) initially
+flagged a mismatch between the Planner's assumed `doneContract` and the
+observation, then the loop correctly concluded with a clean "explain" on
+the very next step — and even in a worse case, the pre-existing
+`STALL_THRESHOLD`/iteration-cap fail-safes (Phase 3 steps 2-3) guarantee
+the turn can never hang forever regardless. Kept the improved tool
+description (a real, harmless refinement, matching the model's
+documented tendency to need explicit stop instructions) — the actual,
+load-bearing fix for this specific failure mode turned out to already
+exist: Phase 3's Planner/Critic redesign, now shown live to catch a
+genuinely NEW failure shape it wasn't originally built for, not just its
+original diagnosed bug. A strong, unplanned validation of that
+architecture's real value.
+
+**Tests:**
+- `realtime-server.test.ts` (+4): a `remember_fact` call writes to
+  memory with the real scope/key/value AND never reaches the client as
+  a verb message AND never calls `waitForToolResult` (using
+  `neverCalledWaitForToolResult`, which THROWS if invoked — a real,
+  enforced proof the client round trip is genuinely skipped, not just
+  asserted after the fact); the tool is offered to the model only when
+  memory AND a scopeId are both present; correctly withheld when memory
+  is configured but this connection has no scopeId yet; missing
+  key/value in the model's own args remembers nothing and returns an
+  honest observation instead of crashing. All 37 pre-existing tests
+  re-ran completely unmodified and passed.
+- Full regression gate: 459/459 tests pass repo-wide (up from 455),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces.
+
+**Live-verified, real end to end:** the full write path — real Groq
+model deciding to call the tool, real server-side interception, real
+SQLite write — confirmed twice, with and without Planner/Critic
+configured (see the bug narrative above for the second run's real
+transcript). `memory.recallFacts(scopeId)` after each run returned
+exactly the fact the model chose to save, verbatim. Scratch scripts
+deleted after use.
+
+**Pending:**
+- The repeated-call quirk is real and live-confirmed WITHOUT Planner/
+  Critic configured — the harness's own hard iteration cap and stall
+  fail-safes mean a turn can never hang forever even then, but it would
+  waste real calls and end in "I wasn't able to finish that" instead of
+  a clean confirmation. Not chased further this step — the honest,
+  demonstrated fix is running the full Phase 3 architecture, which any
+  real deployment wiring up memory should already be doing.
+- No `recallFacts`-driven prompt injection yet — a remembered fact
+  isn't automatically surfaced back into a LATER turn's system/user
+  prompt (only `recentTurns`, wired in step 1, actually reaches
+  `history`). A real, valuable next slice: fold a scope's remembered
+  facts into the same per-request context `currentPageDataShapes`/
+  `currentPageElements` already occupy.
+- Same typed/HTTP-transport gap as step 1 — this tool is realtime-only,
+  for the same durable-disk reason.
+
+**Failed:** the repeated-call behavior without Planner/Critic — not
+silently avoided, documented above with the real transcript and the
+real (partial) fix.
 
 ---
 

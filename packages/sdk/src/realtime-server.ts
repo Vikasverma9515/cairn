@@ -75,6 +75,40 @@ const ACK_PHRASES = ["Give me a sec.", "One sec, checking.", "Hang on, let me lo
 // API resamples an AudioBuffer at any declared rate transparently.
 const TTS_SAMPLE_RATE = 24000;
 
+/**
+ * Phase 5 step 2 — explicit fact-remembering (Track B's own "remember is
+ * an explicit act, never automatic" pattern — step 1 built the automatic
+ * turn-recording half; this is the deliberate half). Modeled as a
+ * SYNTHETIC WebMCP tool the model can call_tool, not a new verb — reuses
+ * the existing call_tool grammar/validation the model already knows
+ * ("a tool name from this turn's webMcpTools list") instead of inventing
+ * a new one. Handled entirely SERVER-SIDE (see executeStep below) —
+ * the client never learns this step happened at all (see onStep below
+ * for why that's not just an optimization: it's what keeps this safe).
+ */
+const REMEMBER_FACT_TOOL_NAME = "remember_fact";
+const REMEMBER_FACT_TOOL: WebMcpTool = {
+  name: REMEMBER_FACT_TOOL_NAME,
+  description:
+    "Remember something worth recalling in a FUTURE conversation with this same user — a stated preference, a known pitfall, anything that would help next time. Not for facts only relevant to answering right now. Call this AT MOST ONCE per turn, for one real fact. Once it returns, the fact is already saved — immediately give your final spoken answer (e.g. explain) confirming that to the user; do not call this again in the same turn.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      key: { type: "string", description: "A short, stable name for this fact, e.g. \"preferredUnits\" or \"flakySelectorNote\"." },
+      value: { type: "string", description: "The real fact to remember, in plain language." },
+    },
+    required: ["key", "value"],
+  },
+};
+
+async function handleRememberFactTool(memory: MemoryStore, scopeId: string, args: Record<string, unknown> | undefined): Promise<string> {
+  const key = typeof args?.key === "string" ? args.key.trim() : "";
+  const value = typeof args?.value === "string" ? args.value.trim() : "";
+  if (!key || !value) return "Could not remember that — a key and a value are both required.";
+  memory.rememberFact(scopeId, key, value);
+  return `Remembered: ${key} = ${value}`;
+}
+
 export interface CreateRealtimeServerOptions extends CreateCopilotHandlerOptions {
   manifest: Manifest;
   deepgramApiKey: string;
@@ -453,7 +487,7 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   const turnState = { buffer: "" };
 
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech, recordMemoryTurn);
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech, recordMemoryTurn, () => scopeId);
   });
 
   dg.on("error", (err) => {
@@ -568,6 +602,9 @@ export async function handleDeepgramMessage(
    * storage when memory + a scopeId are both configured for this
    * connection — see ConnectionDeps.memory's own doc comment. */
   recordMemoryTurn?: (role: "user" | "assistant", text: string) => void,
+  /** Phase 5 step 2 — see finalizeTurn's own doc comment. Threaded
+   * through here purely to reach finalizeTurn's two call sites below. */
+  getScopeId?: () => string | null,
 ): Promise<void> {
   let msg: any;
   try {
@@ -581,7 +618,7 @@ export async function handleDeepgramMessage(
     // after utterance_end_ms of silence — a safety net for the rare case a
     // Results message never carries speech_final:true, so a turn can't get
     // permanently stuck with real transcript sitting in the buffer forever.
-    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn);
+    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn, getScopeId);
     return;
   }
 
@@ -611,7 +648,7 @@ export async function handleDeepgramMessage(
     return;
   }
 
-  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn);
+  await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn, getScopeId);
 }
 
 /**
@@ -653,6 +690,13 @@ async function finalizeTurn(
   getGeneration: () => number,
   waitForToolResult: () => Promise<string>,
   recordMemoryTurn?: (role: "user" | "assistant", text: string) => void,
+  /** Phase 5 step 2 — this connection's real scopeId, if it has one yet
+   * (see the "context" message handler). A getter, same pattern as
+   * getContext/getGeneration, since it can be set AFTER this turn
+   * already started (a scopeId only ever arrives via a "context"
+   * message, and a turn can begin before one has). Optional; absent or
+   * returning null both mean "no memory-backed tools offered." */
+  getScopeId?: () => string | null,
 ): Promise<void> {
   const transcript = turnState.buffer;
   turnState.buffer = "";
@@ -785,23 +829,40 @@ async function finalizeTurn(
     const result = await driveAgentLoop(history, {
       async getNextStep(loopHistory) {
         const { route, visible, liveElements, webMcpTools } = getContext();
+        // Phase 5 step 2 — offered only when there's somewhere real to
+        // write it (memory configured AND this connection has a real
+        // scopeId) — never a tool the model can call into a void.
+        const availableTools = deps.memory && getScopeId?.() ? [...webMcpTools, REMEMBER_FACT_TOOL] : webMcpTools;
         return resolveVerb(deps.llm, deps.systemPrompt, deps.manifest, deps.registeredActions, deps.capability, {
           route,
           question: transcript,
           visible,
           liveElements,
-          webMcpTools,
+          webMcpTools: availableTools,
           history: loopHistory,
         });
       },
       onStep({ verb, iteration, terminal }) {
         if (myGeneration !== getGeneration()) return true; // superseded by a barge-in while this turn was resolving
 
-        // Sent immediately — before speech synthesis even starts — so
-        // highlight/navigate/do execute in the browser right away instead
-        // of waiting on audio. The agent visibly acts while it's still
-        // about to speak, not after.
-        safeSend(client, { type: "verb", verb });
+        // Phase 5 step 2 — a remember_fact call is handled entirely
+        // server-side (see executeStep below) and must NEVER be sent to
+        // the client: the client would try to look it up in its own
+        // real WebMCP tool registry, fail to find it (it's synthetic,
+        // server-only), and report an error tool_result back — landing
+        // on whatever's THEN occupying the single-slot
+        // pendingToolResultResolve, which by then could easily belong
+        // to a genuinely later, unrelated step. Suppressing this send
+        // is not an optimization, it's what keeps that real race from
+        // ever being possible.
+        const isRememberFactCall = verb.verb === "call_tool" && verb.name === REMEMBER_FACT_TOOL_NAME;
+        if (!isRememberFactCall) {
+          // Sent immediately — before speech synthesis even starts — so
+          // highlight/navigate/do execute in the browser right away instead
+          // of waiting on audio. The agent visibly acts while it's still
+          // about to speak, not after.
+          safeSend(client, { type: "verb", verb });
+        }
 
         // Phase 2 step 1 — the ONLY thing this needs to record: whether
         // the loop's FIRST step was already terminal, the one shape
@@ -828,7 +889,17 @@ async function finalizeTurn(
       // A continuing step itself stays silent (keeps the loop fast; the
       // client still shows it visually) — wait for its real result and go
       // around again instead of ending the turn.
-      executeStep: () => waitForToolResult(),
+      executeStep: (verb) => {
+        // Phase 5 step 2 — resolved entirely in-process, never routed
+        // through the client's real tool-execution round trip (see
+        // onStep's own doc comment for why the client is never even
+        // told this step happened).
+        const currentScopeId = getScopeId?.() ?? null;
+        if (verb.verb === "call_tool" && verb.name === REMEMBER_FACT_TOOL_NAME && deps.memory && currentScopeId) {
+          return handleRememberFactTool(deps.memory, currentScopeId, verb.args);
+        }
+        return waitForToolResult();
+      },
       onStepResult: () => myGeneration !== getGeneration(),
       onEvent: emitEvent,
       runCritic:
