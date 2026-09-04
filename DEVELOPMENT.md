@@ -3917,6 +3917,99 @@ approximated.
 
 ---
 
+## Live bug-fix pass: the actual root of "two speakers" — a typed reply that outlives the moment realtime takes over
+
+The previous entry's `typedPlaybackGenerationRef` fix closed the race
+between two OVERLAPPING typed replies, but the user kept hitting the
+same symptom — this time with the smoking gun laid out explicitly: a
+realtime call visibly active in the UI the ENTIRE time (the screenshot
+shows the call bar throughout), while THREE separate real
+`/api/copilot/speak` calls (the TYPED path) fired and were audibly
+spoken, one of them with no matching question anywhere in the visible
+transcript. That's a structurally different bug from the previous
+entry: not two typed replies racing each other, but ONE typed reply
+that was already in flight when the user switched into a live call.
+
+The real gap: `startRealtime()`'s guard
+(`!realtimeUrl || !micSupported || realtimeActive || rtStartingRef.current`)
+never checked `asking` — and the phone-call button's own `disabled`
+prop only excludes `busy` (which covers `asking`, but NOT the
+unawaited `speak()` call `ask()` fires off afterward once its own
+fetch resolves). So a user could click "start call" WHILE an earlier
+typed question's reply was still being fetched/synthesized (these
+fetches genuinely take several seconds under real conditions — the
+timings in the terminal were 4.7s, 5.8s, 8s) — and once that fetch
+FINALLY resolved, completely ordinary code (`onExplain`'s `setAnswer`/
+`speak()`, `ask()`'s own `finally { setStatus("idle") }`) ran with no
+idea a live call had since taken over. The prior entry's fix only
+prevented that late reply's audio from overlapping with ANOTHER typed
+reply's audio — it did nothing to stop it from overlapping with the
+REALTIME call's own audio, or from silently corrupting the UI's status.
+
+**The single most damaging thing found this pass**: `ask()`'s own
+`finally { setStatus("idle") }` runs UNCONDITIONALLY. If that stale
+typed call finishes after the user is already mid-realtime-call
+(`status` is some `"rt-*"` value), this line SILENTLY FORCES the UI
+back to `"idle"` — hiding the mic/speaker/hangup controls and showing
+the "start call" screen — while the actual WebSocket connection is
+still fully alive underneath, still capable of talking, now with
+literally no visible way to manage it. This is the most likely
+explanation for the user's own "the whole UI is showing my text twice
+and totally broken" — not just overlapping audio, but the controls
+themselves silently vanishing while the call kept running blind.
+
+**Built:** a new `typedPlaybackSuspendedRef` boolean — set by
+`startRealtime()` (alongside the existing `stopTypedPlayback()` call),
+cleared by `endRealtime()` and by `startRealtime()`'s own catch block
+(mic-permission failure — the call never actually started, so typed
+replies shouldn't stay silenced forever). Every place a typed reply's
+completion touches shared UI state now checks it first and no-ops
+instead:
+- `speak()` / `speakAndWait()` — skip calling `playPcmStream()`
+  entirely (never even schedule the audio) if suspended, logging a
+  `console.warn` so this is now an observable event, not a silent one —
+  directly answering the user's own ask for real logging here.
+- `runTypedAgentLoop`'s `onStep` (a continuing multi-step reply) and its
+  terminal-outcome handler — skip `setAnswer`/`handleVerb` if suspended,
+  so a stale typed reply's TEXT can no longer appear as an orphaned
+  bubble with no matching question, matching the audio-side fix from
+  the previous entry.
+- `ask()`'s own `catch`/`finally` — skip the generic error message AND,
+  critically, skip forcing `status` back to `"idle"` if suspended —
+  this is the fix for the UI-vanishing case above.
+
+**Tests:** no new automated test — same honest limitation as the
+lifecycle-race entries above (real async timing between a fetch, a
+click, and shared component state; a fake-timers/fake-fetch harness
+would be needed for real coverage, not attempted this pass). Full
+regression suite re-run instead: 518/518 tests pass repo-wide
+(unchanged — no test file touched), zero regressions. Full `npm run
+typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment — traced directly from the user's own screenshot (a
+realtime call visibly active throughout) and terminal output (three
+real, distinct `/api/copilot/speak` calls with matching timings), not
+guessed at. Needs the dev server restarted and the browser tab hard-
+refreshed to pick this up, same as every entry in this series today.
+
+**Pending:**
+- `startRealtime()`'s own guard still doesn't explicitly block on
+  `asking` — the new suspension flag makes the RESULT of that race
+  harmless (nothing stale can reach the UI or audio anymore), but the
+  underlying request itself is still allowed to start and complete in
+  the background, wastefully, while suspended. Worth revisiting if
+  wasted LLM/TTS calls during this window turn out to matter for cost,
+  not just correctness — not addressed this pass since correctness was
+  the reported, live problem.
+- Same fake-timer/fake-fetch test-harness gap noted in every entry in
+  this series applies here too.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

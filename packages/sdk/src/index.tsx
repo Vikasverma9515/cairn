@@ -187,6 +187,25 @@ export function Copilot({
   // overlap (one starting, then a second call's audio starting on top of
   // it moments later) — a real, live-found race, not a guess.
   const typedPlaybackGenerationRef = useRef(0);
+  // A DIFFERENT real gap the generation counter above doesn't close: it
+  // only protects one typed reply's audio against ANOTHER typed reply's
+  // audio. A typed ask()/speak() call already in flight — its /api/
+  // copilot/speak fetch genuinely takes several seconds under real
+  // conditions (rate-limit retries make this worse, not better) — has no
+  // way to know a realtime call started WHILE it was still waiting. Its
+  // response arrives, and normally-innocent code plays it, seconds after
+  // startRealtime() already ran — genuinely overlapping with the live
+  // call's own audio, since nothing about the realtime session's own
+  // start/mute/barge-in controls have any way to reach a typed reply
+  // that hadn't even been scheduled yet when they ran. Found live: two
+  // full agent answers, sourced entirely from separate /api/copilot/
+  // speak calls, audibly overlapping about a second apart, while a
+  // realtime call was the only thing visibly active in the UI the whole
+  // time. startRealtime() sets this; endRealtime() clears it; speak()/
+  // speakAndWait() check it AFTER their fetch resolves and drop the
+  // reply's audio entirely (never call playPcmStream at all) if a
+  // realtime call has taken over since the request was made.
+  const typedPlaybackSuspendedRef = useRef(false);
   // Watchdog for the "rt-thinking" state: started on every "final" transcript,
   // cleared the moment the server responds with anything for that turn
   // (verb/speaking_start/speaking_end/turn_complete/error). If it ever
@@ -463,9 +482,20 @@ export function Copilot({
     try {
       await runTypedAgentLoop(q);
     } catch {
-      setAnswer("Something went wrong reaching the help service — try again in a moment.");
+      // See typedPlaybackSuspendedRef's own doc comment — this whole
+      // fetch can still be in flight when a realtime call starts.
+      if (!typedPlaybackSuspendedRef.current) setAnswer("Something went wrong reaching the help service — try again in a moment.");
     } finally {
-      setStatus("idle");
+      // The most damaging form of the same race: unconditionally forcing
+      // status back to "idle" here, after a realtime call has ALREADY
+      // taken over (status is some "rt-*" value), would silently kick the
+      // UI out of the live call — hiding its mic/speaker/hangup controls
+      // and showing the "start call" screen instead — while the actual
+      // WebSocket connection underneath is still fully alive and still
+      // talking, now with no visible way to manage it at all. Skipping
+      // this reset when suspended is what stops a slow, stale typed
+      // request from ever being able to do that.
+      if (!typedPlaybackSuspendedRef.current) setStatus("idle");
     }
   }
 
@@ -516,14 +546,30 @@ export function Copilot({
         // A continuing step — show it happening (execution itself
         // happens in executeStep below). Terminal steps are handled once
         // driveAgentLoop returns, via handleVerb — unchanged from before.
-        if (!terminal) setAnswer(summarizeVerbForHistory(verb));
+        // Same stale-typed-reply guard as the terminal case below — a
+        // multi-step typed loop can still be mid-flight when a realtime
+        // call starts.
+        if (!terminal && !typedPlaybackSuspendedRef.current) setAnswer(summarizeVerbForHistory(verb));
         return false;
       },
       executeStep: (verb) => executeToolStep(verb, pathname, liveMapRef.current).then((r) => r?.observation),
     });
 
     if (result.outcome === "terminal" || result.outcome === "unparseable") {
-      handleVerb(lastRawResponse);
+      // A realtime call can start WHILE this whole typed loop (potentially
+      // several real fetches deep) was still in flight — applying this
+      // reply now would overwrite the live call's own answer with a
+      // stale, orphaned bubble that doesn't correspond to anything the
+      // realtime conversation actually said. speak()/speakAndWait() guard
+      // the AUDIO half of this same real, live-found race (see
+      // typedPlaybackSuspendedRef's own doc comment) — this is the
+      // matching guard for the TEXT half, which would otherwise still
+      // leak through even with the audio silenced.
+      if (typedPlaybackSuspendedRef.current) {
+        console.warn("[cairn] dropping a stale typed reply's text — a realtime call started while it was still in flight");
+      } else {
+        handleVerb(lastRawResponse);
+      }
       // Unlike the realtime relay (one persistent connection, memory
       // lives server-side), each of these POSTs is stateless — the
       // widget itself is what remembers, and resends it above so the
@@ -679,6 +725,13 @@ export function Copilot({
         body: JSON.stringify({ text }),
       });
       if (!res.ok || !res.body) return;
+      // A realtime call can start WHILE this fetch was in flight — see
+      // typedPlaybackSuspendedRef's own doc comment for why that's a real,
+      // live-found overlapping-audio case, not a hypothetical one.
+      if (typedPlaybackSuspendedRef.current) {
+        console.warn("[cairn] dropping a typed reply's audio — a realtime call started while it was still being fetched");
+        return;
+      }
       void playPcmStream(res.body);
     } catch {
       // Best-effort — never let speech playback break the widget.
@@ -697,6 +750,13 @@ export function Copilot({
         body: JSON.stringify({ text }),
       });
       if (!res.ok || !res.body) return;
+      // See speak()'s own identical check and typedPlaybackSuspendedRef's
+      // doc comment — a realtime call can start while this fetch was in
+      // flight, same real risk here.
+      if (typedPlaybackSuspendedRef.current) {
+        console.warn("[cairn] dropping a typed reply's audio — a realtime call started while it was still being fetched");
+        return;
+      }
       await playPcmStream(res.body);
     } catch {
       // Best-effort — never let a synthesis failure hang the tour forever.
@@ -811,6 +871,11 @@ export function Copilot({
     // "stop" only ever reached the realtime pipeline, while this leftover
     // typed audio played on regardless until it finished on its own.
     stopTypedPlayback();
+    // Also blocks any typed reply that's still mid-fetch RIGHT NOW (not
+    // yet playing anything, so stopTypedPlayback() above has nothing to
+    // stop) from playing its audio once it finally arrives, seconds from
+    // now — see typedPlaybackSuspendedRef's own doc comment.
+    typedPlaybackSuspendedRef.current = true;
     archiveCurrentExchange(); // preserve whatever typed/mic exchange preceded switching into a live call
     setAnswer(null);
     setCaption("");
@@ -1103,6 +1168,7 @@ export function Copilot({
       setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
       setRtStatus("idle");
       rtStartingRef.current = false;
+      typedPlaybackSuspendedRef.current = false; // the call never actually started — don't leave typed replies permanently silenced
     }
   }
 
@@ -1113,6 +1179,7 @@ export function Copilot({
     }
     rtStartingRef.current = false;
     stopTypedPlayback();
+    typedPlaybackSuspendedRef.current = false; // typed replies work normally again once no live call can race them
     rtSocketRef.current?.close();
     rtSocketRef.current = null;
     rtCleanupRef.current?.();
