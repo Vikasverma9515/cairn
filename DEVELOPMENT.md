@@ -2159,6 +2159,122 @@ same 4 data-bearing pages step 1's live check found —
 
 **Failed:** nothing.
 
+### Step 4: real metadata for registered actions (Phase 4, layer 5 — partial)
+
+The plan's own layer 5 text asks for "WebMCP tools, registered actions,
+apiCall-backed elements... unified into one indexed, queryable
+inventory." A live research pass (Explore agent, read-only) before
+building anything found this framing overstates what's fragmented at
+the point the model actually sees these three things — `buildSystemPrompt`'s
+existing do-verb preference order (liveElements > currentPageElements >
+registeredActions) already functions as real, working de facto
+unification, and `call_tool` is already cleanly separated by intent.
+What the research found genuinely missing instead: `registeredActions`
+was the WEAKEST-typed of the three — a bare id string, zero server-
+visible metadata, real behavior invisible to Cairn entirely (it lives in
+the customer's own client-side dispatch code) — and neither the
+Executor's prompt nor the Planner had any visibility into it beyond
+that bare id. This step closes exactly that gap; full cross-mechanism
+dedup (the research's third, harder finding) is explicitly NOT attempted
+here — see Pending.
+
+**Built:**
+- `CreateCopilotHandlerOptions.actionDescriptions?: Record<string, string>`
+  (`packages/sdk/src/server.ts`) — a new, purely additive, optional field
+  mapping a registered action id to a real, human-written description.
+  An id with no entry still renders exactly as it always has (bare) —
+  zero behavior change for any deployment that doesn't set it.
+- `renderRegisteredActions(registeredActions, actionDescriptions)` —
+  exported, the ONE place an action id is rendered with its optional
+  description (`"id (description)"`), shared by `buildVerbToolSchema`,
+  `buildSystemPrompt`'s do-verb text, AND `resolvePlan`'s new `actions`
+  field — so the Executor and Planner can never describe the same
+  registered action two different ways. Deliberately renders the
+  description in parens rather than baking it into what the model must
+  echo back: `resolveVerb`'s `registeredActions.includes(action)` gate
+  needs the RAW id back verbatim, so both prompt sites now explicitly
+  instruct "put that exact id (never its description in parens) in
+  action."
+- `buildSystemPrompt` gains a 4th parameter, `actionDescriptions`
+  (defaults to `{}`) — additive, existing 3-arg callers keep the exact
+  same rendering as before.
+- `resolvePlan` gains a 5th optional parameter, `actionsText` — the
+  SAME `renderRegisteredActions(...)` output a caller already computed
+  for the Executor's prompt, passed through unchanged rather than
+  re-derived, so there's no risk of the Planner and Executor's renderings
+  drifting apart. When present, the userMessage gains an `actions` field
+  alongside `pages`; genuinely independent of whether a manifest was
+  also passed (an app can have registered actions with no manifest, or
+  vice versa). `buildPlannerSystemPrompt` documents it: ground a task in
+  a real listed action when one fits, never invent an id that isn't
+  listed.
+- Both real call sites in `realtime-server.ts` updated: `ConnectionDeps`
+  gains an optional `actionDescriptions` field (defaults to `{}`,
+  existing `ConnectionDeps` construction — including every existing
+  test — keeps working unchanged); `createRealtimeServer`'s
+  `buildSystemPrompt` call and both `resolvePlan` calls (initial plan,
+  replan) now pass real descriptions through.
+
+**Tests:**
+- `server.test.ts` (+13): `renderRegisteredActions` unit tests (bare id,
+  id with description, mixed list, empty list); a registered action
+  with a real description renders as `id (description)` in the real
+  system prompt via `createCopilotHandlerWithLLM`; a registered action
+  with NO description still renders bare (the field is optional, not
+  required); `resolvePlan`'s `actions` field carries the exact rendered
+  text when `actionsText` is passed, is entirely omitted when absent/
+  empty (same additive discipline as `pages`), and is independent of
+  whether a manifest was also passed; the Planner system prompt
+  documents the `actions` field.
+- `realtime-server.test.ts` (+1): a full `handleDeepgramMessage` run
+  with `deps.registeredActions`/`deps.actionDescriptions` set confirms
+  the ACTUAL Planner call fired during a real turn carries the real
+  rendered `actions` text — proof through the real event-driven path,
+  not just a `resolvePlan` unit test.
+- Full regression gate: 390/390 tests pass repo-wide (up from 380),
+  zero regressions — every pre-existing test for `buildSystemPrompt`,
+  `buildVerbToolSchema`, `resolvePlan`, and `ConnectionDeps` construction
+  re-ran completely unmodified and passed, confirming the no-
+  `actionDescriptions` path is byte-for-byte unchanged. Full `npm run
+  typecheck` clean across all 6 workspaces.
+
+**Live-verified:** used `examples/demo-app`'s own REAL registered action
+id (`archiveInvoice`, read straight from its actual
+`app/api/copilot/route.ts`) plus a made-up-but-realistic description,
+built a real manifest from demo-app's real source, and ran the actual
+`createCopilotHandlerWithLLM` and `resolvePlan` against it with
+capturing fake LLMs. Confirmed both real prompts carried the rendering
+verbatim:
+- Executor system prompt: `3. One of this deployment's registered
+  actions: [archiveInvoice (Archives the invoice; it will no longer
+  appear in the active list. Cannot be undone.)] — put that exact id
+  (never its description in parens) in "action".`
+- Planner userMessage `actions` field: `archiveInvoice (Archives the
+  invoice; it will no longer appear in the active list. Cannot be
+  undone.)`
+Scratch script deleted after use, same convention as steps 1-3.
+
+**Pending:**
+- Cross-mechanism DEDUP (the research's third finding — a page with
+  both a registered action and an equivalent WebMCP tool for the same
+  real capability, shown to the model as two unrelated options with no
+  signal they're the same thing) — explicitly not attempted. This needs
+  real, per-app semantic matching (is `archiveInvoice` the same
+  capability as a WebMCP tool named `invoices-archive-inv-2`?) that's
+  much harder to build and verify generically than giving an existing
+  field real metadata; deliberately left as real, tracked follow-up
+  rather than guessed at.
+- WebMCP tools themselves still aren't part of any unified/indexed
+  inventory — they remain purely a client-discovered, per-request
+  concept (`webmcp-client.ts`'s `discoverWebMcpTools()`), never known to
+  the indexer/manifest/Planner. Untouched by this step.
+- The typed/HTTP transport still never calls `resolvePlan` — same
+  pre-existing gap named in step 3, unchanged here.
+- Remaining Phase 4 layers (business rules & state machines, docs/copy
+  mining, the runtime dependency graph) — still not started.
+
+**Failed:** nothing.
+
 ---
 
 ## Track B — the structure graph, phase by phase

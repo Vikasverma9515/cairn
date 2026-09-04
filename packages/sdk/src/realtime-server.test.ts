@@ -433,6 +433,45 @@ describe("handleDeepgramMessage", () => {
     expect(parsed.pages).toContain("(data: Invoice)");
   });
 
+  it("Phase 4 step 4: the real Planner call also carries the connection's registered actions, with real descriptions where configured", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      if (call <= 2) return { verb: "read", target: "archive-btn" };
+      return { verb: "explain", text: "Here's what I found." };
+    });
+    const deps = fakeDeps(respond);
+    deps.registeredActions = ["archiveInvoice"];
+    deps.actionDescriptions = { archiveInvoice: "Archives the invoice; cannot be undone." };
+    let seenPlannerUserMessage = "";
+    deps.planLLM = {
+      respond: async (_systemPrompt, userMessage) => {
+        seenPlannerUserMessage = userMessage;
+        return { goal: "archive overdue invoices", facts: [], tasks: [{ id: "t1", description: "archive things", doneContract: "archived" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("check a couple things then tell me", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    const parsed = JSON.parse(seenPlannerUserMessage);
+    expect(parsed.actions).toBe("archiveInvoice (Archives the invoice; cannot be undone.)");
+  });
+
   it("Phase 3 step 2: no planLLM configured means no Planner call at all — the observability wiring is opt-in, not required", async () => {
     const { client } = fakeClient();
     let call = 0;

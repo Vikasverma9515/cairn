@@ -57,6 +57,18 @@ export interface CreateCopilotHandlerOptions {
   model?: string;
   /** Action ids this deployment actually supports. "do" is refused for anything else. */
   registeredActions?: string[];
+  /**
+   * Phase 4, layer 5 — real, human-written descriptions for `registeredActions`
+   * ids, e.g. `{ archiveInvoice: "Archives the invoice; cannot be undone." }`.
+   * Optional and purely additive: an id with no entry here still works
+   * exactly as before (rendered bare, no description) — this was the
+   * weakest-typed of Cairn's three action-invocation mechanisms (a
+   * registered action id carried literally zero server-visible metadata,
+   * unlike a WebMCP tool's own description or an element's `does` text);
+   * this closes that gap without changing what the model must echo back
+   * in "action" (still the bare id — see renderRegisteredActions).
+   */
+  actionDescriptions?: Record<string, string>;
   /** What the agent is allowed to do at all. Defaults to "act". See `CapabilityTier`. */
   capability?: CapabilityTier;
   /** Display name / identity for the agent, woven into its system prompt and shown in the widget. Defaults to "Cairn". */
@@ -92,18 +104,24 @@ export function createCopilotHandler(manifest: Manifest, options: CreateCopilotH
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
   const llm = createVerbLLM(options);
-  return createCopilotHandlerWithLLM(manifest, llm, { registeredActions, capability, persona: options.persona });
+  return createCopilotHandlerWithLLM(manifest, llm, {
+    registeredActions,
+    capability,
+    persona: options.persona,
+    actionDescriptions: options.actionDescriptions,
+  });
 }
 
 /** Same as `createCopilotHandler`, but with the LLM injected — used by tests to fake it. */
 export function createCopilotHandlerWithLLM(
   manifest: Manifest,
   llm: VerbLLM,
-  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string } = {},
+  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string; actionDescriptions?: Record<string, string> } = {},
 ): CopilotHandler {
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
-  const systemPrompt = buildSystemPrompt(manifest, registeredActions, options.persona);
+  const actionDescriptions = options.actionDescriptions ?? {};
+  const systemPrompt = buildSystemPrompt(manifest, registeredActions, options.persona, actionDescriptions);
 
   return async function handleCopilotRequest(body: unknown): Promise<CopilotHandlerResult> {
     const parsedRequest = CopilotRequestSchema.safeParse(body);
@@ -261,17 +279,25 @@ export async function resolveVerb(
  * on this function's call site in realtime-server.ts). The Critic (step
  * 3) is what makes a Plan's tasks/doneContracts actually drive behavior.
  */
-export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest): Promise<Plan> {
+export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest, actionsText?: string): Promise<Plan> {
   let candidate: unknown;
   try {
-    // manifest is appended, optional, and defaults to absent — additive on
-    // purpose (see this function's own exported-API note above): an
-    // existing 2- or 3-arg call site (own or a published consumer's) keeps
-    // building the exact same {goal} userMessage it always has. Real page/
-    // data grounding (Phase 4) only applies when a caller has a manifest to
-    // pass — see buildPlannerPageDirectory's own doc comment for the
-    // token-budget discipline behind what it includes.
-    const userMessage = manifest ? JSON.stringify({ goal, pages: buildPlannerPageDirectory(manifest) }) : JSON.stringify({ goal });
+    // manifest/actionsText are appended, optional, and default to absent —
+    // additive on purpose (see this function's own exported-API note
+    // above): an existing 2- or 3-arg call site (own or a published
+    // consumer's) keeps building the exact same {goal} userMessage it
+    // always has. Real page/data grounding (Phase 4 step 3) only applies
+    // when a caller has a manifest to pass — see buildPlannerPageDirectory's
+    // own doc comment for the token-budget discipline behind what it
+    // includes. actionsText (Phase 4 step 4) is the SAME rendering
+    // buildSystemPrompt/buildVerbToolSchema use for registered actions —
+    // pass renderRegisteredActions(...)'s own output, not a hand-rolled
+    // string, so the Planner and Executor never describe the same
+    // capability two different ways.
+    const payload: Record<string, unknown> = { goal };
+    if (manifest) payload.pages = buildPlannerPageDirectory(manifest);
+    if (actionsText) payload.actions = actionsText;
+    const userMessage = JSON.stringify(payload);
     candidate = await llm.respond(buildPlannerSystemPrompt(), userMessage);
   } catch (err) {
     console.error("[cairn] planner LLM call failed:", err);
@@ -376,7 +402,7 @@ function createToolLLM(options: CreateCopilotHandlerOptions, toolSchema: Record<
 /** Builds the provider-appropriate VerbLLM from the same options createCopilotHandler accepts — reused by the realtime relay. */
 export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
   const registeredActions = options.registeredActions ?? [];
-  return createToolLLM(options, buildVerbToolSchema(registeredActions), VERB_TOOL_NAME, VERB_TOOL_DESCRIPTION);
+  return createToolLLM(options, buildVerbToolSchema(registeredActions, options.actionDescriptions ?? {}), VERB_TOOL_NAME, VERB_TOOL_DESCRIPTION);
 }
 
 /** Same real rotation/model-selection logic as createVerbLLM, configured
@@ -534,7 +560,23 @@ function isRetryableToolCallFailure(err: unknown): boolean {
 
 const VERB_TOOL_DESCRIPTION = "Respond with exactly one action for the UI to take. Never invent selectors, routes, or code.";
 
-export function buildVerbToolSchema(registeredActions: string[]): Record<string, unknown> {
+/**
+ * Phase 4, layer 5 — the ONE place a registered action id is rendered
+ * with its (optional) real description, shared by buildVerbToolSchema,
+ * buildSystemPrompt's own do-verb text, and resolvePlan's userMessage —
+ * so the Executor and the Planner describe the exact same capability the
+ * exact same way, and there's no risk of the three drifting out of sync.
+ * Deliberately renders "id (description)" rather than baking the
+ * description into what the model must echo back — resolveVerb's own
+ * `registeredActions.includes(parsedVerb.data.action)` check (server.ts)
+ * needs the RAW id back, verbatim, or a real registered action would
+ * silently stop being recognized.
+ */
+export function renderRegisteredActions(registeredActions: string[], actionDescriptions: Record<string, string> = {}): string {
+  return registeredActions.map((id) => (actionDescriptions[id] ? `${id} (${actionDescriptions[id]})` : id)).join(", ");
+}
+
+export function buildVerbToolSchema(registeredActions: string[], actionDescriptions: Record<string, string> = {}): Record<string, unknown> {
   // Every genuinely-optional field allows `null` as well as its real type
   // (`["string", "null"]`, not just `"string"`) — found live, not
   // theoretical: real models (verified against Groq's openai/gpt-oss-120b)
@@ -561,7 +603,7 @@ export function buildVerbToolSchema(registeredActions: string[]): Record<string,
       action: nullableString(
         "Required for do. A short label for what's being done, e.g. \"archive-invoice\" " +
           (registeredActions.length
-            ? `— either one of this deployment's registered actions [${registeredActions.join(", ")}], or, for any other element from currentPageElements or liveElements whose own description/label says it performs a real action, any short label describing it.`
+            ? `— either the exact id (never its description in parens) of one of this deployment's registered actions [${renderRegisteredActions(registeredActions, actionDescriptions)}], or, for any other element from currentPageElements or liveElements whose own description/label says it performs a real action, any short label describing it.`
             : "for any element from currentPageElements or liveElements whose own description/label says it performs a real action — no actions are separately registered in this deployment, but that path still works.") +
           " null (or omitted) if not applicable.",
       ),
@@ -636,7 +678,7 @@ export function buildVerbToolSchema(registeredActions: string[]): Record<string,
  * element detail is attached separately, per request, in resolveVerb —
  * see buildPageElements.
  */
-export function buildSystemPrompt(manifest: Manifest, registeredActions: string[], persona = "Cairn"): string {
+export function buildSystemPrompt(manifest: Manifest, registeredActions: string[], persona = "Cairn", actionDescriptions: Record<string, string> = {}): string {
   const pageSummaries = manifest.pages.map((p) => `- ${p.route}: ${p.purpose}`).join("\n");
 
   return `You are ${persona}, an in-app assistant. You help users of this web app by
@@ -713,7 +755,7 @@ Always call ${VERB_TOOL_NAME} exactly once with one of these verbs:
      "target" and a short label in "action". Works even when the action has
      no network call at all (e.g. a button that just reveals a form) — it
      still gets clicked for real.
-  3. One of this deployment's registered action ids: [${registeredActions.join(", ") || "none registered"}] — put that exact id in "action".
+  3. One of this deployment's registered actions: [${renderRegisteredActions(registeredActions, actionDescriptions) || "none registered"}] — put that exact id (never its description in parens) in "action".
   If none applies — the target isn't in liveElements or currentPageElements
   and isn't a registered action — use "explain" and say you can't do that
   from here. Never invent a target or action id that isn't in one of those
@@ -858,6 +900,8 @@ function buildPlannerSystemPrompt(): string {
   return `You are the planning layer of an in-app AI agent that operates a web app on a user's behalf. You do NOT act directly — you decompose the user's real end goal into an ordered list of concrete tasks a separate execution layer will carry out one at a time, using real clicks/fills/reads/tool calls against the real app.
 
 The user message may include "pages" — a real directory of this app's actual routes, what each is for, and, where known, the real named data shape(s) that page's records actually have (e.g. "(data: Invoice)" means real Invoice-shaped records live there). When present, ground tasks in this real structure instead of guessing: prefer a task whose description matches a real page's real purpose over a generic one, mention a page's real route when a task is genuinely about that page, and let a listed data shape tell you what a record on that page can legitimately contain — never invent a field or a status a listed shape doesn't have. If "pages" is absent, decompose from the goal alone, same as before.
+
+It may also include "actions" — real, deployment-specific actions this app actually supports, by id, with a description in parens where one exists (e.g. "archiveInvoice (Archives the invoice; cannot be undone.)"). When a task is best achieved through one of these, say so concretely in the task's description (e.g. "use the archiveInvoice action") instead of only describing it as clicking around — the execution layer will still decide exactly how, but a task that already knows a real action exists is more likely to use it. Never invent an action id that isn't listed.
 
 Break the goal into as FEW tasks as genuinely make sense — most goals need only 1-3 tasks; only split further when steps are genuinely independent or need to happen in a specific real order. Each task needs:
 - id: a short, stable id, e.g. "t1", "t2".

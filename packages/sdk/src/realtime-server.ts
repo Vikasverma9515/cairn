@@ -34,6 +34,7 @@ import {
   createCriticLLM,
   createPlanLLM,
   createVerbLLM,
+  renderRegisteredActions,
   resolveCritic,
   resolvePlan,
   resolveVerb,
@@ -90,8 +91,9 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   // instruction asks for a confirmation grounded in what was actually
   // done, not filler — generic phrasing here is what made replies feel
   // "unrelated" to the question that was just asked.
+  const actionDescriptions = options.actionDescriptions ?? {};
   const systemPrompt =
-    buildSystemPrompt(options.manifest, registeredActions, options.persona) +
+    buildSystemPrompt(options.manifest, registeredActions, options.persona, actionDescriptions) +
     `\n\nYou are in a live voice conversation right now — the user is speaking out loud and may not be looking at the screen. For highlight/open/navigate/do, include a short spoken "text" that names the specific thing you're pointing at or the specific place you're sending them (e.g. "Highlighting the New Invoice button" or "Taking you to Invoices"), not a generic filler phrase — so they hear a confirmation that's actually about their question.`;
   const sttModel = options.sttModel ?? process.env.DEEPGRAM_MODEL ?? DEFAULT_STT_MODEL;
   const ttsVoice = options.ttsVoice ?? process.env.DEEPGRAM_VOICE ?? DEFAULT_TTS_VOICE;
@@ -104,7 +106,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, systemPrompt, manifest: options.manifest, registeredActions, capability }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -135,6 +137,11 @@ export interface ConnectionDeps {
   systemPrompt: string;
   manifest: Manifest;
   registeredActions: string[];
+  /** Phase 4 step 4 — real descriptions for registeredActions ids, same
+   * shape/purpose as CreateCopilotHandlerOptions.actionDescriptions.
+   * Optional, defaults to {} — an existing ConnectionDeps construction
+   * (own or a test's) keeps working with every action rendered bare. */
+  actionDescriptions?: Record<string, string>;
   capability: CapabilityTier;
 }
 
@@ -529,7 +536,7 @@ async function finalizeTurn(
           // emitEvent above — same real speakStreamed() call, reached
           // through the event stream instead of an inline side effect.
           emitEvent({ type: "inj", text: ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)], at: Date.now() });
-          if (planLLM) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest);
+          if (planLLM) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
         }
         return false;
       },
@@ -584,7 +591,7 @@ async function finalizeTurn(
               if (verdict.verdict === "replan") {
                 // A fresh Planner call, a real new version — never a
                 // silent patch to the existing plan.
-                plan = await resolvePlan(planLLM, transcript, plan.version + 1, deps.manifest);
+                plan = await resolvePlan(planLLM, transcript, plan.version + 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
                 progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
                 return { ...verdict, verdict: "continue" };
               }

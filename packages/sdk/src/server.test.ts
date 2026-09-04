@@ -5,6 +5,7 @@ import {
   GroqVerbLLM,
   buildVerbToolSchema,
   createCopilotHandlerWithLLM,
+  renderRegisteredActions,
   resolveCritic,
   resolvePlan,
   type GroqLikeClient,
@@ -581,6 +582,52 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(calls[0].systemPrompt).not.toContain('"Paid" | "Overdue" | "Archived"');
     expect(calls[0].systemPrompt).toContain("currentPageDataShapes"); // documented as a concept, just not populated here
   });
+
+  // Phase 4 step 4 — registeredActions was the weakest-typed of Cairn's
+  // three action-invocation mechanisms (a bare id, no server-visible
+  // metadata at all). actionDescriptions is a new, optional, purely
+  // additive field that gives it real descriptions in the prompt.
+  it("a registered action with a real description is rendered as 'id (description)' in the system prompt's do-verb section", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, {
+      registeredActions: ["archiveInvoice"],
+      actionDescriptions: { archiveInvoice: "Archives the invoice; cannot be undone." },
+    });
+
+    await handler({ route: "/invoices", question: "what can I do here?", visible: [] });
+
+    expect(calls[0].systemPrompt).toContain("archiveInvoice (Archives the invoice; cannot be undone.)");
+  });
+
+  it("a registered action with no description still renders bare — the field is purely additive, not required", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { registeredActions: ["archiveInvoice"] });
+
+    await handler({ route: "/invoices", question: "what can I do here?", visible: [] });
+
+    expect(calls[0].systemPrompt).toContain("archiveInvoice");
+    expect(calls[0].systemPrompt).not.toContain("archiveInvoice (");
+  });
+});
+
+describe("renderRegisteredActions", () => {
+  it("renders a bare id when it has no description", () => {
+    expect(renderRegisteredActions(["archiveInvoice"])).toBe("archiveInvoice");
+  });
+
+  it("renders 'id (description)' when a description exists", () => {
+    expect(renderRegisteredActions(["archiveInvoice"], { archiveInvoice: "Archives the invoice." })).toBe("archiveInvoice (Archives the invoice.)");
+  });
+
+  it("mixes described and undescribed ids in the same list", () => {
+    expect(renderRegisteredActions(["archiveInvoice", "sendReminder"], { archiveInvoice: "Archives the invoice." })).toBe(
+      "archiveInvoice (Archives the invoice.), sendReminder",
+    );
+  });
+
+  it("returns an empty string for no registered actions", () => {
+    expect(renderRegisteredActions([])).toBe("");
+  });
 });
 
 describe("AnthropicVerbLLM", () => {
@@ -913,6 +960,48 @@ describe("resolvePlan", () => {
     await resolvePlan(llm, "x");
 
     expect(seenSystemPrompt).toContain('"pages"');
+  });
+
+  // Phase 4 step 4 — the SAME rendering buildSystemPrompt/buildVerbToolSchema
+  // use for registered actions, now also reaching the Planner, via a 5th
+  // optional argument (actionsText). No manifest is required for this —
+  // it's a genuinely separate axis from pages/data shapes.
+  it("when actionsText is passed, the userMessage carries a real 'actions' field, verbatim", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "Archive overdue invoices", 1, undefined, renderRegisteredActions(["archiveInvoice"], { archiveInvoice: "Archives the invoice." }));
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.actions).toBe("archiveInvoice (Archives the invoice.)");
+    expect(parsed.pages).toBeUndefined(); // no manifest passed — the two axes are independent
+  });
+
+  it("omits 'actions' entirely when actionsText is absent or empty — same additive discipline as pages", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x", 1, undefined, "");
+
+    expect(JSON.parse(seenUserMessage)).toEqual({ goal: "x" });
+  });
+
+  it("the system prompt documents the optional 'actions' field too", async () => {
+    let seenSystemPrompt = "";
+    const llm = fakePlanLLM(async (systemPrompt) => {
+      seenSystemPrompt = systemPrompt;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x");
+
+    expect(seenSystemPrompt).toContain('"actions"');
   });
 });
 
