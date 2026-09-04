@@ -10,6 +10,7 @@ import { routeFromPagePath, routeFromPagesRouterPath } from "./routes";
 import { extractDataShapes } from "./l1-data-shapes";
 import { mapApiRouteHandlers } from "./l1-api-routes";
 import { extractInAppCopy } from "./l1-in-app-copy";
+import { extractBusinessRules } from "./l1-business-rules";
 import type { InteractiveTag, RawElement, RawFacts, RawPage } from "./types";
 
 const INTERACTIVE_TAGS = new Set<InteractiveTag>(["button", "a", "form", "input"]);
@@ -116,13 +117,16 @@ export function scanL1(rootDir: string): RawFacts {
     walkImports(sf, absRoot, frameworkReachable, frameworkElements, frameworkVisited);
   }
 
+  const apiRouteHandlers = mapApiRouteHandlers(project, absRoot);
+
   return {
     version: "1",
     pages,
     allScannedFiles,
     frameworkReachableFiles: Array.from(frameworkReachable).sort(),
     frameworkElements: frameworkElements.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file))),
-    apiRouteHandlers: mapApiRouteHandlers(project, absRoot),
+    apiRouteHandlers,
+    businessRules: extractBusinessRules(project, absRoot, apiRouteHandlers),
   };
 }
 

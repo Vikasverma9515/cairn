@@ -5,6 +5,7 @@
 import type { DataShape } from "@cairnvibe/core";
 import type { ApiRouteHandler } from "./l1-api-routes";
 import type { CopyBlock } from "./l1-in-app-copy";
+import type { BusinessRule } from "./l1-business-rules";
 
 export type InteractiveTag = "button" | "a" | "form" | "input";
 
@@ -56,4 +57,6 @@ export interface RawFacts {
   frameworkElements: RawElement[];
   /** Deployment-wide, not per-page (a route isn't owned by one page) — see l1-api-routes.ts. Empty in crawl mode (no source file to read). */
   apiRouteHandlers: ApiRouteHandler[];
+  /** Deployment-wide, derived from apiRouteHandlers — see l1-business-rules.ts. Empty in crawl mode (no source file to read). */
+  businessRules: BusinessRule[];
 }

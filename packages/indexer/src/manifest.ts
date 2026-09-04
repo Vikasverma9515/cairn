@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import type { ApiCall, Element, Manifest, Page } from "@cairnvibe/core";
 import type { RawElement, RawFacts } from "./types";
 import type { ApiRouteHandler } from "./l1-api-routes";
+import type { BusinessRule } from "./l1-business-rules";
 import type { L2Result } from "./l2-reachability";
 import type { ElementDescription } from "./llm";
 import type { L3Result } from "./l3-describe";
@@ -10,16 +11,27 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
   // Phase 4, layer 6 — keyed once per build, not per element, so
   // enriching every element's apiCall stays a cheap map lookup.
   const routeHandlersByKey = new Map(facts.apiRouteHandlers.map((h) => [`${h.method} ${h.url}`, h]));
+  // Phase 4, layer 3 — keyed by BusinessRule.functionName, which is
+  // EITHER a route key ("POST /api/shop/checkout", for a guard written
+  // directly in the handler) OR a real called function's own name (for
+  // a guard found inside it) — see enrichApiCall for how both get
+  // looked up together for one apiCall.
+  const businessRulesByKey = new Map<string, BusinessRule[]>();
+  for (const rule of facts.businessRules) {
+    const existing = businessRulesByKey.get(rule.functionName);
+    if (existing) existing.push(rule);
+    else businessRulesByKey.set(rule.functionName, [rule]);
+  }
 
   const globalElements: Element[] = facts.frameworkElements.map((el) =>
-    toManifestElement(el, l3.globalElements.find((e) => e.id === el.id), "present in the root layout", routeHandlersByKey),
+    toManifestElement(el, l3.globalElements.find((e) => e.id === el.id), "present in the root layout", routeHandlersByKey, businessRulesByKey),
   );
 
   const pages: Page[] = facts.pages.map((rawPage) => {
     const desc = l3.descriptions.get(rawPage.route);
 
     const ownElements: Element[] = rawPage.elements.map((el) =>
-      toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`, routeHandlersByKey),
+      toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`, routeHandlersByKey, businessRulesByKey),
     );
 
     return {
@@ -83,6 +95,7 @@ function toManifestElement(
   elDesc: ElementDescription | undefined,
   baseEvidence: string,
   routeHandlersByKey: Map<string, ApiRouteHandler>,
+  businessRulesByKey: Map<string, BusinessRule[]>,
 ): Element {
   const evidence = [baseEvidence];
   if (el.handlerCall) evidence.push(`onClick calls ${el.handlerCall}`);
@@ -96,7 +109,7 @@ function toManifestElement(
     does: elDesc?.does ?? "Unknown — no description generated for this element.",
     confidence: elDesc?.confidence ?? 0,
     evidence,
-    apiCall: enrichApiCall(parseApiCall(el.handlerCall), routeHandlersByKey),
+    apiCall: enrichApiCall(parseApiCall(el.handlerCall), routeHandlersByKey, businessRulesByKey),
   };
 }
 
@@ -104,12 +117,27 @@ function toManifestElement(
  * actually run when this apiCall fires, when Cairn found and traced the
  * matching route handler (l1-api-routes.ts). Absent when no handler
  * matched — a route Cairn didn't scan, or one whose body called nothing
- * traceable — never invented. */
-function enrichApiCall(apiCall: ApiCall | null, routeHandlersByKey: Map<string, ApiRouteHandler>): ApiCall | null {
+ * traceable — never invented. Phase 4, layer 3 — ALSO attaches any real
+ * guard clauses found either in the route handler's own body or in a
+ * function it calls (l1-business-rules.ts), formatted as readable
+ * "condition → consequence" strings. Absent when none were found —
+ * most real mutating functions in a typical app have none (confirmed
+ * live against examples/demo-app before building this), which is a
+ * real, honest finding, not a bug in the extractor. */
+function enrichApiCall(apiCall: ApiCall | null, routeHandlersByKey: Map<string, ApiRouteHandler>, businessRulesByKey: Map<string, BusinessRule[]>): ApiCall | null {
   if (!apiCall) return null;
+  let enriched = apiCall;
+
   const handler = routeHandlersByKey.get(`${apiCall.method} ${apiCall.url}`);
-  if (!handler || handler.calls.length === 0) return apiCall;
-  return { ...apiCall, handledBy: handler.calls };
+  if (handler && handler.calls.length > 0) enriched = { ...enriched, handledBy: handler.calls };
+
+  const relevantFunctionNames = [`${apiCall.method} ${apiCall.url}`, ...(enriched.handledBy ?? [])];
+  const constraints = relevantFunctionNames
+    .flatMap((name) => businessRulesByKey.get(name) ?? [])
+    .map((rule) => `${rule.condition} → ${rule.consequence}`);
+  if (constraints.length > 0) enriched = { ...enriched, constraints };
+
+  return enriched;
 }
 
 function elementFallbackSelector(el: RawElement): string {

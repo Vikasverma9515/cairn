@@ -63,6 +63,20 @@ export const ApiCallSchema = z.object({
    * existed still validates.
    */
   handledBy: z.array(z.string()).optional(),
+  /**
+   * Phase 4, layer 3 — real guard clauses found either in this apiCall's
+   * own route handler body, or in a function it calls (`handledBy`),
+   * formatted as readable `"condition → consequence"` strings (e.g.
+   * `"!isLoggedIn() → return null"`) — traced statically by
+   * l1-business-rules.ts, never invented or semantically classified
+   * (a required-field check and a real domain permission check share
+   * the exact same AST shape; this reports both uniformly rather than
+   * guessing which is which). Absent/empty when none were found — the
+   * honest, common case for most real mutating functions, confirmed
+   * live against a real app before this field was added. Optional for
+   * the same additive/backward-compatible reason as `handledBy`.
+   */
+  constraints: z.array(z.string()).optional(),
 });
 export type ApiCall = z.infer<typeof ApiCallSchema>;
 

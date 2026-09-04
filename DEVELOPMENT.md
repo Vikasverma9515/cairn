@@ -2509,6 +2509,113 @@ data later.
 
 ---
 
+### Step 7: layer 3 — real business rules & validation constraints
+
+Confirmed real, not hypothetical, before writing this (same discipline
+as every prior layer): an Explore-agent pass over `examples/demo-app`'s
+actual mutating functions found the honest truth up front — this app has
+almost NOTHING resembling a real domain rule. The one genuine exception,
+`lib/shop.ts`'s `placeOrder`, gates on `isLoggedIn()`. What IS genuinely
+common and real: nearly every API route's own required-field/not-found
+guard (`if (!body.toColumnId) return NextResponse.json({error: ...},
+{status: 400})`). This extractor reports BOTH kinds uniformly, as "a
+real guard this function enforces" — it does not, and cannot, reliably
+tell a domain permission check apart from an input-validation check by
+AST shape alone; that distinction is left to whoever reads the result,
+documented explicitly in the module's own header comment.
+
+**Built:**
+- `packages/indexer/src/l1-business-rules.ts` (new) —
+  `extractBusinessRules(project, absRoot, handlers)`. For every traced
+  API route handler (from `l1-api-routes.ts`'s `ApiRouteHandler[]`),
+  walks BOTH the handler's own body and the body of every function it
+  calls (resolved via `l1-data-shapes.ts`'s `resolveImportedFunction`,
+  exported for this reuse) for `if (condition) return/throw` guard
+  clauses — a single-statement then-branch, braced or bare, treated
+  identically; a multi-statement then-branch deliberately skipped (a
+  guard with real side effects isn't summarized as one simple
+  condition). Reports each as `BusinessRule {functionName, condition,
+  consequence, source}`, deduped so a function guarded once and called
+  from multiple routes yields one real rule, not one per caller.
+  `functionName` is either a route key (`"POST /api/shop/checkout"`,
+  for a guard in the handler's own body) or a real called function's
+  own name (`"placeOrder"`, for a guard found inside it) — both get
+  looked up together when enriching one `ApiCall` (below).
+- `l1-api-routes.ts`'s `getCallableBody` and `l1-data-shapes.ts`'s
+  `resolveImportedFunction` exported for this reuse, not duplicated.
+- Wired through the same path every prior L1 addition used:
+  `RawFacts.businessRules` (computed in `l1-scan.ts` from the already-
+  computed `apiRouteHandlers`), `crawl.ts`'s runtime-DOM mode sets
+  `businessRules: []` explicitly (no source file to read there).
+  `manifest.ts`'s `assembleManifest` now also builds a
+  `businessRulesByKey` map (grouped by `functionName`, same O(1)-per-
+  element discipline as the existing `routeHandlersByKey`) and
+  `enrichApiCall` attaches a real `ApiCall.constraints: string[]`
+  — every matched rule formatted as a readable `"condition →
+  consequence"` string, combining BOTH the route's own guards and its
+  called function's guards for one apiCall. Absent (not even an empty
+  array) when nothing matched — most real mutating functions have no
+  guard at all, confirmed live below, a real finding not a bug.
+  `ApiCallSchema.constraints` in `@cairnvibe/core` — additive/optional,
+  same backward-compatible pattern as every prior schema addition.
+
+**Tests:**
+- `l1-business-rules.test.ts` (new, 8 tests, isolated in-memory
+  ts-morph projects, reusing the REAL `mapApiRouteHandlers` — not a
+  mock — to build realistic input): a route-handler's own guard
+  captured; the exact `placeOrder`/`isLoggedIn` called-function shape
+  captured; braced vs. bare single-statement then-branches treated
+  identically; a multi-statement then-branch correctly skipped; a
+  `throw` consequence captured, not just `return`; a guarded function
+  called from multiple routes deduped to one rule; no guards anywhere
+  yields an empty array; no handlers at all yields an empty array.
+- `manifest.test.ts` (+2): an apiCall's `constraints` combines BOTH the
+  route's own guard AND its called function's guard, using a realistic
+  `/shop/checkout` → `placeOrder` fixture; no `constraints` key at all
+  (not even empty) when no business rules matched.
+- `core/index.test.ts` (+2): `ApiCallSchema` accepts real constraint
+  strings; still accepts an apiCall with `constraints` entirely omitted
+  (backward compatibility with manifests built before this field
+  existed).
+- Full regression gate: 496/496 tests pass repo-wide (up from 484),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces (five existing `manifest.test.ts` fixtures needed the new
+  required `businessRules` field on `RawFacts` — caught by `tsc`, the
+  same recurring reminder every prior required-field addition this
+  session has surfaced).
+
+**Live-verified:** ran `scanL1` directly against `examples/demo-app`'s
+REAL source. Found 24 real rules — confirming the research finding
+exactly: `placeOrder`'s `!isLoggedIn()` guard is there as expected,
+PLUS a second real domain guard on the same function
+(`cart.length === 0`) not previously noticed, PLUS `checkout`'s own
+route-level `!isLoggedIn()` duplicate check (defense in depth, both
+real) — and the rest is exactly the honestly-predicted majority case:
+plain required-field (`!body.toColumnId`, `!body.email || !body.address`)
+and not-found (`!card`, `!invoice`, `!existing`) guards across the
+board/invoices/shop/workflows routes. No false positives, no invented
+rules, no guard misattributed to the wrong function.
+
+**Pending:**
+- Not wired into any model-facing prompt yet — same "extraction first,
+  consumption as its own step" discipline every other Phase 4 layer has
+  followed (layer 2's data shapes took 3 separate steps: extract, wire
+  into Executor, wire into Planner). The natural next application: give
+  the Planner/Executor real constraint text so a `do` verb can reason
+  about "this action requires being logged in" instead of discovering
+  it only after a 403.
+- No semantic classification of domain-rule vs. input-validation guard
+  — explicitly out of scope, documented in the module's own header
+  comment as a real limitation, not an oversight.
+- Guard clauses nested inside a `try`/`catch`, a loop, or an `else`
+  branch aren't walked — only a bare top-level `if` inside the
+  function body. Not hit live against demo-app's real code, but a real,
+  honest gap for a more complex real-world app.
+
+**Failed:** nothing.
+
+---
+
 ## Phase 2 — real-time voice architecture upgrade
 
 Picked up after Phase 4's data-shapes/dependency-graph work, per the

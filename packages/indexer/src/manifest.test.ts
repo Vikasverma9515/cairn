@@ -69,6 +69,7 @@ describe("assembleManifest", () => {
       frameworkReachableFiles: [],
       frameworkElements: [],
       apiRouteHandlers: [],
+      businessRules: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -86,6 +87,7 @@ describe("assembleManifest", () => {
       frameworkReachableFiles: [],
       frameworkElements: [],
       apiRouteHandlers: [],
+      businessRules: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -126,6 +128,7 @@ describe("assembleManifest", () => {
       frameworkReachableFiles: [],
       frameworkElements: [],
       apiRouteHandlers: [{ method: "POST", url: "/api/invoices", file: "app/api/invoices/route.ts", calls: ["createInvoice"] }],
+      businessRules: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -163,6 +166,7 @@ describe("assembleManifest", () => {
       frameworkReachableFiles: [],
       frameworkElements: [],
       apiRouteHandlers: [], // no route was traced for this url at all
+      businessRules: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -189,6 +193,7 @@ describe("assembleManifest", () => {
       frameworkReachableFiles: [],
       frameworkElements: [],
       apiRouteHandlers: [],
+      businessRules: [],
     };
     const l2: L2Result = { dead: [], conflicts: [] };
     const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
@@ -196,5 +201,92 @@ describe("assembleManifest", () => {
     const manifest = assembleManifest("/repo", facts, l2, l3);
 
     expect(manifest.pages[0].inAppCopy).toEqual(facts.pages[0].inAppCopy);
+  });
+
+  // Phase 4 step 7 — an element's apiCall gets enriched with real guard
+  // clauses found either in its own route handler or in a function it calls.
+  it("enriches an element's apiCall with constraints from BOTH the route handler's own guards and a called function's guards", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/shop/checkout",
+          file: "app/shop/checkout/page.tsx",
+          reachableFiles: [],
+          elements: [
+            {
+              id: "place-order",
+              tag: "button",
+              dataAi: "place-order",
+              ariaLabel: null,
+              text: "Place order",
+              handlerCall: "POST /api/shop/checkout",
+              file: "components/CheckoutWizard.tsx",
+              line: 12,
+            },
+          ],
+          dataShapes: [],
+          inAppCopy: [],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+      apiRouteHandlers: [{ method: "POST", url: "/api/shop/checkout", file: "app/api/shop/checkout/route.ts", calls: ["placeOrder"] }],
+      businessRules: [
+        { functionName: "POST /api/shop/checkout", condition: "!body.address", consequence: "return NextResponse.json({ error: 'missing address' }, { status: 400 });", source: "app/api/shop/checkout/route.ts" },
+        { functionName: "placeOrder", condition: "!isLoggedIn()", consequence: "return null;", source: "lib/shop.ts" },
+      ],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].elements[0].apiCall).toEqual({
+      method: "POST",
+      url: "/api/shop/checkout",
+      handledBy: ["placeOrder"],
+      constraints: ["!body.address → return NextResponse.json({ error: 'missing address' }, { status: 400 });", "!isLoggedIn() → return null;"],
+    });
+  });
+
+  it("leaves apiCall with no constraints key at all when no business rules matched — never an empty array either", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/invoices",
+          file: "app/invoices/page.tsx",
+          reachableFiles: [],
+          elements: [
+            {
+              id: "create-invoice",
+              tag: "button",
+              dataAi: "create-invoice",
+              ariaLabel: null,
+              text: "New Invoice",
+              handlerCall: "POST /api/invoices",
+              file: "components/CreateInvoiceButton.tsx",
+              line: 7,
+            },
+          ],
+          dataShapes: [],
+          inAppCopy: [],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+      apiRouteHandlers: [{ method: "POST", url: "/api/invoices", file: "app/api/invoices/route.ts", calls: ["createInvoice"] }],
+      businessRules: [],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].elements[0].apiCall).toEqual({ method: "POST", url: "/api/invoices", handledBy: ["createInvoice"] });
+    expect(manifest.pages[0].elements[0].apiCall).not.toHaveProperty("constraints");
   });
 });

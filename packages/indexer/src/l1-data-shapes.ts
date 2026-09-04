@@ -41,8 +41,8 @@ export function extractDataShapes(project: Project, absRoot: string, reachableAb
   return Array.from(shapes.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Finds the declaration an imported identifier resolves to — a top-level function or a const-assigned arrow/function expression — in its own module. */
-function resolveImportedFunction(sf: SourceFile, name: string): Node | undefined {
+/** Finds the declaration an imported identifier resolves to — a top-level function or a const-assigned arrow/function expression — in its own module. Exported for reuse by l1-business-rules.ts (Phase 4 layer 3), which needs the real declaration itself (to walk its body), not just its name. */
+export function resolveImportedFunction(sf: SourceFile, name: string): Node | undefined {
   for (const imp of sf.getImportDeclarations()) {
     const named = imp.getNamedImports().find((n) => (n.getAliasNode()?.getText() ?? n.getName()) === name);
     if (!named) continue;

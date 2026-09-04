@@ -101,6 +101,17 @@ describe("ApiCallSchema.handledBy (Phase 4, layer 6 — real backend dependency 
   });
 });
 
+describe("ApiCallSchema.constraints (Phase 4, layer 3 — real business rules)", () => {
+  it("accepts an apiCall with real constraint strings", () => {
+    const result = ApiCallSchema.safeParse({ method: "POST", url: "/api/shop/checkout", constraints: ["!isLoggedIn() → return null;"] });
+    expect(result.success).toBe(true);
+  });
+
+  it("still accepts an apiCall with constraints entirely omitted — additive/backward-compatible with manifests written before this field existed", () => {
+    expect(() => ApiCallSchema.parse({ method: "POST", url: "/api/invoices" })).not.toThrow();
+  });
+});
+
 describe("safeParseVerbResponse", () => {
   it("accepts each registered verb shape", () => {
     expect(safeParseVerbResponse({ verb: "explain", text: "hi" })).not.toBeNull();

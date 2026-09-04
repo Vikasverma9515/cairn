@@ -70,7 +70,8 @@ function deriveApiRoute(absRoot: string, filePath: string): string | null {
   return "/" + rel.slice("app/".length).replace(/\/route\.(ts|js)$/, "");
 }
 
-function getCallableBody(decl: Node): Node | null {
+/** Exported for reuse by l1-business-rules.ts (Phase 4 layer 3) — the same "get the actual callable node, whichever of function-declaration/arrow/function-expression shape it is" resolution, not a second copy. */
+export function getCallableBody(decl: Node): Node | null {
   if (Node.isFunctionDeclaration(decl) || Node.isArrowFunction(decl) || Node.isFunctionExpression(decl)) return decl;
   if (Node.isVariableDeclaration(decl)) {
     const init = decl.getInitializer();
