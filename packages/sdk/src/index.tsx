@@ -1001,9 +1001,26 @@ export function Copilot({
         rtThinkingWatchdogRef.current = setTimeout(() => {
           rtThinkingWatchdogRef.current = null;
           console.warn("[cairn] realtime turn timed out waiting on the server — resuming listening");
-          rtAudioDoneArrivingRef.current = true;
-          setRtStatus("rt-listening");
-          setCaption("");
+          // Real, live-found gap: this used to only reset LOCAL state,
+          // never telling the server anything — so a turn that was simply
+          // SLOW (not actually stuck; e.g. retrying a rate-limited call
+          // across every configured key, which can genuinely take longer
+          // than this 20s watchdog) kept running server-side, and its
+          // reply arrived LATE, after the user had already moved on and
+          // started a new turn locally — landing on whatever was now
+          // showing instead of being recognized as stale. triggerBargeIn()
+          // is exactly the fix: it sends the same real barge_in signal a
+          // genuine interruption does, bumping the server's own generation
+          // so that late reply — whenever it finally arrives — carries an
+          // old generation number and gets correctly dropped by the
+          // isStaleRtMessage check above instead of confusingly resuming.
+          triggerBargeIn();
+          // triggerBargeIn() clears the caption but never touched `answer`
+          // — without this, a timed-out turn gave the user literally
+          // nothing: no reply, no error, just a silent reset back to
+          // "Listening…" that reads as "it heard me and did nothing." A
+          // real, live-found gap, not just a console.warn nobody sees.
+          setAnswer("That's taking longer than expected — try asking again.");
         }, 20000);
       }
 

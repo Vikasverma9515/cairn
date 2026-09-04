@@ -1007,9 +1007,21 @@ export class CairnWidgetElement extends HTMLElement {
         this.rtThinkingWatchdog = setTimeout(() => {
           this.rtThinkingWatchdog = null;
           console.warn("[cairn] realtime turn timed out waiting on the server — resuming listening");
-          this.rtAudioDoneArriving = true;
-          this.setStatus("rt-listening");
-          this.setCaption("");
+          // Same real, live-found fix as index.tsx's own watchdog (see its
+          // doc comment) — this used to only reset LOCAL state, never
+          // telling the server anything, so a turn that was merely SLOW
+          // (e.g. retrying a rate-limited call across every configured
+          // key) kept running server-side and its reply arrived late,
+          // landing on whatever the user had moved on to instead of being
+          // recognized as stale. triggerBargeIn() sends the real barge_in
+          // signal, bumping the server's generation so that late reply
+          // gets correctly dropped by isStaleRtMessage when it arrives.
+          triggerBargeIn();
+          // triggerBargeIn() clears the caption but never touched the
+          // answer — without this, a timed-out turn gave the user
+          // literally nothing: no reply, no error, a silent reset that
+          // reads as "it heard me and did nothing."
+          this.setAnswer("That's taking longer than expected — try asking again.");
         }, 20000);
       };
 

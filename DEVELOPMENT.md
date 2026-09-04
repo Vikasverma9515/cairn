@@ -4095,6 +4095,87 @@ new code.
 
 ---
 
+## Live bug-fix pass: the 20s "thinking" watchdog never told the server to give up too — and gave the user zero visible feedback
+
+Found while investigating a "stuck, can't speak, not taking my speech"
+report. Checking the demo app's own live terminal output (not guessed
+at) confirmed the real, concrete cause: `POST /api/copilot 200 in
+20244ms` and `POST /api/copilot 200 in 42953ms` — real Groq calls now
+taking 20-43 SECONDS, a direct, honest consequence of the key-failover
+fix two entries up. That fix is correct in principle (retrying a
+genuinely different, non-exhausted key measurably helps), but when
+EVERY configured key is simultaneously rate-limited (which the same
+terminal output confirms has been true for hours today), it now retries
+once per key before finally giving up — compounding wait time instead
+of failing fast, which is what turned a quick, obvious failure into a
+long, confusing silence.
+
+That silence is exactly what collided with a real, independent, pre-
+existing gap: the client's own 20-second "thinking" watchdog
+(`armThinkingWatchdog`) — which exists specifically so a silent server
+never leaves the mic stuck deaf forever — only ever reset LOCAL state.
+It never told the SERVER anything. So once retries started genuinely
+taking longer than 20 seconds (a real possibility only since the
+failover fix landed), the watchdog fired, the client silently moved on,
+and the server kept working the old, now-abandoned turn regardless —
+its reply, whenever it eventually arrived, had no correct way to be
+recognized as stale (the same real race the two entries above this one
+exist to close, just from a THIRD trigger point neither of those
+covered: a client-side timeout, not a client-triggered barge-in).
+Worse, the watchdog gave the user precisely nothing to look at while
+this happened — a `console.warn` nobody but a developer would ever see,
+and a silent reset back to "Listening…" that reads exactly like "it
+heard me and did nothing," matching the report verbatim.
+
+**Built:**
+- Both client entry points' `armThinkingWatchdog`: on timeout, now
+  calls the SAME `triggerBargeIn()` a real interruption already uses
+  instead of hand-rolling an incomplete local-only reset. This sends
+  the real `barge_in` message, bumping the server's generation exactly
+  like a genuine interruption would — so a turn that finally resolves
+  after the watchdog gave up now carries an old generation and gets
+  correctly dropped by the `isStaleRtMessage` check from the entry
+  above, instead of confusingly resuming a conversation the user has
+  already moved past.
+- A real, visible message (`"That's taking longer than expected — try
+  asking again."`) set via `setAnswer`/`this.setAnswer` right after —
+  `triggerBargeIn()` itself only clears the caption, it never touched
+  the answer, so without this a timed-out turn showed literally
+  nothing.
+
+**Tests:** no new automated test — this is a `setTimeout`-driven
+lifecycle path, same honest limitation as the other timing-dependent
+entries in this series; a fake-timers harness would be needed for real
+coverage, not attempted this pass. Full regression suite re-run
+instead: 519/519 tests pass repo-wide (unchanged — no test file
+touched), zero regressions. Full `npm run typecheck` clean across all 6
+workspaces. `npm run build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment — traced directly from the user's own real terminal output
+(the two 20s+/40s+ `/api/copilot` timings), not guessed at.
+
+**Pending:**
+- The underlying Groq daily quota appears to still be fully exhausted
+  as of this entry (confirmed again from a fresh terminal read, hours
+  after the first exhaustion was found) — the dominant remaining cause
+  of slow/erratic behavior right now is very likely this, not further
+  code bugs. Recommended the user temporarily test with
+  `CAIRN_RUNTIME_PROVIDER=anthropic` (already supported by
+  `realtime-cli.ts`, and `ANTHROPIC_API_KEY` is already configured in
+  `examples/demo-app/.env`) to get a clean read unconfounded by Groq's
+  quota, rather than continuing to chase symptoms that may simply be
+  quota exhaustion wearing a bug's clothing.
+- Whether the key-failover fix should also fail fast when it has reason
+  to believe every key is currently exhausted (rather than always
+  trying each one) is a real, legitimate follow-up — not built this
+  pass, since the watchdog fix above already closes the user-visible
+  harm of the extra latency regardless of its cause.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
