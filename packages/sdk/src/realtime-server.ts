@@ -125,14 +125,29 @@ export interface CreateRealtimeServerOptions extends CreateCopilotHandlerOptions
 
 type ServerMessage =
   | { type: "interim"; text: string }
-  | { type: "final"; text: string }
-  | { type: "verb"; verb: VerbResponse }
-  | { type: "speaking_start" }
+  /** `generation` (and on every other message below that carries one) is
+   * the server's own barge-in generation counter at the moment THIS
+   * message was produced — see `triggerServerBargeIn`'s `generation`
+   * variable. Real, live-found bug this closes: the client's own local
+   * barge-in (VAD-triggered, entirely independent of the server) can
+   * start a brand-new turn's "final" before an EARLIER turn's own verb/
+   * audio — already in flight on the wire when the server processed the
+   * barge-in — actually arrives. WebSocket delivers messages in order,
+   * but "in order" isn't "still relevant": without a way to tell an
+   * older turn's message apart from the current one, the client applied
+   * it anyway, misattributing a stale answer to whatever question was
+   * now current — the exact "one question, but a different, unrelated-
+   * sounding answer showed up later" bug found live. The client tracks
+   * the generation of the most recent "final" it's processed and drops
+   * any later verb/speaking/audio message whose generation is older. */
+  | { type: "final"; text: string; generation: number }
+  | { type: "verb"; verb: VerbResponse; generation: number }
+  | { type: "speaking_start"; generation: number }
   /** One chunk of raw linear16 PCM audio, base64-encoded, as it's rendered — never the whole clip at once. */
-  | { type: "audio_chunk"; audio: string; sampleRate: number }
+  | { type: "audio_chunk"; audio: string; sampleRate: number; generation: number }
   /** No more audio chunks are coming for this turn. The client may still be mid-playback of what it already has. */
-  | { type: "speaking_end" }
-  | { type: "turn_complete" }
+  | { type: "speaking_end"; generation: number }
+  | { type: "turn_complete"; generation: number }
   /** Phase 2 step 2 — a barge-in the server concluded was a false positive
    * (no confirming transcript arrived within the grace window) is being
    * re-spoken from the top. Purely informational — the client needs no
@@ -429,24 +444,24 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
 
     stream.setAudioHandler((chunk) => {
       if (myGeneration !== generation) return; // stale — dropped by barge-in
-      safeSend(client, { type: "audio_chunk", audio: chunk.toString("base64"), sampleRate: TTS_SAMPLE_RATE });
+      safeSend(client, { type: "audio_chunk", audio: chunk.toString("base64"), sampleRate: TTS_SAMPLE_RATE, generation: myGeneration });
     });
 
     await ready;
     if (!speakStream || myGeneration !== generation) {
       // Reconnect failed, or barge-in happened before the stream connected —
       // either way, only degrade to turn_complete if this is still current.
-      if (myGeneration === generation) safeSend(client, { type: "turn_complete" });
+      if (myGeneration === generation) safeSend(client, { type: "turn_complete", generation: myGeneration });
       return;
     }
 
     await new Promise<void>((resolve) => {
       onCurrentTurnFlushed = () => {
         onCurrentTurnFlushed = null;
-        if (myGeneration === generation) safeSend(client, { type: "speaking_end" });
+        if (myGeneration === generation) safeSend(client, { type: "speaking_end", generation: myGeneration });
         resolve();
       };
-      safeSend(client, { type: "speaking_start" });
+      safeSend(client, { type: "speaking_start", generation: myGeneration });
       stream.sendText(text);
       stream.flush();
     });
@@ -700,7 +715,7 @@ async function finalizeTurn(
   const transcript = turnState.buffer;
   turnState.buffer = "";
   const myGeneration = getGeneration();
-  safeSend(client, { type: "final", text: transcript });
+  safeSend(client, { type: "final", text: transcript, generation: myGeneration });
 
   // The Talker: set once, the first time a turn turns out to need more
   // than one step (see onStep below) — a real, in-flight speakStreamed()
@@ -860,7 +875,7 @@ async function finalizeTurn(
           // highlight/navigate/do execute in the browser right away instead
           // of waiting on audio. The agent visibly acts while it's still
           // about to speak, not after.
-          safeSend(client, { type: "verb", verb });
+          safeSend(client, { type: "verb", verb, generation: myGeneration });
         }
 
         // Phase 2 step 1 — the ONLY thing this needs to record: whether
@@ -1021,7 +1036,7 @@ async function finalizeTurn(
       if (textToSpeak) {
         await speakStreamed(textToSpeak);
       } else {
-        safeSend(client, { type: "turn_complete" });
+        safeSend(client, { type: "turn_complete", generation: myGeneration });
       }
       return;
     }
@@ -1038,7 +1053,7 @@ async function finalizeTurn(
     history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
     recordMemoryTurn?.("user", transcript);
     recordMemoryTurn?.("assistant", gaveUpSummary);
-    safeSend(client, { type: "verb", verb: { verb: "explain", text: giveUpText } });
+    safeSend(client, { type: "verb", verb: { verb: "explain", text: giveUpText }, generation: myGeneration });
     if (ackPromise) {
       await ackPromise;
       if (myGeneration !== getGeneration()) return;
@@ -1048,7 +1063,7 @@ async function finalizeTurn(
     console.error("[cairn realtime] failed to resolve/speak this turn:", err);
     if (myGeneration === getGeneration()) {
       safeSend(client, { type: "error", message: "Something went wrong answering that — try again." });
-      safeSend(client, { type: "turn_complete" });
+      safeSend(client, { type: "turn_complete", generation: myGeneration });
     }
   }
 }

@@ -334,6 +334,15 @@ export class CairnWidgetElement extends HTMLElement {
   private rtMicMuted = false;
   private rtSpeakerMuted = false;
   private rtStarting = false; // closes the click-to-first-state-update gap so a rapid double-click can't open two sessions
+  // Generation of the most recent "final" this client has processed — see
+  // ServerMessage's own doc comment in realtime-server.ts (index.tsx
+  // carries the same fix, ported here) for the real, live-found race this
+  // closes: a locally-triggered barge-in can start a new turn before an
+  // earlier turn's own verb/audio, already in flight when the server
+  // processed the barge-in, actually arrives. isStaleRtMessage() drops
+  // anything older than this instead of applying it to whatever caption
+  // is now current.
+  private rtLastFinalGeneration = 0;
   private rtPlaybackCtx: AudioContext | null = null;
   private rtPlaybackGain: GainNode | null = null;
   private rtNextPlayTime = 0;
@@ -918,6 +927,13 @@ export class CairnWidgetElement extends HTMLElement {
   // Real-time voice conversation
   // ---------------------------------------------------------------------
 
+  /** See rtLastFinalGeneration's own doc comment. A message with no
+   * generation field at all is treated as current rather than dropped —
+   * additive/backward-compatible against a server predating this fix. */
+  private isStaleRtMessage(msg: { generation?: unknown }): boolean {
+    return typeof msg.generation === "number" && msg.generation < this.rtLastFinalGeneration;
+  }
+
   private async startRealtime() {
     // rtStarting closes the gap between click and the first status update
     // landing — without it a rapid double-click could race past the
@@ -1067,17 +1083,21 @@ export class CairnWidgetElement extends HTMLElement {
         if (msg.type === "interim") {
           this.setCaption(msg.text);
         } else if (msg.type === "final") {
+          this.rtLastFinalGeneration = typeof msg.generation === "number" ? msg.generation : 0;
           this.setCaption(msg.text);
           this.setStatus("rt-thinking");
           armThinkingWatchdog();
         } else if (msg.type === "verb") {
+          if (this.isStaleRtMessage(msg)) return; // belongs to a turn a later "final" already superseded
           disarmThinkingWatchdog();
           this.handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
+          if (this.isStaleRtMessage(msg)) return;
           disarmThinkingWatchdog();
           this.rtAudioDoneArriving = false;
           this.setStatus("rt-speaking");
         } else if (msg.type === "audio_chunk") {
+          if (this.isStaleRtMessage(msg)) return; // the literal "two speakers" case — a chunk from an abandoned turn, already in flight when the barge-in landed
           const ctx = this.rtPlaybackCtx;
           const gain = this.rtPlaybackGain;
           if (!ctx || !gain) return;
@@ -1112,6 +1132,7 @@ export class CairnWidgetElement extends HTMLElement {
             maybeResumeListening();
           };
         } else if (msg.type === "speaking_end" || msg.type === "turn_complete") {
+          if (this.isStaleRtMessage(msg)) return; // a newer turn's own speaking_end/turn_complete will arrive and resume listening correctly on its own
           // turn_complete covers a verb with nothing spoken — no audio_chunk
           // ever arrives for it, so rtScheduledSources is already empty and
           // maybeResumeListening() resumes immediately.

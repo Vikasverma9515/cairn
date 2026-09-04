@@ -163,6 +163,18 @@ export function Copilot({
   const rtMicMutedRef = useRef(false);
   const rtSpeakerMutedRef = useRef(false);
   const rtStartingRef = useRef(false); // closes the click-to-first-state-update gap so a rapid double-click can't open two sessions
+  // The generation of the most recent "final" this client has processed —
+  // see ServerMessage's own doc comment in realtime-server.ts for the full
+  // real, live-found bug this closes: the client's own local barge-in can
+  // start a NEW turn (a new "final") before an EARLIER turn's own verb/
+  // audio, already in flight on the wire when the server processed that
+  // barge-in, actually arrives. WebSocket delivers messages in order, but
+  // "in order" isn't "still current" — every verb/speaking_start/
+  // audio_chunk/speaking_end/turn_complete message carries the generation
+  // it was produced under, and the handler drops it outright if it's
+  // older than this ref's value instead of applying it to whatever
+  // caption happens to be showing now.
+  const rtLastFinalGenerationRef = useRef(0);
   // Progressive PCM playback for the buffered (non-realtime) speak endpoint
   // — the same gapless AudioBufferSourceNode scheduling the realtime path
   // uses for its audio_chunk messages (see rtPlaybackCtxRef below), just fed
@@ -1040,12 +1052,27 @@ export function Copilot({
         rtStartingRef.current = false;
       };
 
+      // True for a verb/speaking_start/audio_chunk/speaking_end/
+      // turn_complete message that belongs to an EARLIER turn than the
+      // most recent "final" this client has seen — see
+      // rtLastFinalGenerationRef's own doc comment for the real race this
+      // closes. A message with no generation field at all (shouldn't
+      // happen against a server running this fix, but a mismatched client/
+      // server version pair during a rolling deploy could) is treated as
+      // current rather than dropped — additive/backward-compatible, same
+      // discipline every other wire-protocol addition in this codebase
+      // follows.
+      function isStaleRtMessage(msg: { generation?: unknown }): boolean {
+        return typeof msg.generation === "number" && msg.generation < rtLastFinalGenerationRef.current;
+      }
+
       ws.onmessage = (event) => {
         if (typeof event.data !== "string") return; // audio now arrives as base64 inside audio_chunk, not raw binary frames
         const msg = JSON.parse(event.data);
         if (msg.type === "interim") {
           setCaption(msg.text);
         } else if (msg.type === "final") {
+          rtLastFinalGenerationRef.current = typeof msg.generation === "number" ? msg.generation : 0;
           archiveCurrentExchange(); // the previous turn's pair is complete — move it into history before this one starts overwriting caption/answer
           setCaption(msg.text);
           // Without this, `answer` still held the PREVIOUS turn's reply
@@ -1067,6 +1094,7 @@ export function Copilot({
           setRtStatus("rt-thinking");
           armThinkingWatchdog();
         } else if (msg.type === "verb") {
+          if (isStaleRtMessage(msg)) return; // belongs to a turn a later "final" already superseded
           const parsedStep = safeParseVerbResponse(msg.verb);
           if (parsedStep && !TERMINAL_VERBS.has(parsedStep.verb)) {
             // A continuing agent-loop step (click/fill/read/call_tool) —
@@ -1089,10 +1117,12 @@ export function Copilot({
           disarmThinkingWatchdog();
           handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
+          if (isStaleRtMessage(msg)) return;
           disarmThinkingWatchdog();
           rtAudioDoneArrivingRef.current = false;
           setRtStatus("rt-speaking");
         } else if (msg.type === "audio_chunk") {
+          if (isStaleRtMessage(msg)) return; // the literal "two speakers" case — a chunk from an abandoned turn, already in flight when the barge-in landed
           const ctx = rtPlaybackCtxRef.current;
           const gain = rtPlaybackGainRef.current;
           if (!ctx || !gain) return;
@@ -1127,6 +1157,7 @@ export function Copilot({
             maybeResumeListening();
           };
         } else if (msg.type === "speaking_end" || msg.type === "turn_complete") {
+          if (isStaleRtMessage(msg)) return; // a newer turn's own speaking_end/turn_complete will arrive and resume listening correctly on its own
           // turn_complete covers a verb with nothing spoken (a plain
           // highlight/navigate/do often has no text) — no audio_chunk ever
           // arrives for it, so rtScheduledSourcesRef is already empty and

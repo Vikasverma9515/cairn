@@ -203,7 +203,7 @@ describe("handleDeepgramMessage", () => {
 
     expect(respond).toHaveBeenCalledTimes(1);
     const finals = sent.filter((m: any) => m.type === "final");
-    expect(finals).toEqual([{ type: "final", text: "hello" }]);
+    expect(finals).toEqual([{ type: "final", text: "hello", generation: 0 }]);
   });
 
   // Phase 5 — recordMemoryTurn is called with the same real (role, text)
@@ -448,7 +448,7 @@ describe("handleDeepgramMessage", () => {
     expect(respond).toHaveBeenCalledTimes(1);
     // The two chunks accumulate into one complete question, not two.
     const finals = sent.filter((m: any) => m.type === "final");
-    expect(finals).toEqual([{ type: "final", text: "hello can you help me" }]);
+    expect(finals).toEqual([{ type: "final", text: "hello can you help me", generation: 0 }]);
     expect(turnState.buffer).toBe(""); // consumed, ready for the next turn
   });
 
@@ -464,7 +464,7 @@ describe("handleDeepgramMessage", () => {
 
     await handleDeepgramMessage(JSON.stringify({ type: "UtteranceEnd" }), client, deps, getContext, async () => {}, history, turnState, () => 0, neverCalledWaitForToolResult);
     expect(respond).toHaveBeenCalledTimes(1);
-    expect(sent.filter((m: any) => m.type === "final")).toEqual([{ type: "final", text: "are you there" }]);
+    expect(sent.filter((m: any) => m.type === "final")).toEqual([{ type: "final", text: "are you there", generation: 0 }]);
   });
 
   it("a barge-in (generation bump) while resolveVerb is in flight drops the now-stale verb and speech instead of delivering them late", async () => {
@@ -499,6 +499,43 @@ describe("handleDeepgramMessage", () => {
     // The user's own speech was still transcribed and shown — only the
     // (now-superseded) response is dropped.
     expect(sent.some((m: any) => m.type === "final")).toBe(true);
+  });
+
+  it("real fix for a live-found bug: consecutive turns across a barge-in are tagged with different generation numbers, so the client can tell a stale message that WAS already sent apart from the current one — the case the test above doesn't cover, where the message is already on the wire when the barge-in lands, not caught by the server's own drop-before-sending check", async () => {
+    const { client, sent } = fakeClient();
+    let generation = 0;
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "ok" });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("first question", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => generation,
+      neverCalledWaitForToolResult,
+    );
+    generation++; // a real barge-in landed between the two turns
+    await handleDeepgramMessage(
+      resultsMessage("second question", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => generation,
+      neverCalledWaitForToolResult,
+    );
+
+    expect(sent.filter((m: any) => m.type === "final").map((m: any) => m.generation)).toEqual([0, 1]);
+    expect(sent.filter((m: any) => m.type === "verb").map((m: any) => m.generation)).toEqual([0, 1]);
   });
 
   const getContextWithArchiveBtn = () => ({
@@ -551,8 +588,8 @@ describe("handleDeepgramMessage", () => {
     expect(waitForToolResult).toHaveBeenCalledTimes(1);
     const verbMessages = sent.filter((m: any) => m.type === "verb");
     expect(verbMessages).toEqual([
-      { type: "verb", verb: { verb: "click", target: "archive-btn" } },
-      { type: "verb", verb: { verb: "explain", text: "Done, I archived it." } },
+      { type: "verb", verb: { verb: "click", target: "archive-btn" }, generation: 0 },
+      { type: "verb", verb: { verb: "explain", text: "Done, I archived it." }, generation: 0 },
     ]);
     expect(speakStreamed).toHaveBeenCalledWith("Done, I archived it.");
     // Only the real final answer lands in the connection's own memory —

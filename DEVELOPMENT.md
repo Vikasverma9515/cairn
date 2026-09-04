@@ -4010,6 +4010,91 @@ refreshed to pick this up, same as every entry in this series today.
 
 ---
 
+## Live bug-fix pass: a wire-protocol fix — the client had no way to tell a stale realtime message apart from the current one
+
+The user hit the "two speakers" symptom again, this time entirely
+WITHIN a single realtime call (no typed path involved) — a screenshot
+showing a live call the whole time, with a reply visibly out of order
+relative to its question (an answer with no matching question directly
+before it, an earlier question's real reply showing up attached to a
+LATER question's slot). This is a structurally different bug from every
+earlier entry in this series: not two independent audio pipelines
+racing, but two CONSECUTIVE realtime turns, connected by a barge-in,
+racing each other over the same WebSocket connection.
+
+The real gap: the client's own local barge-in (VAD-triggered energy
+detection, entirely independent of the server) can flip status back to
+"rt-listening" and accept a brand-new utterance — starting a NEW turn,
+a NEW "final" — before an EARLIER turn's own verb/audio message, already
+in flight on the wire at the moment the server processed the barge-in,
+actually arrives at the client. WebSocket guarantees messages arrive IN
+ORDER, but "in order" isn't "still relevant" — the server already had a
+generation-based mechanism (`triggerServerBargeIn`'s `generation`
+counter) to stop a stale message from being SENT in the first place
+(tested and working — see the barge-in test two entries up), but
+nothing stopped an ALREADY-SENT message from being applied once it
+arrived late. The client had no way to know a message belonged to an
+earlier turn than the one it had already moved on to — it just applied
+whatever arrived, in order, to whatever caption was currently showing.
+
+**Built:** a real wire-protocol addition — every `ServerMessage` variant
+that can be superseded by a barge-in (`final`, `verb`, `speaking_start`,
+`audio_chunk`, `speaking_end`, `turn_complete`) now carries the
+server's own `generation` at the moment it was produced (the SAME
+`myGeneration`/`generation` values `triggerServerBargeIn` and
+`speakStreamed` already tracked internally — this just exposes them on
+the wire instead of only using them for the server's own internal
+drop-before-send check). Both client entry points (`index.tsx`'s
+`Copilot`, `web-component.ts`'s custom element) track the generation of
+the most recent `"final"` they've processed and drop any later message
+whose generation is older — the exact mirror of the server's own
+existing `myGeneration !== getGeneration()` pattern, now applied
+client-side too. A message with no `generation` field at all is treated
+as current rather than dropped, additive/backward-compatible against a
+mismatched client/server version pair, the same discipline every prior
+wire-protocol addition in this codebase has followed.
+
+**Tests:** `realtime-server.test.ts` (+1, all 5 existing `generation`-
+bearing message assertions updated for the new required field): a new
+test drives two consecutive turns across a real barge-in (bumping
+`generation` between them) and asserts the `final`/`verb` messages for
+each turn carry `0` and `1` respectively — the exact case the EXISTING
+barge-in test (proving a stale verb never gets sent AT ALL when the
+generation moves on before it's ready) doesn't cover: a message that
+WAS already sent, tagged correctly so a client can still tell it apart
+from the current one after the fact. 519/519 tests pass repo-wide (up
+from 518, +1 new), zero regressions. Full `npm run typecheck` clean
+across all 6 workspaces. `npm run build -w @cairnvibe/sdk` rebuilt
+cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment — traced directly from the user's own screenshot (an
+answer with no matching question, an earlier question's reply
+attached to a later question's slot) and reasoned through the exact
+mechanism (WebSocket ordering vs. relevance, a client-triggered
+barge-in racing an already-in-flight server message), not guessed at.
+Needs the dev server restarted and the browser tab hard-refreshed to
+pick this up, same as every entry in this series today — client AND
+server both changed this time, so BOTH sides of the connection need the
+new code.
+
+**Pending:**
+- `resume_speaking`/`ack`/`error`/`interim` weren't given a `generation`
+  field — `resume_speaking`'s own text already carries the real spoken
+  content and is inherently about "restart the CURRENT turn," `ack` is
+  speculative narration that's harmless even if slightly stale, `error`
+  and `interim` are either terminal or self-correcting on the next
+  message. Scoped deliberately to the six message types that actually
+  drive caption/answer/audio state, not applied blanket-wide.
+- Same fake-timer/fake-fetch test-harness gap noted in every entry in
+  this series applies to the CLIENT-side half of this fix specifically
+  (the generation tracking itself is server-tested; the client's
+  `isStaleRtMessage` drop logic has no automated coverage).
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
