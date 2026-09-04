@@ -33,6 +33,7 @@ import {
   buildSystemPrompt,
   createCriticLLM,
   createPlanLLM,
+  createSpeakerLLM,
   createVerbLLM,
   renderRegisteredActions,
   resolveCritic,
@@ -41,7 +42,7 @@ import {
   type CapabilityTier,
   type CreateCopilotHandlerOptions,
 } from "./server";
-import { DeepgramSpeakStream } from "./tts-stream";
+import { DeepgramSpeakStream, splitFlushableSentences } from "./tts-stream";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
 const DEFAULT_STT_MODEL = "nova-2";
@@ -84,6 +85,8 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   // See finalizeTurn's own doc comment for how they're actually used.
   const planLLM = createPlanLLM(options);
   const criticLLM = createCriticLLM(options);
+  // Phase 2 step 1 — see ConnectionDeps.speakerLLM's own doc comment.
+  const speakerLLM = createSpeakerLLM(options);
   // "text" is optional on highlight/open/navigate/do in the base prompt —
   // fine for the typed/HTTP path, which always has a visible answer area,
   // but silence reads as broken in a live voice conversation (the client
@@ -106,7 +109,7 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on("connection", (client) => {
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability }).catch(
+    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, speakerLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability }).catch(
       (err) => {
         console.error("[cairn realtime] connection error:", err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -134,6 +137,14 @@ export interface ConnectionDeps {
    * real Plan's current task to check against. Optional for the same
    * backward-compatibility reason as planLLM. */
   criticLLM?: ReturnType<typeof createCriticLLM>;
+  /** Phase 2 step 1 — a genuinely unstructured, streamed call kicked off
+   * alongside the FIRST structured resolveVerb call (see finalizeTurn),
+   * so its generation time overlaps with rather than adds to the
+   * structured call's own. Optional, same backward-compatibility reason
+   * as planLLM/criticLLM: absent means every turn keeps today's exact
+   * behavior (speak the structured call's own verb.text, once it
+   * resolves) — this is a real, additive speed path, not a required one. */
+  speakerLLM?: ReturnType<typeof createSpeakerLLM>;
   systemPrompt: string;
   manifest: Manifest;
   registeredActions: string[];
@@ -487,6 +498,66 @@ async function finalizeTurn(
     }
   }
 
+  // Phase 2 step 1 — the speculative Speaker call. Kicked off HERE,
+  // alongside driveAgentLoop itself, deliberately BEFORE the structured
+  // resolveVerb call even starts — not gated on any loop step — so its
+  // generation time genuinely overlaps with the structured call's own
+  // instead of only starting once it's known to be needed. This exists
+  // because a real, live spike against Groq's actual API (see the plan
+  // file's Phase 2 entry) found a FORCED tool call never streams at the
+  // field level even with stream:true — the whole structured object
+  // arrives in one chunk, ~300ms in the spike — while a genuinely
+  // unforced call streams token-by-token.
+  //
+  // OPPORTUNISTIC, never awaited below: `speakerText` starts null and is
+  // filled in by the .then() the moment the call actually finishes,
+  // whenever that happens to be relative to the structured call. A real,
+  // live comparison (see DEVELOPMENT.md) found the two calls run close
+  // enough in wall-clock time that BLINDLY awaiting the speaker call
+  // once eligible (an earlier version of this code did exactly that)
+  // occasionally made a turn SLOWER than the old single-call path
+  // whenever the speaker call happened to be the slower of the two —
+  // the opposite of the point. Reading `speakerText` synchronously
+  // instead — using it only when it's ALREADY there by the time the
+  // structured call (below) resolves — means this path is NEVER slower
+  // than before, and still captures the real win whenever the speaker
+  // call wins the race, which the live spike showed is common. Never
+  // throws: a failed speaker call sets speakerText to "", which the
+  // terminal-outcome handling below treats as "nothing usable" and
+  // falls back to the structured call's own text — this stays a purely
+  // additive, optional path. `firstStepWasTerminal` (set in onStep
+  // below) is what makes this speculative in the first place: only a
+  // genuinely single-step terminal turn (the common case) can safely
+  // use this answer instead of the structured call's own `text` — a
+  // multi-step turn already has the ACK phrase for immediate audio, and
+  // by the time it finishes, this turn-0-only guess is stale relative
+  // to what actually happened across the later steps. `tour` is
+  // explicitly excluded (below, where this is consumed) — its per-step
+  // texts don't map onto one streamed answer.
+  let firstStepWasTerminal = false;
+  // An object wrapper, not a bare `let` — TS narrows a bare `let string |
+  // null` to its literal initial value across this function's own
+  // synchronous control flow, oblivious to the async .then()/.catch()
+  // below actually mutating it later; a property read defeats that
+  // over-narrowing (a real TS gotcha, not a design choice).
+  const speaker: { text: string | null } = { text: null };
+  if (deps.speakerLLM) {
+    deps.speakerLLM
+      .respondStreamed(
+        deps.systemPrompt +
+          `\n\nRespond with ONLY your natural spoken answer to the user's real question below — no verb, no structure, no preamble, just what you'd actually say out loud to them right now.`,
+        transcript,
+        () => {}, // step 1 buffers nothing incrementally — see DEVELOPMENT.md's Phase 2 step 1 entry for why true incremental TTS flushing is deliberately deferred to its own step
+      )
+      .then((text) => {
+        speaker.text = text;
+      })
+      .catch((err) => {
+        console.error("[cairn realtime] speaker call failed — falling back to the structured call's own text:", err);
+        speaker.text = "";
+      });
+  }
+
   // Phase 3 steps 2-3 — kicked off on the SAME lazy gate as the ack
   // above (only once a turn has already revealed it needs more than one
   // step); real Plan/Progress state the Critic (below) actually acts on,
@@ -523,6 +594,12 @@ async function finalizeTurn(
         // of waiting on audio. The agent visibly acts while it's still
         // about to speak, not after.
         safeSend(client, { type: "verb", verb });
+
+        // Phase 2 step 1 — the ONLY thing this needs to record: whether
+        // the loop's FIRST step was already terminal, the one shape
+        // whose text the speculative speakerPromise above can safely
+        // stand in for (see its own doc comment for why).
+        if (terminal && iteration === 0) firstStepWasTerminal = true;
 
         if (!terminal && iteration === 0) {
           // This turn just revealed it needs more than one step — speak a
@@ -641,8 +718,28 @@ async function finalizeTurn(
       // A verb with no spoken text (highlight/navigate/do often have none)
       // still needs to unstick the client's "thinking" state and let the mic
       // resume — turn_complete covers that with no audio path involved.
-      if ("text" in verb && verb.text) {
-        await speakStreamed(verb.text);
+      let textToSpeak = "text" in verb ? (verb.text ?? undefined) : undefined;
+
+      // Phase 2 step 1 — opportunistically swap in the speculative
+      // Speaker call's answer, but ONLY for the one shape it can safely
+      // stand in for, and ONLY if it's already there (see speakerText's
+      // own doc comment for why this never awaits it): this turn's very
+      // first step was ALREADY terminal (result.outcome === "terminal"
+      // alone isn't enough — a multi-step turn also ends up here, just
+      // later, and turn-0's speaker guess would be stale relative to
+      // what really happened — see firstStepWasTerminal's own doc
+      // comment), it isn't "tour" (per-step texts don't map onto one
+      // streamed string), and there was real structured text to begin
+      // with (nothing to replace on a silent highlight/navigate/do). A
+      // still-pending, empty, or failed speaker answer all fall straight
+      // back to the structured call's own text — this substitution can
+      // only ever make the spoken answer faster, never slower or absent.
+      if (firstStepWasTerminal && speaker.text !== null && speaker.text.trim() && verb.verb !== "tour" && textToSpeak) {
+        textToSpeak = speaker.text;
+      }
+
+      if (textToSpeak) {
+        await speakStreamed(textToSpeak);
       } else {
         safeSend(client, { type: "turn_complete" });
       }

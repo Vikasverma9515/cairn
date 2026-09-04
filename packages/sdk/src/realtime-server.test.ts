@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { HistoryTurn, Manifest } from "@cairnvibe/core";
-import type { VerbLLM } from "./server";
+import type { StreamingTextLLM, VerbLLM } from "./server";
 import { handleDeepgramMessage, type ConnectionDeps } from "./realtime-server";
+
+function fakeSpeakerLLM(respondStreamed: StreamingTextLLM["respondStreamed"]): StreamingTextLLM {
+  return { respondStreamed };
+}
 
 const manifest: Manifest = {
   version: "1",
@@ -325,6 +329,172 @@ describe("handleDeepgramMessage", () => {
 
     expect(speakStreamed).toHaveBeenCalledTimes(1);
     expect(speakStreamed).toHaveBeenCalledWith("Quick answer.");
+  });
+
+  // Phase 2 step 1 — the speculative Speaker call. See DEVELOPMENT.md for
+  // the real, live-spiked reason this exists (a forced tool call never
+  // streams at the field level on Groq; a plain, unforced call does and
+  // typically finishes faster).
+  it("Phase 2 step 1: a single-step terminal turn speaks the Speaker call's faster answer instead of the structured call's own text", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Structured call's own slower answer." });
+    const deps = fakeDeps(respond);
+    deps.speakerLLM = fakeSpeakerLLM(async () => "The Speaker call's faster, genuinely streamed answer.");
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("simple question", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      neverCalledWaitForToolResult,
+    );
+
+    expect(speakStreamed).toHaveBeenCalledTimes(1);
+    expect(speakStreamed).toHaveBeenCalledWith("The Speaker call's faster, genuinely streamed answer.");
+  });
+
+  it("Phase 2 step 1: falls back to the structured call's own text when the Speaker call returns nothing usable (empty string)", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Structured call's own answer." });
+    const deps = fakeDeps(respond);
+    deps.speakerLLM = fakeSpeakerLLM(async () => "   "); // whitespace-only — treated as nothing usable
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("simple question", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      neverCalledWaitForToolResult,
+    );
+
+    expect(speakStreamed).toHaveBeenCalledWith("Structured call's own answer.");
+  });
+
+  it("Phase 2 step 1: falls back to the structured call's own text when the Speaker call itself throws — never breaks the turn", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Structured call's own answer." });
+    const deps = fakeDeps(respond);
+    deps.speakerLLM = fakeSpeakerLLM(async () => {
+      throw new Error("speaker provider network blip");
+    });
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await expect(
+      handleDeepgramMessage(
+        resultsMessage("simple question", { isFinal: true, speechFinal: true }),
+        client,
+        deps,
+        getContext,
+        speakStreamed,
+        history,
+        turnState,
+        () => 0,
+        neverCalledWaitForToolResult,
+      ),
+    ).resolves.not.toThrow();
+
+    expect(speakStreamed).toHaveBeenCalledWith("Structured call's own answer.");
+  });
+
+  it("Phase 2 step 1: a 'tour' terminal verb never uses the Speaker call — its own per-step texts don't map onto one streamed answer", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "tour", steps: [{ text: "Step one." }, { text: "Step two." }] });
+    const deps = fakeDeps(respond);
+    let speakerCalled = false;
+    deps.speakerLLM = fakeSpeakerLLM(async () => {
+      speakerCalled = true;
+      return "This should never be spoken for a tour.";
+    });
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("give me a tour", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      neverCalledWaitForToolResult,
+    );
+
+    // tour has no top-level "text" at all, so speakStreamed is never
+    // called directly from the terminal-outcome path either way — the
+    // real assertion here is that the speculative speaker answer was
+    // never the thing spoken (it wasn't spoken at all, by design).
+    expect(speakStreamed).not.toHaveBeenCalledWith("This should never be spoken for a tour.");
+  });
+
+  it("Phase 2 step 1: a multi-step turn never uses turn-0's speculative speaker answer — it would be stale relative to what actually happened", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "read", target: "archive-btn" } : { verb: "explain", text: "The real, final answer after checking." };
+    });
+    const deps = fakeDeps(respond);
+    deps.speakerLLM = fakeSpeakerLLM(async () => "Turn-0's stale speculative guess.");
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("check something then tell me", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(speakStreamed).toHaveBeenCalledWith("The real, final answer after checking.");
+    expect(speakStreamed).not.toHaveBeenCalledWith("Turn-0's stale speculative guess.");
+  });
+
+  it("Phase 2 step 1: no speakerLLM configured means the turn behaves exactly as before — the structured call's own text, unchanged", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Only the structured answer exists." });
+    const deps = fakeDeps(respond); // deps.speakerLLM left unset
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    await handleDeepgramMessage(
+      resultsMessage("simple question", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      neverCalledWaitForToolResult,
+    );
+
+    expect(speakStreamed).toHaveBeenCalledWith("Only the structured answer exists.");
   });
 
   it("Phase 3 step 2: a real Planner call fires exactly once on the first continuing step, fire-and-forget — never delays or changes the turn's real outcome", async () => {

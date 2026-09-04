@@ -411,6 +411,46 @@ export function createPlanLLM(options: CreateCopilotHandlerOptions = {}): VerbLL
   return createToolLLM(options, buildPlanToolSchema(), PLAN_TOOL_NAME, PLAN_TOOL_DESCRIPTION);
 }
 
+/**
+ * Phase 2 step 1 — a genuinely UNSTRUCTURED, streamed call: no tools, no
+ * forced choice, just the model's plain spoken answer to the user's
+ * question, delivered incrementally. Exists because a real, live spike
+ * against Groq's actual API (see DEVELOPMENT.md/the plan file's Phase 2
+ * entry) found that a FORCED tool call never streams at the field level
+ * even with stream:true — the whole structured object arrives in one
+ * chunk. Plain, unforced generation genuinely streams token-by-token on
+ * both providers, and finishes faster besides — this is what makes "LLM
+ * tokens streamed straight into TTS" possible at all.
+ */
+export interface StreamingTextLLM {
+  respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string>;
+}
+
+/** Same real rotation/model-selection logic as createToolLLM, but never
+ * forces a tool — see StreamingTextLLM's own doc comment for why a
+ * genuinely separate factory (not createToolLLM with an empty schema)
+ * is the correct shape here, not a shortcut. */
+export function createSpeakerLLM(options: CreateCopilotHandlerOptions = {}): StreamingTextLLM {
+  const provider = options.provider ?? "anthropic";
+
+  if (provider === "groq") {
+    const rotator = options.apiKeys
+      ? new KeyRotator(options.apiKeys)
+      : options.apiKey
+        ? new KeyRotator([options.apiKey])
+        : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
+    if (!rotator) {
+      throw new Error("createSpeakerLLM: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
+    }
+    const model = options.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
+    return new GroqStreamingTextLLM(rotator, model);
+  }
+
+  const client = new Anthropic({ apiKey: options.apiKey });
+  const model = options.model ?? process.env.CAIRN_RUNTIME_MODEL ?? "claude-opus-5";
+  return new AnthropicStreamingTextLLM(client, model);
+}
+
 // ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
@@ -445,6 +485,41 @@ export class AnthropicVerbLLM implements VerbLLM {
       (block: any): block is Anthropic.ToolUseBlock => block?.type === "tool_use" && block?.name === this.toolName,
     );
     return toolUse?.input;
+  }
+}
+
+/** Minimal shape AnthropicStreamingTextLLM needs — narrow enough to fake in tests (a plain async generator, no real SDK stream class). */
+export interface StreamingMessagesClient {
+  messages: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    create: (params: any) => Promise<AsyncIterable<any>>;
+  };
+}
+
+/** No tools, no tool_choice — see StreamingTextLLM's own doc comment for why plain, unforced generation is what streams. */
+export class AnthropicStreamingTextLLM implements StreamingTextLLM {
+  constructor(
+    private client: StreamingMessagesClient,
+    private model: string,
+  ) {}
+
+  async respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string> {
+    const stream = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 1024,
+      stream: true,
+      system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: userMessage }],
+    });
+
+    let full = "";
+    for await (const event of stream) {
+      if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta" && typeof event.delta.text === "string") {
+        full += event.delta.text;
+        onChunk(event.delta.text);
+      }
+    }
+    return full;
   }
 }
 
@@ -532,6 +607,47 @@ export class GroqVerbLLM implements VerbLLM {
     } catch {
       return undefined;
     }
+  }
+}
+
+/** Minimal shape GroqStreamingTextLLM needs — narrow enough to fake in tests (a plain async generator, no real SDK stream class). */
+export interface GroqLikeStreamingClient {
+  chat: {
+    completions: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      create: (params: any) => Promise<AsyncIterable<any>>;
+    };
+  };
+}
+
+/** No tools, no tool_choice — see StreamingTextLLM's own doc comment for why plain, unforced generation is what streams. No retry-on-hallucinated-tool-name logic here (GroqVerbLLM's own real, live-found bug) — there's no tool to hallucinate the name of. */
+export class GroqStreamingTextLLM implements StreamingTextLLM {
+  constructor(
+    private keys: KeyRotator,
+    private model: string,
+    private clientFactory: (apiKey: string) => GroqLikeStreamingClient = (apiKey) => new Groq({ apiKey }),
+  ) {}
+
+  async respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string> {
+    const client = this.clientFactory(this.keys.take());
+    const stream = await client.chat.completions.create({
+      model: this.model,
+      stream: true,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+    });
+
+    let full = "";
+    for await (const chunk of stream) {
+      const delta = chunk?.choices?.[0]?.delta?.content;
+      if (typeof delta === "string" && delta) {
+        full += delta;
+        onChunk(delta);
+      }
+    }
+    return full;
   }
 }
 

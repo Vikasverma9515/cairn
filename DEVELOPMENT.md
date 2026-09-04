@@ -2413,6 +2413,168 @@ every prior Phase 4 step.
 
 ---
 
+## Phase 2 — real-time voice architecture upgrade
+
+Picked up after Phase 4's data-shapes/dependency-graph work, per the
+plan's own reordering note (Phase 3 first, since it's the architecture
+change; Phase 2 next, since it's the next-highest-priority original
+workstream). Workstream 1 ("make the final answer stream-capable," the
+single biggest latency gap per the real-time-voice primer research) is
+the only one attempted this round — workstreams 2 (client-side fast VAD)
+and 3 (the Talker's persona) are still not started.
+
+### Step 1: the dual-call split — a real, live-spiked design decision, then a real (if honestly modest) latency fix
+
+**Design research, not a guess:** the plan's own text left three options
+open ((a) reorder the tool schema and parse partial JSON, (b) split into
+two calls, (c) investigate Groq's actual streaming behavior first) and
+explicitly asked for "its own short design spike, not a guess." Ran one,
+against the REAL Groq API, using the exact forced-tool-call shape
+`GroqVerbLLM` already sends:
+- A forced `tool_choice` call with `stream: true` (Cairn's actual shape)
+  produced 34 empty chunks, then the ENTIRE arguments JSON in ONE chunk
+  (301ms total) — Groq buffers a forced tool call server-side and
+  delivers it atomically even with streaming requested. Rules out option
+  (a) outright: there's no partial delivery to parse.
+- The identical question with no tools, and again with `tool_choice:
+  "auto"` (tools available, not forced), both genuinely streamed token-
+  by-token: 82 and 84 content-bearing chunks, first content at 6ms and
+  46ms, full completion in 87ms and 221ms.
+- **Conclusion, backed by evidence: option (b), the dual-call split, is
+  the only viable path.** Written into the plan file's Phase 2 entry
+  before any code was touched, same discipline as every other Phase 3/4
+  design decision this session.
+
+**Built:**
+- `StreamingTextLLM` (`packages/sdk/src/server.ts`) — a genuinely
+  unstructured, streamed call: no tools, no forced choice, just the
+  model's plain spoken answer, delivered incrementally via an `onChunk`
+  callback. Two implementations, `AnthropicStreamingTextLLM` (Anthropic's
+  standard `stream: true` Messages API, `content_block_delta`/
+  `text_delta` events) and `GroqStreamingTextLLM` (Groq's own OpenAI-
+  compatible `delta.content` chunks) — plus `createSpeakerLLM(options)`,
+  a provider-selecting factory mirroring `createToolLLM`'s exact real
+  rotation/model-selection logic.
+- `splitFlushableSentences(buffer)` (`packages/sdk/src/tts-stream.ts`) —
+  a pure, deliberately simple sentence-boundary detector: a period/!/?
+  followed by REAL whitespace that has already arrived, never at the
+  buffer's current end (a decimal like "$3." could still be ".50
+  dollars" one chunk later — tested explicitly). Built and tested now
+  even though this step's own orchestration doesn't call it yet (see
+  Pending) — the real, reusable building block Step 2 needs.
+- `ConnectionDeps.speakerLLM` (optional, `realtime-server.ts`) — a
+  speculative Speaker call kicked off in `finalizeTurn`, deliberately
+  BEFORE `driveAgentLoop` even starts, so its generation time genuinely
+  overlaps with the structured `resolveVerb` call's own instead of
+  starting only once it's known to be needed. `firstStepWasTerminal`
+  (set in `onStep`) gates whether it's even eligible to be used — only a
+  genuinely single-step terminal turn (the common case) can safely swap
+  in this speculative answer; a multi-step turn's guess would be stale
+  by the time the REAL final answer is known, and is simply discarded
+  (the ACK phrase already covers that turn's immediate audio need).
+  `tour` is explicitly excluded — its per-step texts don't map onto one
+  streamed string.
+- **A real bug found and fixed via live testing, not left in**: the
+  first version of this code unconditionally `await`ed the speaker
+  promise once eligible. A live, real-Groq timing comparison (both calls
+  given Cairn's actual, full system prompt — not the bare-bones spike
+  prompt above) showed the two calls finish close enough in wall-clock
+  time that blindly awaiting the speaker call was occasionally SLOWER
+  than the old single-call path, whenever the speaker call happened to
+  be the slower of the two — the opposite of the point. Fixed by making
+  the read OPPORTUNISTIC: a `{text: string | null}` wrapper object (a
+  bare `let` gets over-narrowed by TS across the async closures that
+  mutate it — a real, documented gotcha, not a style choice) is filled
+  in by the speaker call's own `.then()`, and the terminal-outcome
+  handling reads it SYNCHRONOUSLY, never awaiting — using it only when
+  it's ALREADY there by the time the structured call resolves. This
+  makes the path provably non-regressive: it can only ever match or beat
+  the old latency, never add a wait the old path didn't already have.
+
+**Tests:**
+- `tts-stream.test.ts` (new, 8 tests): `splitFlushableSentences`'
+  boundary detection, including the decimal-number false-positive case
+  explicitly (`"$3."` → nothing flushed; `"$3.50, thanks"` → still
+  nothing flushed, correctly), multi-sentence buffers, `!`/`?`, and an
+  idempotent-reconstruction check (nothing dropped between `toFlush` and
+  `remainder`).
+- `server.test.ts` (+11): both streaming LLM classes tested with fake
+  async-generator clients (matching this file's existing
+  `capturingFakeLLM` convention) — incremental chunk delivery, ignoring
+  non-text stream events, and confirming `stream: true` with NO
+  `tools`/`tool_choice` at all is what's actually sent (the real,
+  live-spiked reason this call shape exists); `createSpeakerLLM`'s
+  provider selection and its clear error when Groq has no keys.
+- `realtime-server.test.ts` (+6): a single-step terminal turn speaks the
+  Speaker call's text instead of the structured call's own; falls back
+  to the structured text on an empty/whitespace-only speaker answer;
+  falls back (never throws) when the speaker call itself errors; `tour`
+  never uses the speaker path; a multi-step turn never uses turn-0's
+  stale speculative guess (asserts the REAL final answer is what gets
+  spoken, and the stale guess explicitly is NOT); no `speakerLLM`
+  configured behaves exactly as before (existing `ConnectionDeps`
+  construction, and all 16 pre-existing tests, re-ran completely
+  unmodified and passed — zero regressions on the baseline path).
+- Full regression gate: 426/426 tests pass repo-wide (up from 404), zero
+  regressions. Full `npm run typecheck` clean across all 6 workspaces.
+
+**Live-verified:** ran the ACTUAL `handleDeepgramMessage` (not a unit
+test of a piece in isolation) with REAL `createVerbLLM`/`createSpeakerLLM`
+Groq instances racing against each other, against a real manifest, for a
+real question ("What is the invoices page for?"). Confirmed the spoken
+text differed from the structured call's own text — direct proof the
+substitution mechanism fires correctly end to end against the real API,
+not just in mocks. Then ran a real, honest timing comparison — 3 runs
+each of the old single-call path and the new dual-call path, same
+question, real network calls both times:
+- Without the Speaker call: 514–703ms to `speakStreamed()`.
+- With the Speaker call (after the opportunistic-read fix): 648–842ms.
+**Honest finding, not oversold**: with Cairn's real, full system prompt
+(verb instructions, manifest context — much longer than the bare-bones
+prompt in the initial design-spike), the structured and Speaker calls'
+generation times are close enough that this specific comparison didn't
+show a dramatic win, though the ranges overlap and the fix's real,
+provable guarantee (never worse than baseline) held across every run.
+The bigger, more RELIABLE latency win — not dependent on which call
+happens to finish first — is Step 2 (see Pending): true incremental
+`sendText`/`flush` streaming into TTS, which removes waiting for either
+call's FULL completion rather than just racing two full completions
+against each other. Scratch scripts deleted after use, same convention
+as every prior live check this session.
+
+**Pending:**
+- **True incremental TTS streaming (Step 2)** — `splitFlushableSentences`
+  is built and tested but not yet wired into `finalizeTurn`; today's
+  orchestration `await`s the Speaker call's FULL text (opportunistically,
+  never blocking past the structured call) rather than flushing complete
+  sentences into `DeepgramSpeakStream.sendText()`/`flush()` as they
+  stream in. This is the actual "LLM tokens streamed straight into TTS"
+  the plan asks for, and the bigger, more reliable win — deliberately
+  NOT attempted in this same step: it needs its own careful concurrency
+  design (ensuring at most one Deepgram flush is ever in flight at a
+  time, since out-of-order Flushed confirmations were a real, considered
+  risk with no way to verify Deepgram's actual ordering guarantees
+  without live audio) and its own live verification, which is honestly
+  harder to get right than the change shipped here.
+- No live VOICE-CALL verification (real mic input, real Deepgram STT,
+  real audio playback) — the live check above exercised the real LLM
+  race and the real orchestration logic end to end, but not real audio
+  I/O. Same disproportionate-setup reasoning already established for
+  Phase 3's realtime steps, not re-litigated here.
+- Workstream 2 (client-side fast VAD for barge-in) and workstream 3 (the
+  Talker's actual persona) — not started.
+- The typed/HTTP transport has no Speaker-call equivalent — it's a
+  realtime-voice-specific latency concern (a slow-to-render answer isn't
+  a "silence" problem on a typed UI the way it is over voice), so this
+  wasn't extended there; not a gap, a deliberate scope match.
+
+**Failed:** an earlier version of this step's design (blindly awaiting
+the speaker promise once eligible) was live-tested, found to
+occasionally be a real regression, and fixed before being called done —
+not shipped and found later. Documented under Built, not hidden.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

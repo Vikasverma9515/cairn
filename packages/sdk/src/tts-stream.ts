@@ -21,6 +21,36 @@ import { WebSocket } from "ws";
 
 const DEEPGRAM_SPEAK_WS_URL = "wss://api.deepgram.com/v1/speak";
 
+/**
+ * Phase 2 step 1 — the sentence-boundary detector behind true "LLM tokens
+ * streamed straight into TTS." `sendText`/`flush` below already support
+ * being called many times per turn (queue more, render what's queued so
+ * far) — the missing piece was WHEN to flush a growing buffer of
+ * streamed LLM text so audio starts before the whole answer finishes
+ * generating, without cutting off mid-word or (the real trap) mid-number
+ * ("3." from "3.5 dollars").
+ *
+ * Deliberately simple: a period/!/? followed by REAL whitespace that has
+ * already arrived — never a boundary at the current end of the buffer,
+ * even if it looks sentence-final ("...3." with nothing after it yet),
+ * because more streamed text (".5 dollars") could still be on the way.
+ * The caller flushes whatever's left in the buffer once the LLM stream
+ * itself ends, regardless of trailing punctuation — real content is
+ * never silently dropped, just possibly not maximally chunked. This is
+ * a real, accepted simplification, not NLP-grade sentence detection: an
+ * abbreviation like "Mr. Smith" flushes one beat early. That costs a
+ * little TTS naturalness, never correctness — nothing in the text is
+ * lost or reordered.
+ */
+export function splitFlushableSentences(buffer: string): { toFlush: string; remainder: string } {
+  const re = /[.!?]\s+/g;
+  let lastEnd = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(buffer)) !== null) lastEnd = re.lastIndex;
+  if (lastEnd === -1) return { toFlush: "", remainder: buffer };
+  return { toFlush: buffer.slice(0, lastEnd).trimEnd(), remainder: buffer.slice(lastEnd) };
+}
+
 export type SpeakChunkCallback = (audio: Buffer) => void;
 
 export interface DeepgramSpeakStreamOptions {

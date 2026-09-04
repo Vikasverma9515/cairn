@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { VerbResponseSchema, type Manifest, type Task } from "@cairnvibe/core";
 import {
+  AnthropicStreamingTextLLM,
   AnthropicVerbLLM,
+  GroqStreamingTextLLM,
   GroqVerbLLM,
   buildVerbToolSchema,
   createCopilotHandlerWithLLM,
+  createSpeakerLLM,
   renderRegisteredActions,
   resolveCritic,
   resolvePlan,
   type GroqLikeClient,
+  type GroqLikeStreamingClient,
   type MessagesClient,
+  type StreamingMessagesClient,
   type VerbLLM,
 } from "./server";
 import { KeyRotator } from "./key-rotator";
@@ -851,6 +856,111 @@ describe("GroqVerbLLM", () => {
     expect(seenTools[0].function.name).toBe("create_plan");
     expect(seenTools[0].function.description).toBe("Submit a plan.");
     expect(seenToolChoice).toEqual({ type: "function", function: { name: "create_plan" } });
+  });
+});
+
+// Phase 2 step 1 — a real, live spike against Groq's actual API (see
+// DEVELOPMENT.md) found a forced tool call never streams at the field
+// level even with stream:true; plain, unforced generation genuinely
+// streams token-by-token. These two classes are that plain call.
+describe("AnthropicStreamingTextLLM", () => {
+  it("streams text_delta events incrementally and returns the full accumulated text", async () => {
+    async function* fakeEvents() {
+      yield { type: "content_block_delta", delta: { type: "text_delta", text: "Hello" } };
+      yield { type: "content_block_delta", delta: { type: "text_delta", text: " world" } };
+      yield { type: "message_stop" };
+    }
+    const fakeClient: StreamingMessagesClient = { messages: { create: async () => fakeEvents() } };
+    const llm = new AnthropicStreamingTextLLM(fakeClient, "claude-opus-5");
+    const chunks: string[] = [];
+    const full = await llm.respondStreamed("system", "user", (d) => chunks.push(d));
+    expect(chunks).toEqual(["Hello", " world"]);
+    expect(full).toBe("Hello world");
+  });
+
+  it("ignores non-text-delta stream events (content_block_start, message_delta, ...) without crashing", async () => {
+    async function* fakeEvents() {
+      yield { type: "content_block_start", content_block: { type: "text" } };
+      yield { type: "content_block_delta", delta: { type: "text_delta", text: "ok" } };
+      yield { type: "message_delta", delta: { stop_reason: "end_turn" } };
+    }
+    const fakeClient: StreamingMessagesClient = { messages: { create: async () => fakeEvents() } };
+    const llm = new AnthropicStreamingTextLLM(fakeClient, "claude-opus-5");
+    await expect(llm.respondStreamed("system", "user", () => {})).resolves.toBe("ok");
+  });
+
+  it("sends stream:true and no tools/tool_choice at all — the genuinely unforced call the live spike showed actually streams", async () => {
+    let seenParams: any;
+    async function* empty() {}
+    const fakeClient: StreamingMessagesClient = {
+      messages: {
+        create: async (params) => {
+          seenParams = params;
+          return empty();
+        },
+      },
+    };
+    const llm = new AnthropicStreamingTextLLM(fakeClient, "claude-opus-5");
+    await llm.respondStreamed("system", "user", () => {});
+    expect(seenParams.stream).toBe(true);
+    expect(seenParams.tools).toBeUndefined();
+    expect(seenParams.tool_choice).toBeUndefined();
+  });
+});
+
+describe("GroqStreamingTextLLM", () => {
+  it("streams delta.content chunks incrementally and returns the full accumulated text", async () => {
+    async function* fakeChunks() {
+      yield { choices: [{ delta: { content: "Hello" } }] };
+      yield { choices: [{ delta: { content: " world" } }] };
+      yield { choices: [{ delta: {} }] }; // a role-only/finish chunk with no content delta — must not crash or append "undefined"
+    }
+    const fakeClient: GroqLikeStreamingClient = { chat: { completions: { create: async () => fakeChunks() } } };
+    const llm = new GroqStreamingTextLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", () => fakeClient);
+    const chunks: string[] = [];
+    const full = await llm.respondStreamed("system", "user", (d) => chunks.push(d));
+    expect(chunks).toEqual(["Hello", " world"]);
+    expect(full).toBe("Hello world");
+  });
+
+  it("sends stream:true and no tools/tool_choice at all — the genuinely unforced call the live spike showed actually streams", async () => {
+    let seenParams: any;
+    async function* empty() {}
+    const fakeClient: GroqLikeStreamingClient = {
+      chat: {
+        completions: {
+          create: async (params) => {
+            seenParams = params;
+            return empty();
+          },
+        },
+      },
+    };
+    const llm = new GroqStreamingTextLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", () => fakeClient);
+    await llm.respondStreamed("system", "user", () => {});
+    expect(seenParams.stream).toBe(true);
+    expect(seenParams.tools).toBeUndefined();
+    expect(seenParams.tool_choice).toBeUndefined();
+  });
+});
+
+describe("createSpeakerLLM", () => {
+  it("defaults to the anthropic provider", () => {
+    expect(createSpeakerLLM({ apiKey: "fake-key" })).toBeInstanceOf(AnthropicStreamingTextLLM);
+  });
+
+  it("builds a Groq-backed instance when provider is 'groq'", () => {
+    expect(createSpeakerLLM({ provider: "groq", apiKey: "fake-key" })).toBeInstanceOf(GroqStreamingTextLLM);
+  });
+
+  it("throws a clear error for provider 'groq' with no keys available", () => {
+    const originalEnv = process.env.GROQ_API_KEYS;
+    delete process.env.GROQ_API_KEYS;
+    try {
+      expect(() => createSpeakerLLM({ provider: "groq" })).toThrow(/needs apiKey/);
+    } finally {
+      if (originalEnv !== undefined) process.env.GROQ_API_KEYS = originalEnv;
+    }
   });
 });
 
