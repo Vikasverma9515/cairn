@@ -879,21 +879,83 @@ describe("GroqVerbLLM", () => {
     expect(attempt).toBe(1);
   });
 
-  it("does NOT retry (propagates immediately) for an unrelated error — only output_parse_failed/tool_use_failed-hallucination get the one-time retry", async () => {
+  it("does NOT retry (propagates immediately) for an unrelated error", async () => {
     let attempt = 0;
     const fakeClient: GroqLikeClient = {
       chat: {
         completions: {
           create: async () => {
             attempt++;
-            throw new Error("429 rate limit exceeded");
+            throw new Error("500 internal server error");
           },
         },
       },
     };
     const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
-    await expect(llm.respond("system", "user")).rejects.toThrow("429 rate limit exceeded");
+    await expect(llm.respond("system", "user")).rejects.toThrow("500 internal server error");
     expect(attempt).toBe(1);
+  });
+
+  it("with only one key configured, a rate-limit error propagates immediately — there's no other key to fall back to", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            const err: any = new Error('429 {"error":{"code":"rate_limit_exceeded"}}');
+            err.status = 429;
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).rejects.toThrow("rate_limit_exceeded");
+    expect(attempt).toBe(1);
+  });
+
+  it("real fix for a live-reported bug (\"use another key if one fails\"): a rate-limit error on one key retries on the NEXT configured key and succeeds", async () => {
+    const seenKeys: string[] = [];
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { tool_calls: [{ function: { name: "x", arguments: JSON.stringify({ verb: "explain", text: "ok" }) } }] } }],
+          }),
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["key-a", "key-b"]), "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      if (key === "key-a") {
+        const err: any = new Error("429");
+        err.status = 429;
+        throw err;
+      }
+      return fakeClient;
+    });
+    await expect(llm.respond("s", "u")).resolves.toEqual({ verb: "explain", text: "ok" });
+    expect(seenKeys).toEqual(["key-a", "key-b"]);
+  });
+
+  it("exhausts every configured key on persistent rate-limiting, then throws the last error — never retries more times than there are keys", async () => {
+    let attempts = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempts++;
+            const err: any = new Error("429");
+            err.status = 429;
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["key-a", "key-b", "key-c"]), "m", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("s", "u")).rejects.toThrow("429");
+    expect(attempts).toBe(3);
   });
 
   it("round-robins across multiple keys", async () => {
@@ -1021,6 +1083,60 @@ describe("GroqStreamingTextLLM", () => {
     expect(seenParams.stream).toBe(true);
     expect(seenParams.tools).toBeUndefined();
     expect(seenParams.tool_choice).toBeUndefined();
+  });
+
+  it("a rate-limit error on the request itself (before any chunk streams) retries on the next configured key and succeeds", async () => {
+    const seenKeys: string[] = [];
+    async function* fakeChunks() {
+      yield { choices: [{ delta: { content: "recovered" } }] };
+    }
+    const llm = new GroqStreamingTextLLM(new KeyRotator(["key-a", "key-b"]), "m", (key) => {
+      seenKeys.push(key);
+      return {
+        chat: {
+          completions: {
+            create: async () => {
+              if (key === "key-a") {
+                const err: any = new Error("429");
+                err.status = 429;
+                throw err;
+              }
+              return fakeChunks();
+            },
+          },
+        },
+      };
+    });
+    const chunks: string[] = [];
+    const full = await llm.respondStreamed("s", "u", (d) => chunks.push(d));
+    expect(seenKeys).toEqual(["key-a", "key-b"]);
+    expect(full).toBe("recovered");
+    expect(chunks).toEqual(["recovered"]);
+  });
+
+  it("never retries a mid-stream failure — even a rate-limit-shaped one — once a real chunk already reached the caller, so output is never duplicated", async () => {
+    let attempts = 0;
+    async function* failsAfterOneChunk() {
+      yield { choices: [{ delta: { content: "partial" } }] };
+      const err: any = new Error("429");
+      err.status = 429;
+      throw err;
+    }
+    const fakeClient: GroqLikeStreamingClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempts++;
+            return failsAfterOneChunk();
+          },
+        },
+      },
+    };
+    const llm = new GroqStreamingTextLLM(new KeyRotator(["key-a", "key-b"]), "m", () => fakeClient);
+    const chunks: string[] = [];
+    await expect(llm.respondStreamed("s", "u", (d) => chunks.push(d))).rejects.toThrow("429");
+    expect(chunks).toEqual(["partial"]); // delivered once, never re-emitted
+    expect(attempts).toBe(1); // no retry attempted once a chunk had already gone out
   });
 });
 

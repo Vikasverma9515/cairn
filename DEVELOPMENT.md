@@ -3612,6 +3612,100 @@ currently-running orphaned session before re-testing.
 
 ---
 
+## Live bug-fix pass: real key failover on rate-limiting ("if one fails, use another")
+
+Direct follow-up to the previous entry's root cause 1 (Groq daily-quota
+exhaustion) — the user's own explicit ask, having configured multiple
+Groq API keys (`GROQ_API_KEYS`, comma-separated) specifically for this.
+Investigated before assuming it was missing: `KeyRotator`
+(`packages/sdk/src/key-rotator.ts`) already existed and was already
+wired into every Groq call site (`GroqVerbLLM`, `GroqStreamingTextLLM`
+in `server.ts`) — but re-reading it found it does blind, unconditional
+round-robin (`take()` just advances on every call, success or failure),
+not failover. It spreads LOAD across keys ahead of time; it does nothing
+when a call actually fails — a request that lands on an already-
+exhausted key just fails, full stop, regardless of how many OTHER keys
+are configured. That gap is the literal cause of the previous entry's
+still-failing calls even with multiple keys configured.
+
+**Built:**
+- `key-rotator.ts` (+1): a `get size()` getter — how many distinct keys
+  are configured, so a retry loop knows how many times is actually worth
+  trying before giving up (no point cycling past the number of real
+  keys).
+- `server.ts`'s `GroqVerbLLM.respond`: rewritten around a bounded retry
+  loop combining TWO independent, real retry policies — the existing
+  one-time retry for a transient tool-call parse/hallucination failure
+  (unchanged: exactly one retry, regardless of key count, since it's
+  unrelated to which key was used), plus a NEW rate-limit retry that
+  fires on a genuine 429/`rate_limit_exceeded` error and tries again —
+  `KeyRotator.take()` already advances per call, so the retry naturally
+  lands on the NEXT configured key. Bounded to `keys.size` total
+  attempts; with only one key configured this never fires (nothing else
+  to fall back to) — identical behavior to before this existed.
+- `server.ts`'s `GroqStreamingTextLLM.respondStreamed`: same rate-limit-
+  retry-on-next-key policy, with one extra real safety condition this
+  path needs that the non-streaming call doesn't: a stream can fail
+  AFTER already delivering real chunks to the caller via `onChunk`.
+  Retrying in that case would re-emit a stream from the start and
+  duplicate output the caller already received — so a retry is only
+  ever attempted when NO chunk has been emitted yet for the current
+  attempt. In practice a 429 always arrives on the initial request,
+  before any chunk streams, so this never blocks the real case; it's a
+  correctness guard for the theoretical mid-stream case, not dead code.
+- `isRateLimitError()` (new, alongside the existing
+  `isRetryableToolCallFailure()`): same defensive, multi-shape checking
+  approach — Groq's SDK doesn't export a stable error type to check
+  against, so this checks `.status === 429`, a couple of `.code`/
+  `.error.code`/`.error.error.code` nesting depths, and a message-
+  substring fallback, rather than depending on exactly one shape. The
+  doubly-nested `.error.error.code` shape is the REAL one confirmed live
+  in the demo-app's own dev-server terminal output from the previous
+  entry's investigation.
+
+**Tests:** `server.test.ts` (+5): with only one key configured, a
+real-shaped rate-limit error (`.status = 429`) still propagates
+immediately (no other key to try — matches pre-existing behavior,
+replacing an older, less accurately-shaped test that used the same
+scenario to test something else); a rate-limit error on the first of
+two configured keys retries on the second key and succeeds (the direct
+fix for the reported bug); persistent rate-limiting across three
+configured keys exhausts exactly three attempts, then throws — never
+more retries than there are real keys; the streaming variant retries
+across keys the same way when the failure is on the initial request;
+and — the one genuinely novel case worth its own test — a mid-stream
+failure that arrives AFTER a real chunk was already delivered to the
+caller is never retried, proving output can't be duplicated even for a
+rate-limit-shaped error once streaming has actually started. 517/517
+tests pass repo-wide (up from 512, +5 new), zero regressions. Full `npm
+run typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against the real, currently-exhausted
+Groq key from this environment (would need the demo app's dev server
+restarted to load the rebuilt `dist/`, and a real second account's key
+to prove failover against actual live rate-limiting — the fix is
+implemented and unit-tested against the exact real error shape observed
+in the demo-app's own terminal output from the previous entry, not
+guessed at).
+
+**Pending:**
+- Scoped to the runtime/conversation LLM calls (`packages/sdk/src/
+  server.ts`) only — `packages/indexer/src/key-rotator.ts` (the
+  separate, build-time L3 describe-pass rotator) has the identical blind-
+  round-robin-only gap and would benefit from the same fix, but that's a
+  different call site (a batch build step, not a live conversation) and
+  wasn't part of what was reported broken here — a real, honest scope
+  boundary, not an oversight.
+- The realtime relay process currently running against the demo app
+  loads `dist/` at startup — this fix needs the dev server restarted to
+  take effect; a rebuild alone doesn't hot-swap already-loaded Node
+  modules in a long-running process.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

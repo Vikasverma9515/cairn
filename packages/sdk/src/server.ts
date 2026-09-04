@@ -596,32 +596,54 @@ export class GroqVerbLLM implements VerbLLM {
   ) {}
 
   async respond(systemPrompt: string, userMessage: string): Promise<unknown> {
-    try {
-      return await this.attemptRespond(systemPrompt, userMessage);
-    } catch (err) {
-      // Real, live bugs, not theoretical — two distinct non-deterministic
-      // failure modes from openai/gpt-oss-120b (a reasoning-capable open
-      // model), both rejected by Groq's own server-side validation before
-      // this code ever sees a real response to work with, and both found
-      // to recover cleanly on an identical retry a moment later:
-      //  - "output_parse_failed": the model "thinks out loud" in plain
-      //    prose instead of emitting the forced tool call.
-      //  - "tool_use_failed": the model hallucinates a slightly-wrong tool
-      //    name ("json", "response_with_verb" — seen live, both against
-      //    the real, correctly-configured VERB_TOOL_NAME) instead of the
-      //    one forced tool it was actually given. This one was the actual
-      //    cause behind a real "voice keeps breaking" report — found live
-      //    running the new eval harness's synthetic-voice scenario, where
-      //    it surfaced as "Something went wrong on my end" with no other
-      //    symptom, exactly matching what got reported.
-      // One retry — not exponential backoff, this is a latency-sensitive
-      // voice/chat path — genuinely helps rather than just delaying the
-      // same failure. Anything else still propagates to resolveVerb's own
-      // catch, unchanged.
-      if (isRetryableToolCallFailure(err)) {
+    // Two independent, real retry policies, combined in one loop:
+    //  - Rate-limit (429): retried on a DIFFERENT configured key, up to
+    //    once per distinct key. Found live — a Groq account's own daily
+    //    token quota exhausting mid-session doesn't mean every OTHER
+    //    configured account/key is also exhausted; KeyRotator.take()
+    //    already advances on every call, so simply retrying reaches a
+    //    different key automatically. With only one key configured this
+    //    never fires (nothing else to fall back to) — same behavior as
+    //    before this existed.
+    //  - Tool-call failure (see below): exactly one retry, regardless of
+    //    key count — unrelated to which key was used.
+    const maxRateLimitAttempts = Math.max(this.keys.size, 1);
+    let rateLimitAttempts = 0;
+    let usedToolCallRetry = false;
+
+    for (;;) {
+      try {
         return await this.attemptRespond(systemPrompt, userMessage);
+      } catch (err) {
+        if (isRateLimitError(err) && rateLimitAttempts < maxRateLimitAttempts - 1) {
+          rateLimitAttempts++;
+          continue;
+        }
+        // Real, live bugs, not theoretical — two distinct non-deterministic
+        // failure modes from openai/gpt-oss-120b (a reasoning-capable open
+        // model), both rejected by Groq's own server-side validation before
+        // this code ever sees a real response to work with, and both found
+        // to recover cleanly on an identical retry a moment later:
+        //  - "output_parse_failed": the model "thinks out loud" in plain
+        //    prose instead of emitting the forced tool call.
+        //  - "tool_use_failed": the model hallucinates a slightly-wrong tool
+        //    name ("json", "response_with_verb" — seen live, both against
+        //    the real, correctly-configured VERB_TOOL_NAME) instead of the
+        //    one forced tool it was actually given. This one was the actual
+        //    cause behind a real "voice keeps breaking" report — found live
+        //    running the new eval harness's synthetic-voice scenario, where
+        //    it surfaced as "Something went wrong on my end" with no other
+        //    symptom, exactly matching what got reported.
+        // One retry — not exponential backoff, this is a latency-sensitive
+        // voice/chat path — genuinely helps rather than just delaying the
+        // same failure. Anything else still propagates to resolveVerb's own
+        // catch, unchanged.
+        if (isRetryableToolCallFailure(err) && !usedToolCallRetry) {
+          usedToolCallRetry = true;
+          continue;
+        }
+        throw err;
       }
-      throw err;
     }
   }
 
@@ -675,25 +697,46 @@ export class GroqStreamingTextLLM implements StreamingTextLLM {
   ) {}
 
   async respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string> {
-    const client = this.clientFactory(this.keys.take());
-    const stream = await client.chat.completions.create({
-      model: this.model,
-      stream: true,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-    });
+    // Same rate-limit-retries-on-a-different-key policy as GroqVerbLLM.respond
+    // (see its own doc comment). The one thing this path has to guard against
+    // that the non-streaming call doesn't: a real chunk already having
+    // reached the caller via onChunk before something fails mid-stream — a
+    // 429 always arrives on the initial request, before any chunk streams,
+    // so retrying is only ever attempted when nothing has been emitted yet;
+    // a genuinely different mid-stream failure is never retried, since doing
+    // so would duplicate output already sent.
+    const maxAttempts = Math.max(this.keys.size, 1);
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let emittedAnyChunk = false;
+      try {
+        const client = this.clientFactory(this.keys.take());
+        const stream = await client.chat.completions.create({
+          model: this.model,
+          stream: true,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage },
+          ],
+        });
 
-    let full = "";
-    for await (const chunk of stream) {
-      const delta = chunk?.choices?.[0]?.delta?.content;
-      if (typeof delta === "string" && delta) {
-        full += delta;
-        onChunk(delta);
+        let full = "";
+        for await (const chunk of stream) {
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta) {
+            full += delta;
+            emittedAnyChunk = true;
+            onChunk(delta);
+          }
+        }
+        return full;
+      } catch (err) {
+        lastErr = err;
+        if (!emittedAnyChunk && isRateLimitError(err) && attempt < maxAttempts - 1) continue;
+        throw err;
       }
     }
-    return full;
+    throw lastErr;
   }
 }
 
@@ -714,6 +757,21 @@ function isRetryableToolCallFailure(err: unknown): boolean {
   // was found.
   if (code === "tool_use_failed" && message.includes("attempted to call tool")) return true;
   return false;
+}
+
+/** Same defensive-shape-checking approach as isRetryableToolCallFailure —
+ * the real error observed live (see DEVELOPMENT.md) is a thrown APIError
+ * with `.status === 429` and a doubly-nested `.error.error.code ===
+ * "rate_limit_exceeded"`, but checks a couple of shallower shapes too
+ * rather than depending on exactly that nesting. */
+function isRateLimitError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; code?: unknown; error?: { code?: unknown; error?: { code?: unknown } }; message?: unknown };
+  if (e.status === 429) return true;
+  const code = e.code ?? e.error?.code ?? e.error?.error?.code;
+  if (code === "rate_limit_exceeded") return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("rate_limit_exceeded") || message.includes("Rate limit reached");
 }
 
 // ---------------------------------------------------------------------------

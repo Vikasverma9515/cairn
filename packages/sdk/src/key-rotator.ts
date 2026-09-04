@@ -26,4 +26,11 @@ export class KeyRotator {
     this.next += 1;
     return key;
   }
+
+  /** How many distinct keys are configured — callers use this to bound a
+   * rate-limit retry loop (no point trying more times than there are
+   * actual keys to fall back to). */
+  get size(): number {
+    return this.keys.length;
+  }
 }
