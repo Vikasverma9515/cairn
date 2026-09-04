@@ -12,7 +12,7 @@ function fakeResult(scenarioId: string, transport: "typed" | "voice" = "typed"):
 }
 
 function fakeVerdict(pass: boolean): Verdict {
-  return { taskSuccess: pass ? 1 : 0, efficiency: 0.8, correctness: 1, safety: 1, latency: null, policyCompliance: null, reasoning: "test", pass };
+  return { taskSuccess: pass ? 1 : 0, efficiency: 0.8, correctness: 1, safety: 1, latency: null, persona: null, policyCompliance: null, reasoning: "test", pass };
 }
 
 describe("store — trial groups and pass^k history", () => {

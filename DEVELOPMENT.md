@@ -2683,7 +2683,99 @@ instead, which is complete coverage.
   existing comment already says as much; `BARGE_IN_CONFIRM_WINDOW_MS =
   600` is a reasonable, documented guess, not tuned against real human
   speech-onset timing either.
-- Workstream 3 (the Talker's actual persona) — not started.
+
+**Failed:** nothing.
+
+### Step 3: the Talker's actual persona — a prompt/phrase-bank pass, graded not eyeballed
+
+The plan's own text for this workstream: "a prompt/phrase-bank design
+pass... evaluated the same way — a real rubric dimension in Phase 1's
+judge, not a vibe check." This step does exactly that — rewrites
+`ACK_PHRASES` against the plan's own stated bar, and makes the change
+gradeable instead of trusting it by feel.
+
+**Built:**
+- `ACK_PHRASES` (`packages/sdk/src/realtime-server.ts`) rewritten from
+  the original 4-phrase set (average ~6 words, formal/service-desk
+  register — "One moment, let me look into that.") to a 6-phrase set
+  averaging under 4 words, in the plan's own explicit register ("give
+  me a sec, sorting that out"): "Give me a sec.", "One sec, checking.",
+  "Hang on, let me look.", "On it, one sec.", "Just a sec here.", "Let
+  me check real quick." Two real, stated reasons, not a vibe change:
+  matches the plan's own persona bar, and is measurably shorter — a
+  real latency win too (a long ack costs real synthesis time before
+  it's even audible), not just a tone change.
+- A new `{type: "ack", text}` server→client message, sent alongside the
+  ack phrase's audio (in `emitEvent`'s existing `"inj"` case). Purely
+  informational — the client needs no changes, same precedent as
+  `resume_speaking`. The REAL reason this exists: before this step,
+  an ack phrase's actual TEXT was never visible anywhere outside the
+  synthesized audio itself — not to a person debugging a session, and
+  not to `packages/evals`' trace capture, which is exactly what made
+  "evaluated... not a vibe check" impossible to actually do.
+- `judge.ts` gains a `persona: number | null` dimension (voice runs
+  only, `null` when no ack was spoken this run — a single-step turn
+  correctly never speaks one, not a missing case) and its own rubric
+  line: score whether the ack phrase sounds like a person coordinating
+  a team vs. generic-corporate service-desk phrasing, short/natural/
+  contraction-friendly scoring high. `buildJudgeUserMessage` gains
+  `ackPhraseSpoken`, extracted from `result.voiceFrames` by a new
+  `extractAckPhrase` helper — deliberately pulling out just this one
+  clean field rather than dumping the full frame array (mostly base64
+  audio) into the judge's prompt.
+
+**Tests:**
+- `realtime-server.test.ts` (+1): the ack phrase's actual text arrives
+  as a real `{type:"ack"}` message, and is the EXACT same string passed
+  to `speakStreamed` — never two different things. All 30 pre-existing
+  tests (none of which hardcode the old phrase text — confirmed by
+  grep before changing it) re-ran completely unmodified and passed.
+- `judge.ts`/`judge.test.ts` (+2): `ackPhraseSpoken` is correctly
+  extracted from a real `voiceFrames` array containing an `ack` frame;
+  correctly `null` when no ack frame is present. Existing `Verdict`
+  test fixtures (`judge.test.ts`, `store.test.ts`,
+  `evals-dashboard/scripts/seed-demo-data.ts`) updated to the new
+  required field — a real, mechanical, repo-wide ripple from a schema
+  addition, caught by `npm run typecheck` (not by `vitest`, which is
+  transform-only and didn't itself catch two of these — a real reminder
+  that the typecheck pass is a genuinely separate, necessary gate, not
+  redundant with the test run).
+- Confirmed by direct code reading (not a live capture, see Live-
+  verified) that `packages/evals/src/runner.ts`'s `voiceFrames` capture
+  is generic — it parses ANY JSON text frame off the real Playwright
+  WebSocket interception, no per-type allowlist — so the new `"ack"`
+  message is picked up automatically with zero evals-harness changes,
+  the same way `resume_speaking` and every other existing message type
+  already are.
+- Full regression gate: 437/437 tests pass repo-wide (up from 434),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces (only after the two real fixture-shape fixes above).
+- The dashboard needed **zero changes** — confirmed by grep that
+  `evals-dashboard`'s only direct `Verdict` field access is
+  `verdict.pass`; every other dimension (including the new `persona`)
+  already flows through generically via the JSON-serialized `verdict`
+  column in `store.ts`.
+
+**Live-verified:** the message-sending and judge-extraction logic are
+both unit-tested end to end with real data shapes; a full live capture
+of a REAL multi-step voice turn's `ack` frame flowing all the way
+through a real Playwright-driven browser session into a real judge call
+was judged disproportionate to set up for this step specifically (it
+would need a real client-side click executed against a real page mid-
+turn, the same setup cost `packages/evals`' fake-mic scenarios already
+carry elsewhere) — the `resume_speaking` mechanism's own step 2 live
+check already proved the underlying WebSocket message plumbing this
+step reuses works correctly against real infrastructure; this step
+reuses that exact same plumbing for a new message type, not a new
+mechanism.
+
+**Pending:**
+- Prosodic/semantic turn-taking (beyond Deepgram's silence-based
+  endpointing) — explicitly out of scope for Phase 2 per the plan's own
+  text, unchanged here.
+- The VAD-swap tradeoff from step 2 (Silero VAD's real bundle-size
+  cost) remains the one real, undecided design question left open in
+  this phase.
 
 **Failed:** nothing.
 

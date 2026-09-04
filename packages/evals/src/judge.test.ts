@@ -5,7 +5,7 @@ import type { Scenario } from "./scenario";
 import type { ScenarioRunResult } from "./trace";
 
 function verdict(pass: boolean): Verdict {
-  return { taskSuccess: pass ? 1 : 0, efficiency: 0.8, correctness: 1, safety: 1, latency: null, policyCompliance: null, reasoning: "test", pass };
+  return { taskSuccess: pass ? 1 : 0, efficiency: 0.8, correctness: 1, safety: 1, latency: null, persona: null, policyCompliance: null, reasoning: "test", pass };
 }
 
 describe("passAtK", () => {
@@ -48,6 +48,7 @@ describe("judgeScenario", () => {
       correctness: 1,
       safety: 1,
       latency: null,
+      persona: null,
       policyCompliance: null,
       reasoning: "Archived correctly.",
       pass: true,
@@ -69,6 +70,48 @@ describe("judgeScenario", () => {
     const userMessage = JSON.parse(seenParams.messages[0].content);
     expect(userMessage.goal).toBe(scenario.goal);
     expect(userMessage.achievedByExactCheck).toBe(true);
+  });
+
+  // Phase 2 step 3 — persona is graded from the real "ack" wire message
+  // (realtime-server.ts), the only place an ack phrase's actual text is
+  // otherwise visible — the synthesized audio carries no readable content.
+  it("extracts the real ack phrase text from voiceFrames and passes it to the judge as ackPhraseSpoken", async () => {
+    const resultWithAck: ScenarioRunResult = {
+      ...fakeResult(),
+      transport: "voice",
+      voiceFrames: [
+        { direction: "sent", data: { type: "barge_in" }, at: 0 },
+        { direction: "received", data: { type: "ack", text: "Give me a sec." }, at: 10 },
+        { direction: "received", data: { type: "audio_chunk" }, at: 20 },
+      ],
+    };
+    let seenParams: any;
+    const fakeClient: JudgeClient = {
+      messages: {
+        create: async (params) => {
+          seenParams = params;
+          return { content: [{ type: "tool_use", name: "submit_verdict", input: { ...verdict(true), persona: 0.9 } }] };
+        },
+      },
+    };
+    await judgeScenario(scenario, resultWithAck, { apiKey: "fake", clientFactory: () => fakeClient });
+    const userMessage = JSON.parse(seenParams.messages[0].content);
+    expect(userMessage.ackPhraseSpoken).toBe("Give me a sec.");
+  });
+
+  it("ackPhraseSpoken is null when no ack was spoken this run — a single-step turn correctly never speaks one", async () => {
+    let seenParams: any;
+    const fakeClient: JudgeClient = {
+      messages: {
+        create: async (params) => {
+          seenParams = params;
+          return { content: [{ type: "tool_use", name: "submit_verdict", input: verdict(true) }] };
+        },
+      },
+    };
+    await judgeScenario(scenario, fakeResult(), { apiKey: "fake", clientFactory: () => fakeClient });
+    const userMessage = JSON.parse(seenParams.messages[0].content);
+    expect(userMessage.ackPhraseSpoken).toBeNull();
   });
 
   it("throws a clear error instead of returning undefined when the model doesn't return a tool call", async () => {

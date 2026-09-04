@@ -423,6 +423,40 @@ describe("handleDeepgramMessage", () => {
     expect(speakStreamed).toHaveBeenNthCalledWith(2, "Here's what I found.");
   });
 
+  it("Phase 2 step 3: the ack phrase's actual text is sent as a real 'ack' message — the only way its content is otherwise visible in the wire protocol", async () => {
+    const { client, sent } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "read", target: "archive-btn" } : { verb: "explain", text: "Here's what I found." };
+    });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("check something then tell me", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    const ackMessages = sent.filter((m: any) => m.type === "ack") as any[];
+    expect(ackMessages).toHaveLength(1);
+    expect(typeof ackMessages[0].text).toBe("string");
+    expect(ackMessages[0].text.length).toBeGreaterThan(0);
+    // The ack text sent over the wire is the SAME text actually spoken —
+    // never two different things.
+    expect(speakStreamed.mock.calls[0][0]).toBe(ackMessages[0].text);
+  });
+
   it("Talker ack: a single-step turn (terminal on the very first call) never speaks an ack — no added latency on the common case", async () => {
     const { client } = fakeClient();
     const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Quick answer." });
