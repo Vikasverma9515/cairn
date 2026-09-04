@@ -2074,6 +2074,91 @@ disposable live checks.
 
 **Failed:** nothing.
 
+### Step 3: real page/data-shape context reaches the Planner too
+
+Step 2 closed the loop for the Executor (`resolveVerb`). This step closes
+the SAME loop for the Planner (`resolvePlan`) — which, until now, decomposed
+every goal knowing literally nothing about the target app beyond the bare
+goal string. Flagged as a real, bigger gap in step 2's own Pending notes,
+picked up directly rather than left for later.
+
+**Built:**
+- `resolvePlan`'s signature gains a new, OPTIONAL 4th parameter:
+  `resolvePlan(llm, goal, version = 1, manifest?: Manifest)`. Appended
+  after `version`, not inserted before it — inserting it earlier would
+  have silently broken the real 3-arg internal call site
+  (`resolvePlan(planLLM, transcript, plan.version + 1)`, realtime-
+  server.ts's own replan path) by landing a number where an object was
+  expected. `resolvePlan` is re-exported from `@cairnvibe/sdk/server`,
+  a real published subpath — this is why the change had to be additive,
+  same backward-compatibility discipline as every other Phase 3/4 wire
+  change this session. Confirmed genuinely zero-behavior-change: every
+  pre-existing `resolvePlan` test (2- and 3-arg calls, no manifest)
+  passes completely unchanged — the `{goal}`-only userMessage shape is
+  untouched when no manifest is passed.
+- `buildPlannerPageDirectory(manifest)` — the Planner's own version of
+  `buildSystemPrompt`'s route directory: `route: purpose` per page, same
+  page-COUNT-scaled (not total-content-scaled) budget discipline as that
+  directory's own doc comment explains. For a page with real traced data
+  shapes (step 1), appends just the SHAPE NAMES — e.g. `(data: Invoice)`
+  — never full field lists (that's what `buildPageDataShapes`, step 2,
+  already gives the Executor once a task narrows to one specific page).
+  When present, `resolvePlan`'s userMessage becomes `{goal, pages}`.
+- `buildPlannerSystemPrompt` now documents the optional `pages` field:
+  ground tasks in real page purposes/routes when present, let a listed
+  data shape constrain what a record can legitimately contain (never
+  invent a field or status a listed shape doesn't have), decompose from
+  the goal alone when absent — the exact prior behavior, named
+  explicitly as the fallback rather than silently changed.
+- Both real call sites in `realtime-server.ts` (the initial plan kicked
+  off on the first continuing step, and the replan path inside
+  `runCritic`) now pass `deps.manifest` through — the connection already
+  has it (used by `resolveVerb` at the same call site), so this was a
+  one-line addition at each, not new plumbing.
+
+**Tests:**
+- `server.test.ts` (+3): a manifest passed to `resolvePlan` produces a
+  real `pages` field with route, purpose, and `(data: Invoice)`; a page
+  with no traced data shapes lists route/purpose only, no dangling
+  `(data: ...)` suffix; the system prompt documents the optional `pages`
+  field regardless of whether a given call happens to pass one. All
+  pre-existing `resolvePlan` tests re-run unmodified as the regression
+  gate (per standing discipline) and pass exactly as before.
+- `realtime-server.test.ts` (+1): a full `handleDeepgramMessage` run
+  with a real manifest (one page, one data shape) confirms the ACTUAL
+  Planner call fired during a real turn carries `pages` with the real
+  route/purpose/shape-name — not a unit test of `resolvePlan` in
+  isolation, but proof the wiring reaches all the way through the real
+  event-driven realtime path.
+- Full regression gate: 380/380 tests pass repo-wide (up from 376),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces.
+
+**Live-verified:** built a REAL manifest from `examples/demo-app`'s
+actual source (same `scanL1` → `computeL2` → `assembleManifest` chain
+as step 2's check, L3 skipped again on purpose) and called the real
+`resolvePlan` against it with a capturing fake LLM. The captured
+`pages` directory correctly listed all 9 real routes with the exact
+same 4 data-bearing pages step 1's live check found —
+`/board (data: BoardColumn)`, `/invoices (data: Invoice)`, `/shop
+(data: CartLine, Product)`, `/shop/checkout (data: CartLine)` — and no
+`(data: ...)` suffix on the other 5. Scratch script deleted after use.
+
+**Pending:**
+- The typed/HTTP transport (`createCopilotHandlerWithLLM`) still never
+  calls `resolvePlan` at all — this step made the function manifest-
+  aware, but didn't add a NEW call site; that's the same pre-existing,
+  already-tracked "typed transport's Plan/Critic/event wiring" gap from
+  Phase 3, unchanged by this step.
+- No live voice-call verification specific to this step (same
+  disproportionate-setup reasoning as steps 1 and 2 — a shared,
+  non-realtime-specific code path, not re-litigated here).
+- Remaining Phase 4 layers (business rules & state machines, docs/copy
+  mining, the unified tools/skills inventory, the runtime dependency
+  graph) — still not started.
+
+**Failed:** nothing.
+
 ---
 
 ## Track B — the structure graph, phase by phase

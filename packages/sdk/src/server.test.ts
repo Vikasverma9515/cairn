@@ -868,6 +868,52 @@ describe("resolvePlan", () => {
       { id: "t1", description: "Archive my old invoices", doneContract: "The stated goal has been achieved.", status: "in_progress" },
     ]);
   });
+
+  // Phase 4 step 3 — real page/data-shape context reaches the Planner too,
+  // not just the Executor (step 2). Additive: manifest is a new, optional
+  // 4th argument, so every test above (no manifest passed) proves the
+  // existing {goal}-only userMessage shape is completely unchanged.
+  it("when a manifest is passed, the userMessage carries a real page directory with route, purpose, and data-shape names", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "Archive my old invoices", 1, manifest);
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.goal).toBe("Archive my old invoices");
+    expect(parsed.pages).toContain("/invoices: Shows every invoice you've sent, with status and amount.");
+    expect(parsed.pages).toContain("(data: Invoice)");
+  });
+
+  it("a page manifest with no traced data shapes lists route and purpose only, no dangling '(data: ...)' suffix", async () => {
+    const noShapes: Manifest = { ...manifest, pages: [{ ...manifest.pages[0], dataShapes: undefined }] };
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x", 1, noShapes);
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.pages).toBe("/invoices: Shows every invoice you've sent, with status and amount.");
+    expect(parsed.pages).not.toContain("(data:");
+  });
+
+  it("the system prompt documents the optional 'pages' field regardless of whether this call happens to pass one", async () => {
+    let seenSystemPrompt = "";
+    const llm = fakePlanLLM(async (systemPrompt) => {
+      seenSystemPrompt = systemPrompt;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x");
+
+    expect(seenSystemPrompt).toContain('"pages"');
+  });
 });
 
 describe("buildVerbToolSchema", () => {

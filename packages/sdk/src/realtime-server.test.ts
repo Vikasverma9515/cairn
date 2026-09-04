@@ -375,6 +375,64 @@ describe("handleDeepgramMessage", () => {
     expect(speakStreamed).toHaveBeenNthCalledWith(2, "Here's what I found.");
   });
 
+  it("Phase 4 step 3: the real Planner call carries the connection's real manifest — page directory and data-shape names, not just the bare transcript", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      if (call <= 2) return { verb: "read", target: "archive-btn" };
+      return { verb: "explain", text: "Here's what I found." };
+    });
+    const deps = fakeDeps(respond);
+    deps.manifest = {
+      version: "1",
+      commit: "test",
+      generatedAt: new Date().toISOString(),
+      pages: [
+        {
+          id: "invoices",
+          route: "/invoices",
+          file: "app/invoices/page.tsx",
+          title: "Invoices",
+          purpose: "Shows every invoice you've sent.",
+          whenToUse: "Come here to check payments.",
+          confidence: 0.9,
+          elements: [],
+          dataShapes: [{ name: "Invoice", source: "lib/invoices.ts", fields: [{ name: "status", type: '"Paid" | "Overdue"', optional: false }] }],
+        },
+      ],
+      dead: [],
+      conflicts: [],
+    };
+    let seenPlannerUserMessage = "";
+    deps.planLLM = {
+      respond: async (_systemPrompt, userMessage) => {
+        seenPlannerUserMessage = userMessage;
+        return { goal: "check a couple things then tell me", facts: [], tasks: [{ id: "t1", description: "check things", doneContract: "checked" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("check a couple things then tell me", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    const parsed = JSON.parse(seenPlannerUserMessage);
+    expect(parsed.pages).toContain("/invoices: Shows every invoice you've sent.");
+    expect(parsed.pages).toContain("(data: Invoice)");
+  });
+
   it("Phase 3 step 2: no planLLM configured means no Planner call at all — the observability wiring is opt-in, not required", async () => {
     const { client } = fakeClient();
     let call = 0;

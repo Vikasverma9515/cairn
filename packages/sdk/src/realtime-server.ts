@@ -529,7 +529,7 @@ async function finalizeTurn(
           // emitEvent above — same real speakStreamed() call, reached
           // through the event stream instead of an inline side effect.
           emitEvent({ type: "inj", text: ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)], at: Date.now() });
-          if (planLLM) planPromise = resolvePlan(planLLM, transcript);
+          if (planLLM) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest);
         }
         return false;
       },
@@ -584,7 +584,7 @@ async function finalizeTurn(
               if (verdict.verdict === "replan") {
                 // A fresh Planner call, a real new version — never a
                 // silent patch to the existing plan.
-                plan = await resolvePlan(planLLM, transcript, plan.version + 1);
+                plan = await resolvePlan(planLLM, transcript, plan.version + 1, deps.manifest);
                 progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
                 return { ...verdict, verdict: "continue" };
               }

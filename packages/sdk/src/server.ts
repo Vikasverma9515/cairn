@@ -261,10 +261,18 @@ export async function resolveVerb(
  * on this function's call site in realtime-server.ts). The Critic (step
  * 3) is what makes a Plan's tasks/doneContracts actually drive behavior.
  */
-export async function resolvePlan(llm: VerbLLM, goal: string, version = 1): Promise<Plan> {
+export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest): Promise<Plan> {
   let candidate: unknown;
   try {
-    candidate = await llm.respond(buildPlannerSystemPrompt(), JSON.stringify({ goal }));
+    // manifest is appended, optional, and defaults to absent — additive on
+    // purpose (see this function's own exported-API note above): an
+    // existing 2- or 3-arg call site (own or a published consumer's) keeps
+    // building the exact same {goal} userMessage it always has. Real page/
+    // data grounding (Phase 4) only applies when a caller has a manifest to
+    // pass — see buildPlannerPageDirectory's own doc comment for the
+    // token-budget discipline behind what it includes.
+    const userMessage = manifest ? JSON.stringify({ goal, pages: buildPlannerPageDirectory(manifest) }) : JSON.stringify({ goal });
+    candidate = await llm.respond(buildPlannerSystemPrompt(), userMessage);
   } catch (err) {
     console.error("[cairn] planner LLM call failed:", err);
     return fallbackPlan(goal, version);
@@ -849,12 +857,36 @@ function buildPlanToolSchema(): Record<string, unknown> {
 function buildPlannerSystemPrompt(): string {
   return `You are the planning layer of an in-app AI agent that operates a web app on a user's behalf. You do NOT act directly — you decompose the user's real end goal into an ordered list of concrete tasks a separate execution layer will carry out one at a time, using real clicks/fills/reads/tool calls against the real app.
 
+The user message may include "pages" — a real directory of this app's actual routes, what each is for, and, where known, the real named data shape(s) that page's records actually have (e.g. "(data: Invoice)" means real Invoice-shaped records live there). When present, ground tasks in this real structure instead of guessing: prefer a task whose description matches a real page's real purpose over a generic one, mention a page's real route when a task is genuinely about that page, and let a listed data shape tell you what a record on that page can legitimately contain — never invent a field or a status a listed shape doesn't have. If "pages" is absent, decompose from the goal alone, same as before.
+
 Break the goal into as FEW tasks as genuinely make sense — most goals need only 1-3 tasks; only split further when steps are genuinely independent or need to happen in a specific real order. Each task needs:
 - id: a short, stable id, e.g. "t1", "t2".
 - description: what this task achieves, concrete enough to act on.
 - doneContract: what counts as this task being ACTUALLY done, checkable against real state — a real observable outcome, never "the model thinks it's done" or "the user is satisfied."
 
 List any real facts already known that bear on the goal, in "facts" — leave it empty if there's nothing worth carrying forward. Never invent a task that isn't a real, necessary step toward the stated goal.`;
+}
+
+/**
+ * Phase 4 step 3 — the Planner's own version of buildSystemPrompt's route
+ * directory: route + purpose for every page, same page-COUNT-scaled (not
+ * total-content-scaled) budget discipline as that directory's own doc
+ * comment explains (a real production app's full per-page detail on every
+ * request once blew an 8000 TPM provider limit before a single question
+ * was answered — see buildSystemPrompt). For a page with real traced data
+ * shapes (l1-data-shapes.ts), appends just the SHAPE NAMES — never full
+ * field lists, that's what buildPageDataShapes already gives the Executor
+ * once a task narrows down to one specific page — so the Planner knows
+ * e.g. "the /invoices page deals with Invoice-shaped data" without paying
+ * for every field of every shape on every page, on every planning call.
+ */
+function buildPlannerPageDirectory(manifest: Manifest): string {
+  return manifest.pages
+    .map((p) => {
+      const shapeNames = p.dataShapes?.map((s) => s.name).join(", ");
+      return shapeNames ? `${p.route}: ${p.purpose} (data: ${shapeNames})` : `${p.route}: ${p.purpose}`;
+    })
+    .join("\n");
 }
 
 function buildCriticToolSchema(): Record<string, unknown> {
