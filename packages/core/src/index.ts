@@ -104,6 +104,22 @@ export const DataShapeSchema = z.object({
 });
 export type DataShape = z.infer<typeof DataShapeSchema>;
 
+/**
+ * Phase 4, layer 4 — real, human-authored heading/paragraph copy found
+ * in a page's own reachable source (l1-in-app-copy.ts) — a page's real
+ * `<h1>`/`<p>` text, not L3's LLM-guessed `purpose`/`title`. Confirmed
+ * live against `examples/demo-app`: every page opens with a real
+ * `<h1>title</h1><p>real description</p>` pair the LLM description was
+ * previously the only (guessed) source of.
+ */
+export const CopyBlockSchema = z.object({
+  tag: z.enum(["h1", "h2", "h3", "h4", "h5", "h6", "p"]),
+  text: z.string(),
+  file: z.string(),
+  line: z.number(),
+});
+export type CopyBlock = z.infer<typeof CopyBlockSchema>;
+
 export const PageSchema = z.object({
   id: z.string(),
   route: z.string(),
@@ -115,6 +131,8 @@ export const PageSchema = z.object({
   elements: z.array(ElementSchema),
   /** Absent (not just empty) when no return-type-annotated data call was found — distinguishes "not analyzed" from "genuinely no data shapes here" is not needed today, so both collapse to omitted/empty; optional purely for additive backward compat with manifests written before this field existed. */
   dataShapes: z.array(DataShapeSchema).optional(),
+  /** Same additive/backward-compatible reasoning as dataShapes above. */
+  inAppCopy: z.array(CopyBlockSchema).optional(),
 });
 export type Page = z.infer<typeof PageSchema>;
 

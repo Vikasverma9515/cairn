@@ -115,4 +115,16 @@ describe("scanL1", () => {
     expect(Array.isArray(facts.apiRouteHandlers)).toBe(true);
     expect(facts.apiRouteHandlers).toEqual([]);
   });
+
+  it("wires real in-app copy onto every page — the fixture's own real <h1>/<p> content, not invented for this test", () => {
+    const facts = scanL1(FIXTURE);
+    const about = facts.pages.find((p) => p.route === "/about")!;
+    expect(about.inAppCopy).toEqual([
+      { tag: "h1", text: "About", file: "app/about/page.tsx", line: expect.any(Number) },
+      { tag: "p", text: "This is the about page.", file: "app/about/page.tsx", line: expect.any(Number) },
+    ]);
+
+    const home = facts.pages.find((p) => p.route === "/")!;
+    expect(home.inAppCopy).toEqual([{ tag: "h1", text: "Welcome", file: "app/page.tsx", line: expect.any(Number) }]);
+  });
 });

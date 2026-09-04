@@ -62,6 +62,7 @@ describe("assembleManifest", () => {
               fields: [{ name: "status", type: '"Paid" | "Overdue" | "Archived"', optional: false }],
             },
           ],
+          inAppCopy: [],
         },
       ],
       allScannedFiles: [],
@@ -80,7 +81,7 @@ describe("assembleManifest", () => {
   it("passes through an empty dataShapes array as-is", () => {
     const facts: RawFacts = {
       version: "1",
-      pages: [{ route: "/", file: "app/page.tsx", reachableFiles: [], elements: [], dataShapes: [] }],
+      pages: [{ route: "/", file: "app/page.tsx", reachableFiles: [], elements: [], dataShapes: [], inAppCopy: [] }],
       allScannedFiles: [],
       frameworkReachableFiles: [],
       frameworkElements: [],
@@ -118,6 +119,7 @@ describe("assembleManifest", () => {
             },
           ],
           dataShapes: [],
+          inAppCopy: [],
         },
       ],
       allScannedFiles: [],
@@ -154,6 +156,7 @@ describe("assembleManifest", () => {
             },
           ],
           dataShapes: [],
+          inAppCopy: [],
         },
       ],
       allScannedFiles: [],
@@ -167,5 +170,31 @@ describe("assembleManifest", () => {
     const manifest = assembleManifest("/repo", facts, l2, l3);
 
     expect(manifest.pages[0].elements[0].apiCall).toEqual({ method: "POST", url: "/api/invoices" });
+  });
+
+  it("passes a page's L1 inAppCopy straight through onto the manifest Page, unchanged", () => {
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/invoices",
+          file: "app/invoices/page.tsx",
+          reachableFiles: [],
+          elements: [],
+          dataShapes: [],
+          inAppCopy: [{ tag: "h1", text: "Invoices", file: "app/invoices/page.tsx", line: 9 }],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+      apiRouteHandlers: [],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].inAppCopy).toEqual(facts.pages[0].inAppCopy);
   });
 });

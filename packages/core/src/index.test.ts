@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
+import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -57,6 +57,36 @@ describe("DataShapeSchema / PageSchema.dataShapes (Phase 4, layer 2 — real dat
   });
 
   it("PageSchema still accepts a page with dataShapes entirely omitted — additive/backward-compatible with manifests written before this field existed", () => {
+    expect(() => PageSchema.parse(basePage)).not.toThrow();
+  });
+});
+
+describe("CopyBlockSchema / PageSchema.inAppCopy (Phase 4, layer 4 — real in-app copy)", () => {
+  const basePage = {
+    id: "invoices",
+    route: "/invoices",
+    file: "app/invoices/page.tsx",
+    title: "Invoices",
+    purpose: "Manage invoices",
+    whenToUse: "When asked about billing",
+    confidence: 1,
+    elements: [],
+  };
+
+  it("accepts a well-formed copy block", () => {
+    expect(() => CopyBlockSchema.parse({ tag: "h1", text: "Invoices", file: "app/invoices/page.tsx", line: 9 })).not.toThrow();
+  });
+
+  it("rejects a tag outside the real copy set", () => {
+    expect(CopyBlockSchema.safeParse({ tag: "button", text: "Click me", file: "x", line: 1 }).success).toBe(false);
+  });
+
+  it("PageSchema accepts a page with real inAppCopy", () => {
+    const page = { ...basePage, inAppCopy: [{ tag: "h1", text: "Invoices", file: "app/invoices/page.tsx", line: 9 }] };
+    expect(() => PageSchema.parse(page)).not.toThrow();
+  });
+
+  it("PageSchema still accepts a page with inAppCopy entirely omitted — additive/backward-compatible with manifests written before this field existed", () => {
     expect(() => PageSchema.parse(basePage)).not.toThrow();
   });
 });

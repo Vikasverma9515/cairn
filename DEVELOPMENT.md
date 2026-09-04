@@ -2407,7 +2407,103 @@ every prior Phase 4 step.
 - Layer 3 (business rules & state machines) — explicitly not started,
   for the honest reason documented above (near-empty real material in
   this codebase today, not a build-effort tradeoff).
-- Layer 4 (docs & in-app copy mining) — still not started.
+- Layer 4 (docs & in-app copy mining) — built next, in step 6.
+
+**Failed:** nothing.
+
+### Step 6: layer 4 — real, human-authored in-app copy
+
+Confirmed real, not hypothetical, before writing this (same discipline
+as every prior layer): grepped `examples/demo-app`'s own pages and
+found every one of them opens with a real `<h1>title</h1><p>real
+description</p>` pair — e.g. `/invoices`'s real `<h1>Invoices</h1>` and
+`<p>Every invoice you've sent, with its status and amount.</p>`. Today
+that's completely invisible to Cairn: L3's `title`/`purpose` fields are
+LLM-guessed from context, even when the real, human-authored answer is
+sitting right there in the source, often nearly verbatim.
+
+**Built:**
+- `packages/indexer/src/l1-in-app-copy.ts` (new) —
+  `extractInAppCopy(project, reachableAbsFiles, relPathOf)`. Walks
+  every file reachable from a page (the same set l1-scan.ts already
+  computes) for `<h1>`-`<h6>`/`<p>` JSX elements and extracts their
+  real text content, reusing `l1-scan.ts`'s own `getElementText`
+  (exported for this, not duplicated) — the EXACT same "read a JSX
+  element's own text children" logic already proven for an interactive
+  element's label, just applied to the descriptive copy AROUND it.
+  Self-closing copy tags (`<p />`) are correctly skipped — they never
+  carry text; a dynamic JSX expression inside a text node (`{count}`)
+  is correctly excluded too (only literal `JsxText` children are read,
+  matching `getElementText`'s own existing behavior) — real, honest
+  static-fragments-only extraction, never a guessed/interpolated value.
+- Wired through the same path every prior L1 addition used: `RawPage.
+  inAppCopy` (computed in `l1-scan.ts`, alongside `dataShapes`),
+  passed straight through in `manifest.ts`'s `assembleManifest` (pure
+  L1, no LLM), `crawl.ts`'s runtime-DOM mode sets `inAppCopy: []`
+  explicitly (no source file to read there). `CopyBlockSchema`/
+  `Page.inAppCopy` in `@cairnvibe/core` — additive/optional, same
+  backward-compatible pattern as every prior schema addition.
+- Deliberately NOT wired into any model-facing prompt this step — same
+  "extraction first, consumption as its own step" discipline layer 2's
+  own steps 1→2 established. See Pending for the real, natural next
+  application (L3's own prompt could use this as REAL grounding instead
+  of guessing `purpose`/`title` from scratch).
+
+**Tests:**
+- `l1-in-app-copy.test.ts` (new, 8 tests, isolated in-memory ts-morph
+  projects, same style as `l1-data-shapes.test.ts`): a real h1/p pair
+  matching the exact shape found live in demo-app; results ordered by
+  real document/line order; copy captured from a page's reachable CHILD
+  component, not just its own file (mirrors data-shapes' own cross-file
+  discipline); an empty heading is correctly ignored; a non-copy tag
+  (a button, a div) is correctly ignored; a self-closing `<p />` is
+  correctly skipped; all six heading levels h1-h6; an unresolvable
+  reachable file doesn't crash.
+- `l1-scan.test.ts` (+1): the shared `simple-app` fixture's own REAL
+  `<h1>About</h1><p>This is the about page.</p>` and bare `<h1>Welcome</h1>`
+  content, asserted verbatim — not invented for this test, the fixture
+  already had it.
+- `manifest.test.ts` (+1): a page's L1 `inAppCopy` passes straight
+  through onto the manifest `Page` unchanged.
+- `core/index.test.ts` (+4): `CopyBlockSchema` accepts a well-formed
+  block, rejects a tag outside the real copy set (`button`); `PageSchema`
+  accepts real `inAppCopy` and still accepts it entirely omitted
+  (backward compatibility).
+- Full regression gate: 484/484 tests pass repo-wide (up from 470),
+  zero regressions. Full `npm run typecheck` clean across all 6
+  workspaces (four existing `manifest.test.ts` fixtures needed the new
+  required `inAppCopy` field — caught by `tsc`, the same real "typecheck
+  is a separate, necessary gate" reminder step 6 of Phase 2 already
+  surfaced).
+
+**Live-verified:** ran `scanL1` directly against `examples/demo-app`'s
+REAL source. Every one of its 9 real pages yielded real, meaningful
+copy — page titles/descriptions on every page, PLUS copy correctly
+traced into reachable child components (`/board`'s real `<h2>Edit
+card</h2>` found in `components/CardModal.tsx`, not the page's own
+file — confirming the cross-file reachability discipline works exactly
+as designed, the same real proof pattern layer 2's own board.ts/
+board-types.ts case established). A real, honest artifact also
+surfaced live: a paragraph built from static text around a dynamic
+JSX expression (`{count} events recorded, dominant emotion {mood}.`)
+comes through with the expression parts correctly stripped rather than
+guessed, which can read a little oddly on its own ("events recorded,
+dominant emotion .") — correct, conservative behavior (never invent a
+runtime value), not a bug, but worth knowing about when consuming this
+data later.
+
+**Pending:**
+- Not wired into L3's own description prompt yet — the natural next
+  application: give the LLM this REAL copy as grounding instead of
+  guessing `title`/`purpose` purely from element context, the same way
+  layer 2's data shapes eventually reached the Planner/Executor
+  prompts in later steps.
+- README.md / project-doc mining — a genuinely different mechanism
+  (filesystem-based, not AST-based) with a real, unresolved association
+  question (which route does a top-level README even belong to?);
+  deliberately scoped out of this step rather than guessed at.
+- JSDoc/leading-comment mining on exported components — real, tractable
+  future work using the same `ts-morph` machinery, not attempted here.
 
 **Failed:** nothing.
 

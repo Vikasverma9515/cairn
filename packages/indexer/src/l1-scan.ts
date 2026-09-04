@@ -9,6 +9,7 @@ import type { SourceFile } from "ts-morph";
 import { routeFromPagePath, routeFromPagesRouterPath } from "./routes";
 import { extractDataShapes } from "./l1-data-shapes";
 import { mapApiRouteHandlers } from "./l1-api-routes";
+import { extractInAppCopy } from "./l1-in-app-copy";
 import type { InteractiveTag, RawElement, RawFacts, RawPage } from "./types";
 
 const INTERACTIVE_TAGS = new Set<InteractiveTag>(["button", "a", "form", "input"]);
@@ -94,6 +95,7 @@ export function scanL1(rootDir: string): RawFacts {
       reachableFiles: Array.from(reachable).sort(),
       elements: elements.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file))),
       dataShapes: extractDataShapes(project, absRoot, reachableAbsFiles),
+      inAppCopy: extractInAppCopy(project, reachableAbsFiles, (absPath) => toPosix(path.relative(absRoot, absPath))),
     };
   });
 
@@ -238,7 +240,9 @@ function getAttrInitializerNode(attrs: Node[], name: string): Node | undefined {
   return undefined;
 }
 
-function getElementText(opening: Node): string | null {
+/** Exported for reuse by l1-in-app-copy.ts (Phase 4 layer 4) — the exact
+ * same "read a JSX element's own text children" logic, not a second copy. */
+export function getElementText(opening: Node): string | null {
   const parent = opening.getParentIfKind(SyntaxKind.JsxElement);
   if (!parent) return null;
   const texts: string[] = [];

@@ -4,6 +4,7 @@
 
 import type { DataShape } from "@cairnvibe/core";
 import type { ApiRouteHandler } from "./l1-api-routes";
+import type { CopyBlock } from "./l1-in-app-copy";
 
 export type InteractiveTag = "button" | "a" | "form" | "input";
 
@@ -28,6 +29,8 @@ export interface RawPage {
   elements: RawElement[];
   /** Real interface/type-alias shapes traced from data-fetching calls across this page's reachable files — see l1-data-shapes.ts. */
   dataShapes: DataShape[];
+  /** Real, human-authored heading/paragraph copy across this page's reachable files — see l1-in-app-copy.ts. */
+  inAppCopy: CopyBlock[];
   /**
    * The page's rendered visible text — only set by crawl.ts's runtime-DOM
    * analyzer (crawl mode has no source file to read; l1-scan.ts's
