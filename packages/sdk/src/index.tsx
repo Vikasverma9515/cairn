@@ -776,6 +776,17 @@ export function Copilot({
     // which is exactly what "hearing the agent twice, in parallel" was.
     if (!realtimeUrl || !micSupported || realtimeActive || rtStartingRef.current) return;
     rtStartingRef.current = true;
+    // A typed/mic-recorded reply's audio can still be mid-playback on its
+    // own separate graph (typedPlaybackGainRef, only ever touched by
+    // stopTypedPlayback/playPcmStream) when the user switches straight into
+    // a live call — endRealtime() already stops it on the way OUT of a
+    // call, but nothing stopped it on the way IN, so it kept playing
+    // completely unaffected by the realtime session's own mute-speaker
+    // button (which only ever touches rtPlaybackGainRef) or by barge-in —
+    // a real, live-found "two independent speakers" bug: muting or saying
+    // "stop" only ever reached the realtime pipeline, while this leftover
+    // typed audio played on regardless until it finished on its own.
+    stopTypedPlayback();
     archiveCurrentExchange(); // preserve whatever typed/mic exchange preceded switching into a live call
     setAnswer(null);
     setCaption("");

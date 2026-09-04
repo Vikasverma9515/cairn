@@ -3706,6 +3706,83 @@ guessed at).
 
 ---
 
+## Live bug-fix pass: a genuinely different "two speakers" bug — leftover typed audio never stopped when switching into a live call
+
+Direct follow-up after the previous two entries — the user kept reporting
+the same-sounding symptom ("still speaking twice") even after both prior
+fixes landed and the dev server was restarted. New, precise evidence this
+time (the user muting/unmuting/saying "stop" and describing exactly what
+each action did or didn't affect) ruled out both earlier theories and
+pointed at a genuinely different, third bug:
+- Muting the realtime "speaker" button silenced only ONE of two audible
+  voices — the other kept playing independent of it.
+- Saying "stop" cut off — and after ~1s, restarted from the beginning —
+  only the voice the mute button DIDN'T silence.
+
+The mute button only ever touches `rtPlaybackGainRef` (the realtime
+WS audio_chunk pipeline); "stop"-triggered restart-from-the-top is
+`resume_speaking`, an exclusively realtime-only mechanism (see the
+`"the agent is answering twice"` entry above). Both symptoms point at
+the SAME pipeline — realtime — meaning the OTHER, unaffected voice had
+to be a completely separate, non-realtime audio graph. `index.tsx` has
+exactly one: `typedPlaybackGainRef`, the typed/mic-recorded-question
+reply path (`playPcmStream`, `stopTypedPlayback`). The typed `<form>`
+isn't even rendered while a realtime call is active — ruled out as a
+NEW typed submission — but `startRealtime()` never stopped a typed
+reply's audio that was ALREADY mid-playback at the moment the user
+clicked the phone icon to start a call. `endRealtime()` already calls
+`stopTypedPlayback()` on the way OUT of a call (found reading the
+existing code); nothing called it on the way IN — the missing third
+case of an otherwise-consistent "stop whatever's currently playing
+before starting something new" pattern (the same discipline
+`playPcmStream()` already applies to itself for two typed replies
+resolving close together).
+
+**Built:** `index.tsx`'s `startRealtime()`: added `stopTypedPlayback()`
+right at the top, before archiving/connecting — any typed-path audio
+still playing when a call starts now stops immediately, instead of
+running on unaffected by the realtime session's own mute/barge-in
+controls until it happened to finish on its own.
+
+**Tests:** no new automated test — same honest limitation as the
+unmount-cleanup fix two entries up: this is a DOM/Web-Audio lifecycle
+interaction between two AudioContexts, not a pure function; real
+coverage would need a fake-AudioContext test harness, not attempted
+this pass. Full regression suite re-run as the safety check instead:
+517/517 tests pass repo-wide (unchanged — no test file touched), zero
+regressions. Full `npm run typecheck` clean across all 6 workspaces.
+`npm run build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic in this environment
+(still no live mic here) — traced directly from the user's own precise,
+turn-by-turn description of what each control did and didn't affect,
+not guessed at. The user needs to restart the demo app's dev server
+(loads `dist/` at startup) and hard-refresh the browser tab to pick
+this up, same as the prior two entries.
+
+**Pending:**
+- The "say stop, it pauses ~1s then resumes from the start" behavior
+  itself (once only one real voice is involved) is a SEPARATE, pre-
+  existing, already-documented design tradeoff — `triggerServerBargeIn`'s
+  confirm-or-reverse window (Phase 2 step 2): if Deepgram doesn't
+  confirm real speech within 600ms of a barge-in, the server assumes it
+  was a false alarm and restarts the answer from the top. That entry's
+  own Pending section already flagged the CONFIRMED (real-transcript-
+  arrives) path as unit-tested with fake timers only, never live-
+  verified against a real "stop" utterance's actual STT round-trip
+  time — a real possibility is that 600ms is simply too short for
+  Deepgram to transcribe and confirm a single short word in practice,
+  making it look like barge-in "never really works," when the true gap
+  is the window's real-world timing. Not fixed here — needs a real mic
+  to diagnose the actual STT latency involved before tuning the window
+  correctly, which this environment cannot do.
+- Same DOM-mount/unmount-race test-coverage gap noted in the earlier
+  entry applies here too.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
