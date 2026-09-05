@@ -16,7 +16,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { isTerminalVerb, safeParseVerbResponse, type CriticVerdict, type HistoryTurn as HistoryEntry, type Plan, type ProgressLedger, type Task, type TourStep, type VerbResponse } from "@cairnvibe/core";
+import { classifyUiPattern, deriveStructureSignals, isTerminalVerb, safeParseVerbResponse, type CriticVerdict, type HistoryTurn as HistoryEntry, type Plan, type ProgressLedger, type Task, type TourStep, type VerbResponse } from "@cairnvibe/core";
 import { driveAgentLoop, looksMultiStep } from "./agent-loop";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
@@ -45,6 +45,18 @@ export interface CopilotProps {
   /** If set, the widget speaks each explain/highlight answer aloud (Deepgram TTS via `@cairnvibe/sdk/speak-server`). */
   speakEndpoint?: string;
   /**
+   * Phase 5 step 4 — whatever opaque id the CUSTOMER's own app already
+   * has for this end user (their own login id, or any other stable
+   * string they choose) — this SDK invents no identity of its own, same
+   * discipline as the realtime relay's own "context" message scopeId.
+   * Sent on every typed-transport request when set; the server only ever
+   * seeds/records real cross-session memory when BOTH this and a
+   * `memory` store are configured (`createCopilotHandler`'s own
+   * `memory` option) — omitting this keeps every request exactly as
+   * memory-less as before this existed, regardless of server config.
+   */
+  scopeId?: string;
+  /**
    * Architecture Pillar 4 — if set (alongside `criticEndpoint`), the typed/
    * HTTP loop gets the same real Planner the realtime relay already has:
    * a task breakdown for a compound goal, and a genuinely separate Critic
@@ -58,6 +70,19 @@ export interface CopilotProps {
   planEndpoint?: string;
   /** See `planEndpoint` — both must be set for the typed loop's Planner/Critic wiring to activate. */
   criticEndpoint?: string;
+  /**
+   * Architecture Pillar 3 (Skill half) — if set (alongside `planEndpoint`/
+   * `criticEndpoint`), the typed loop saves whatever real, Critic-
+   * verified facts a turn collects (`packages/sdk/src/server.ts`'s
+   * `createSkillSaveHandler`) once the turn concludes — the same
+   * Formulator mechanism the realtime relay already has. Retrieval (a
+   * matching Skill's full instructions surfacing to the Planner) needs no
+   * separate client wiring — it's already part of what `planEndpoint`'s
+   * own server-side handler does once a `SkillStore` is configured there.
+   * Omitting this keeps the typed loop exactly as it was — no Skills are
+   * ever saved, zero overhead.
+   */
+  skillsSaveEndpoint?: string;
   /**
    * If set, shows a "start conversation" control that opens a live
    * WebSocket to a `@cairnvibe/sdk/realtime-server` relay (run via
@@ -79,8 +104,10 @@ export function Copilot({
   reportMissesEndpoint,
   transcribeEndpoint,
   speakEndpoint,
+  scopeId,
   planEndpoint,
   criticEndpoint,
+  skillsSaveEndpoint,
   realtimeUrl,
   persona = "Cairn",
 }: CopilotProps) {
@@ -670,6 +697,31 @@ export function Copilot({
   }
 
   /**
+   * Architecture Pillar 3 (Skill half) — the typed transport's own
+   * Formulator save, mirroring realtime-server.ts's own post-turn
+   * `compileSkill`+`saveSkill` call. Fire-and-forget (never awaited by
+   * the caller, never allowed to affect what the user sees) since saving
+   * a Skill is bookkeeping for a FUTURE turn, not part of answering this
+   * one — matches the Formulator's own "cheap, runs once per turn, never
+   * blocks anything" framing. Classifies the current live page for a
+   * best-effort pattern tag the same way resolveVerb's own per-request
+   * classification does server-side.
+   */
+  function saveSkillIfLearned(goal: string, learnedFacts: string[]): void {
+    if (!skillsSaveEndpoint || learnedFacts.length === 0) return;
+    const matches = classifyUiPattern(deriveStructureSignals(liveRegistryRef.current.getSnapshot().elements));
+    void fetch(skillsSaveEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goal, learnedFacts, pattern: matches[0]?.pattern }),
+    }).catch(() => {
+      // A Skill that fails to save just means the next similar goal
+      // starts from scratch again, same as if nothing had been learned
+      // this turn — never worth surfacing as a user-visible error.
+    });
+  }
+
+  /**
    * Drives the agent loop over the stateless HTTP path: ask the server,
    * and if it comes back with a continuing step (click/fill/read/
    * call_tool — TERMINAL_VERBS in @cairnvibe/core says which verbs end a
@@ -710,6 +762,10 @@ export function Copilot({
     const STALL_THRESHOLD = 3; // same bounded budget realtime's own Critic wiring uses
     const plannerEnabled = Boolean(planEndpoint && criticEndpoint);
     if (plannerEnabled && looksMultiStep(q)) planPromise = fetchPlan(q);
+    // Architecture Pillar 3 (Skill half) — every real, Critic-verified
+    // learnedFact from this turn's steps; saved once the turn concludes,
+    // below (saveSkillIfLearned). Empty is the common case, not a gap.
+    const learnedFacts: string[] = [];
 
     const result = await driveAgentLoop(historyRef.current, {
       async getNextStep(loopHistory) {
@@ -730,6 +786,7 @@ export function Copilot({
             history: loopHistory,
             liveElements: liveScan.elements,
             webMcpTools,
+            scopeId,
           }),
         });
         const data = await res.json().catch(() => null);
@@ -772,6 +829,7 @@ export function Copilot({
             const currentProgress = progress!;
             const currentTask = plan.tasks[currentProgress.currentTaskIndex];
             const verdict = await fetchCriticVerdict(currentTask, q, verb, observation);
+            if (verdict.learnedFact) learnedFacts.push(verdict.learnedFact);
 
             if (verdict.verdict === "task_complete") {
               currentTask.status = "done";
@@ -810,6 +868,9 @@ export function Copilot({
           }
         : undefined,
     });
+
+    // Architecture Pillar 3 (Skill half) — the Formulator, once per turn.
+    saveSkillIfLearned(q, learnedFacts);
 
     if (result.outcome === "terminal" || result.outcome === "unparseable" || result.outcome === "critic-complete") {
       // A realtime call can start WHILE this whole typed loop (potentially

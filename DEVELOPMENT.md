@@ -6255,6 +6255,112 @@ tried to hold itself to.
 
 ---
 
+### Completing the pending: wiring real memory and Skills into a live deployment, and the typed transport's own missing Skill save/retrieval
+
+Direct follow-up to "do it, complete the pending" — the two concrete,
+buildable gaps every Pillar 3/5 entry above had flagged as Pending (not
+the Groq-key-blocked items, which stay genuinely blocked, and not the
+Scout role, which stays out of scope by its own stated rationale):
+
+1. `MemoryStore`/`SkillStore` were fully built and unit-tested but never
+   reachable from any REAL running deployment — `examples/demo-app` never
+   configured either, and `realtime-cli.ts` had no env-var surface to turn
+   them on at all.
+2. The Skill half of Pillar 3 was realtime-only by its own admission — the
+   typed transport (`index.tsx`'s `runTypedAgentLoop`) had a Planner
+   endpoint that COULD have surfaced Skill hints, but no Formulator save
+   path, and `createPlanHandler` itself didn't yet accept a `SkillStore`.
+
+**Built**:
+- `packages/sdk/src/realtime-cli.ts` — three new, optional env vars:
+  `CAIRN_MEMORY_DB_PATH`, `CAIRN_SKILLS_DB_PATH`, `CAIRN_SKILLS_SCOPE_ID`.
+  When set, wires a real `createSqliteMemoryStore`/`createSqliteSkillStore`
+  into `createRealtimeServer`'s options — zero-code, matching how every
+  other realtime-cli.ts setting already works. Omitted (today's default)
+  means exactly the same memory-less/Skill-less behavior as before.
+- `packages/sdk/src/server.ts` — `CreateCopilotHandlerOptions` gained
+  `skills`/`skillsScopeId` (parallel to the existing `memory`).
+  `createPlanHandlerWithLLM` now computes the same real
+  `matchSkillByGoal`/`renderSkillSummaries` retrieval realtime-server.ts's
+  `finalizeTurn` already did, attaching `skills`/`suggestedSkill` to the
+  Planner's own userMessage when a `SkillStore` is configured — the typed
+  transport's own missing half of Pillar 3's retrieval side. A brand-new
+  `createSkillSaveHandler(skills, skillsScopeId)` — no `-WithLLM` variant
+  needed, since `compileSkill` is deterministic (no LLM involved at all) —
+  is the typed transport's own Formulator save endpoint.
+- `packages/sdk/src/index.tsx` — new `scopeId` prop (the typed transport
+  never had ANY way to identify an end user before this — a real, more
+  fundamental gap than initially scoped: memory's server-side logic was
+  always there, but the widget itself had nothing to send). New
+  `skillsSaveEndpoint` prop; `runTypedAgentLoop` now accumulates
+  `learnedFact`s from its own Critic calls (mirroring realtime's
+  accumulator) and POSTs them, classified via Pillar 2's own
+  `classifyUiPattern`/`deriveStructureSignals` against the current live
+  page, to `skillsSaveEndpoint` once the turn concludes — fire-and-forget,
+  never affecting what the user sees.
+- `examples/demo-app/lib/agent-memory.ts` (new) — a real `MemoryStore`/
+  `SkillStore` pair sharing this demo's own existing sqlite connection
+  (`lib/db.ts`), rather than opening a second file. Wired into
+  `/api/copilot/route.ts` (memory), `/api/copilot/plan/route.ts` (skills
+  retrieval), and a new `/api/copilot/skills/save/route.ts` (skills save).
+  `CopilotWithActions.tsx` now passes a real `scopeId="demo-visitor"` and
+  `skillsSaveEndpoint="/api/copilot/skills/save"`. `examples/demo-app/.env`
+  (gitignored, local-only) gained the three new realtime-cli.ts env vars,
+  pointed at the SAME shared db file — a visitor's memory/Skills now stay
+  consistent whether they use the typed widget or a realtime voice call.
+
+**Tests**: `packages/sdk/src/server.test.ts` — 7 new tests:
+`createPlanHandler` surfaces a matching Skill's full instructions when
+`skills` is configured, and omits both fields entirely when it isn't;
+`createSkillSaveHandler` — a real request compiles and saves a Skill,
+respects a real non-default `skillsScopeId`, an empty `learnedFacts`
+array saves nothing (the common case), an invalid body is refused with
+400 before ever reaching the store, and an invented `pattern` is
+rejected. 7 new tests total. Full repo `npx vitest run`: 681/681 passing,
+zero regressions. Full `npm run typecheck` clean across all 6 workspaces.
+`npm run build -w @cairnvibe/core -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified — for real this time, not just unit tests against
+fakes**: restarted the demo app (both the Next.js dev server AND the
+`cairn-realtime` relay, via the same `npm run dev` this app always uses)
+and confirmed directly against the sqlite file itself:
+- The realtime relay's own startup created real `cairn_memory_facts`,
+  `cairn_memory_turns`, `cairn_memory_archive`, and `cairn_skills` tables
+  in the shared demo database — proof the new env-var wiring actually
+  constructs both stores on a real process boot, not just in a test.
+- Asked the real widget "what is this page for" with `scopeId="demo-
+  visitor"` wired up — `SELECT * FROM cairn_memory_turns` afterward showed
+  the REAL question and REAL answer (the Groq-401 fallback text, since
+  that block is still unresolved, but a real terminal turn regardless)
+  recorded under the real scope id — the exact row `createCopilotHandlerWithLLM`'s
+  memory-recording logic is supposed to produce, now proven against a
+  real request, not a mocked `MemoryStore`.
+- Called `/api/copilot/plan` directly with a pre-seeded real Skill row in
+  the live database — got a clean 200 back (the underlying Planner LLM
+  call still fails on the same Groq issue, falling back exactly as
+  designed, but critically the request never crashed) — real, live proof
+  the new `listSkillSummaries`/`matchSkillByGoal`/`getSkill` retrieval
+  path executes correctly against actual SQLite, not just an in-memory
+  fake object.
+- Called `/api/copilot/skills/save` directly — `SELECT * FROM
+  cairn_skills` afterward showed the real compiled Skill, exactly
+  matching what was POSTed — the Formulator's save side proven against
+  real storage. Both test rows were deleted after verification, leaving
+  the demo database clean.
+
+**Pending**: the ONE thing that genuinely still can't be verified in this
+environment is whether a real, working model actually chooses to surface
+a `learnedFact`, matches a Skill by goal in a real multi-turn
+conversation, or has its own answer changed by a retrieved Skill hint —
+all of that needs a real, authenticating LLM API key, which this session
+never had access to for its entire duration. Everything on THIS side of
+that boundary (storage, retrieval, save, and now real deployment wiring)
+is built, tested, and live-verified against real infrastructure.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

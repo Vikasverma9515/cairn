@@ -3,6 +3,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { createCopilotHandler } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
+import { memory } from "../../../lib/agent-memory";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");
@@ -39,6 +40,7 @@ export async function POST(request: Request) {
     // though archiveInvoice stays registered — the two checks are independent.
     capability: "act",
     persona: "Cairn",
+    memory,
   });
 
   const body = await request.json().catch(() => null);

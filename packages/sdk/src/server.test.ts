@@ -10,6 +10,7 @@ import {
   createCopilotHandlerWithLLM,
   createCriticHandlerWithLLM,
   createPlanHandlerWithLLM,
+  createSkillSaveHandler,
   matchSkillByGoal,
   renderRegisteredActions,
   renderSkillSummaries,
@@ -1724,6 +1725,64 @@ describe("createPlanHandler / createCriticHandler — Architecture Pillar 4's ty
     expect(result.body).toMatchObject({ goal: "Archive my old invoices", tasks: [{ id: "t1", description: "Archive my old invoices" }] });
   });
 
+  function fakeSkillStore(): { store: any; saved: { scopeId: string; skill: any }[] } {
+    const saved: { scopeId: string; skill: any }[] = [];
+    const byScope = new Map<string, Map<string, any>>();
+    const store = {
+      saveSkill(scopeId: string, skill: any) {
+        saved.push({ scopeId, skill });
+        if (!byScope.has(scopeId)) byScope.set(scopeId, new Map());
+        byScope.get(scopeId)!.set(skill.id, skill);
+      },
+      listSkillSummaries(scopeId: string) {
+        return Array.from(byScope.get(scopeId)?.values() ?? []).map((s) => ({ id: s.id, name: s.name, description: s.description, pattern: s.pattern }));
+      },
+      getSkill(scopeId: string, id: string) {
+        return byScope.get(scopeId)?.get(id) ?? null;
+      },
+    };
+    return { store, saved };
+  }
+
+  it("createPlanHandler: Architecture Pillar 3 — a matching Skill's full instructions surface to the Planner's own userMessage", async () => {
+    const { store: skills } = fakeSkillStore();
+    skills.saveSkill("default", {
+      id: "connect-nodes",
+      name: "Connect the trigger to the email action",
+      description: "Uses a dropdown, not drag.",
+      instructions: "The canvas connects nodes via a dropdown labeled 'connects to'.",
+      pattern: "canvas",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    let seenUserMessage = "";
+    const llm = fakeLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm, { skills });
+
+    await handler({ goal: "connect the webhook node to the slack action" });
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.skills).toContain("Connect the trigger to the email action");
+    expect(parsed.suggestedSkill).toContain("connects to");
+  });
+
+  it("createPlanHandler: no skills configured means no skills/suggestedSkill fields at all — zero overhead", async () => {
+    let seenUserMessage = "";
+    const llm = fakeLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+
+    await handler({ goal: "x" });
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.skills).toBeUndefined();
+    expect(parsed.suggestedSkill).toBeUndefined();
+  });
+
   it("createCriticHandler: a real request returns a real verdict", async () => {
     const llm = fakeLLM(async () => ({ verdict: "task_complete", reasoning: "Acme Co. now shows status Archived." }));
     const handler = createCriticHandlerWithLLM(llm);
@@ -1921,5 +1980,75 @@ describe("resolveCritic — Architecture Pillar 3's learnedFact wiring", () => {
     await resolveCritic(llm, task, "goal", { verb: "click", target: "x" }, "result");
     expect(seenSystemPrompt).toContain("learnedFact");
     expect(seenSystemPrompt.toLowerCase()).toContain("never");
+  });
+});
+
+describe("createSkillSaveHandler — Architecture Pillar 3's typed-transport Formulator save side", () => {
+  function fakeSkillStore(): { store: any; saved: { scopeId: string; skill: any }[] } {
+    const saved: { scopeId: string; skill: any }[] = [];
+    const store = {
+      saveSkill(scopeId: string, skill: any) {
+        saved.push({ scopeId, skill });
+      },
+      listSkillSummaries: () => [],
+      getSkill: () => null,
+    };
+    return { store, saved };
+  }
+
+  it("a real request with learnedFacts compiles and saves a real Skill", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({
+      goal: "connect the trigger to the email action",
+      learnedFacts: ["The canvas connects nodes via a dropdown, not a drag gesture."],
+      pattern: "canvas",
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ saved: true });
+    expect(saved).toHaveLength(1);
+    expect(saved[0].scopeId).toBe("default");
+    expect(saved[0].skill.instructions).toContain("dropdown, not a drag gesture");
+  });
+
+  it("respects a real, non-default skillsScopeId", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills, "my-deployment");
+
+    await handler({ goal: "x", learnedFacts: ["a real fact"] });
+
+    expect(saved[0].scopeId).toBe("my-deployment");
+  });
+
+  it("an empty learnedFacts array saves nothing — the common case, not an error", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({ goal: "x", learnedFacts: [] });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ saved: false });
+    expect(saved).toHaveLength(0);
+  });
+
+  it("an invalid request body is refused with 400, never reaching the store", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({ goal: "x" }); // missing learnedFacts
+
+    expect(result.status).toBe(400);
+    expect(saved).toHaveLength(0);
+  });
+
+  it("rejects an invented pattern — never a value beyond the real UI_PATTERNS set", async () => {
+    const { store: skills } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({ goal: "x", learnedFacts: ["a fact"], pattern: "made-up-pattern" });
+
+    expect(result.status).toBe(400);
   });
 });

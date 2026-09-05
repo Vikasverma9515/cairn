@@ -24,8 +24,10 @@ export function CopilotWithActions() {
       reportMissesEndpoint="/api/copilot/misses"
       transcribeEndpoint="/api/copilot/transcribe"
       speakEndpoint="/api/copilot/speak"
+      scopeId="demo-visitor"
       planEndpoint="/api/copilot/plan"
       criticEndpoint="/api/copilot/critic"
+      skillsSaveEndpoint="/api/copilot/skills/save"
       realtimeUrl="ws://localhost:3010"
       persona="Cairn"
     />

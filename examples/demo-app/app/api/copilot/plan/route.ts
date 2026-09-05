@@ -3,6 +3,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { createPlanHandler } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
+import { skills, SKILLS_SCOPE_ID } from "../../../../lib/agent-memory";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");
@@ -25,6 +26,8 @@ export async function POST(request: Request) {
   const handler = createPlanHandler(loadManifest(), {
     provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
     registeredActions: ["archiveInvoice"],
+    skills,
+    skillsScopeId: SKILLS_SCOPE_ID,
   });
 
   const body = await request.json().catch(() => null);

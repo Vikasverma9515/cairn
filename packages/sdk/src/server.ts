@@ -16,6 +16,7 @@ import {
   renderPlaybookHint,
   slugifySkillId,
   TaskSchema,
+  UI_PATTERNS,
   VERBS,
   VerbResponseSchema,
   type CriticVerdict,
@@ -34,6 +35,7 @@ import {
 import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import { KeyRotator } from "./key-rotator";
+import type { SkillStore } from "./skill-store";
 
 const VERB_TOOL_NAME = "respond_with_verb";
 const PLAN_TOOL_NAME = "create_plan";
@@ -100,6 +102,18 @@ export interface CreateCopilotHandlerOptions {
    * re-seeded on top of itself.
    */
   memory?: MemoryStore;
+  /**
+   * Architecture Pillar 3 (Skill half) — real, per-deployment Skill
+   * storage (packages/sdk/src/skill-store.ts). A DIFFERENT scope axis
+   * than `memory` above — see skill-store.ts's own doc comment. Optional;
+   * omitting it keeps every request exactly as it was before this
+   * existed. Consumed by `createPlanHandler` (retrieval — a matching
+   * Skill's full instructions get surfaced to the Planner) and
+   * `createSkillSaveHandler` (the Formulator's own save side).
+   */
+  skills?: SkillStore;
+  /** The deployment-wide scope Skills are stored/looked up under when `skills` is configured. Defaults to "default" when omitted. */
+  skillsScopeId?: string;
 }
 
 export interface CopilotHandlerResult {
@@ -635,13 +649,29 @@ export function createPlanHandler(manifest: Manifest, options: CreateCopilotHand
 export function createPlanHandlerWithLLM(
   manifest: Manifest,
   planLLM: VerbLLM,
-  options: { registeredActions?: string[]; actionDescriptions?: Record<string, string> } = {},
+  options: { registeredActions?: string[]; actionDescriptions?: Record<string, string>; skills?: SkillStore; skillsScopeId?: string } = {},
 ): PlanHandler {
   const actionsText = renderRegisteredActions(options.registeredActions ?? [], options.actionDescriptions ?? {});
+  const skillsScopeId = options.skillsScopeId ?? "default";
   return async function handlePlanRequest(body: unknown) {
     const parsed = PlanRequestSchema.safeParse(body);
     if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
-    const plan = await resolvePlan(planLLM, parsed.data.goal, parsed.data.version ?? 1, manifest, actionsText || undefined);
+
+    // Architecture Pillar 3 (Skill half) — the typed transport's own
+    // retrieval side, same shape realtime-server.ts's finalizeTurn
+    // already computes in-process. Absent `options.skills` (the
+    // overwhelming majority of deployments today) means zero overhead —
+    // this whole block is skipped entirely.
+    const skillSummaries = options.skills ? options.skills.listSkillSummaries(skillsScopeId) : [];
+    const matchedSkillSummary = skillSummaries.length ? matchSkillByGoal(skillSummaries, parsed.data.goal) : null;
+    const skillsPayload = skillSummaries.length
+      ? {
+          summariesText: renderSkillSummaries(skillSummaries) || undefined,
+          suggestedInstructions: matchedSkillSummary ? (options.skills!.getSkill(skillsScopeId, matchedSkillSummary.id)?.instructions ?? undefined) : undefined,
+        }
+      : undefined;
+
+    const plan = await resolvePlan(planLLM, parsed.data.goal, parsed.data.version ?? 1, manifest, actionsText || undefined, skillsPayload);
     return { status: 200, body: plan };
   };
 }
@@ -660,6 +690,38 @@ export function createCriticHandlerWithLLM(criticLLM: VerbLLM): CriticHandler {
     if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
     const verdict = await resolveCritic(criticLLM, parsed.data.task, parsed.data.goal, parsed.data.verb, parsed.data.observation);
     return { status: 200, body: verdict };
+  };
+}
+
+const SkillSaveRequestSchema = z
+  .object({
+    goal: z.string().min(1),
+    learnedFacts: z.array(z.string().min(1)),
+    pattern: z.enum(UI_PATTERNS).optional(),
+  })
+  .strict();
+
+export type SkillSaveHandler = (body: unknown) => Promise<{ status: number; body: { saved: boolean } | { error: string } }>;
+
+/**
+ * Architecture Pillar 3 (Skill half) — the typed transport's own save
+ * side (the Formulator's HTTP counterpart to realtime-server.ts's own
+ * in-process `compileSkill`+`saveSkill` call at the end of `finalizeTurn`).
+ * No LLM involved — `compileSkill` is deterministic (see its own doc
+ * comment for why) — so this needs no `-WithLLM` variant; it's real
+ * client-callable storage access, nothing more. The caller (index.tsx's
+ * runTypedAgentLoop) accumulates `learnedFacts` from its own Critic calls
+ * across one whole turn and posts here exactly once, after the turn
+ * concludes — never per-step, matching the Formulator's own "cheap on
+ * purpose" framing.
+ */
+export function createSkillSaveHandler(skills: SkillStore, skillsScopeId = "default"): SkillSaveHandler {
+  return async function handleSkillSaveRequest(body: unknown) {
+    const parsed = SkillSaveRequestSchema.safeParse(body);
+    if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
+    const skill = compileSkill(parsed.data.goal, parsed.data.learnedFacts, parsed.data.pattern);
+    if (skill) skills.saveSkill(skillsScopeId, skill);
+    return { status: 200, body: { saved: skill !== null } };
   };
 }
 
