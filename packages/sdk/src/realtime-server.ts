@@ -296,15 +296,75 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   const dgUrl =
     `${DEEPGRAM_LIVE_URL}?model=${encodeURIComponent(deps.sttModel)}` +
     `&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&endpointing=300&utterance_end_ms=1000`;
-  const dg = new WebSocket(dgUrl, { headers: { Authorization: `Token ${deps.deepgramApiKey}` } });
 
+  // Real, live-reported bug this closes: "status says Listening but nothing
+  // happens" — the client keeps looking and sounding fine (mic still
+  // capturing, WS still open, no error ever shown), because the REAL
+  // failure is silent and one layer deeper: Deepgram's own STT connection
+  // can close mid-session (an idle timeout, a network blip, Deepgram's own
+  // connection lifetime limit) and this code never noticed — there was no
+  // `dg.on("close", ...)` handler at all, `dgOpen` never got reset to
+  // false, and every subsequent mic frame kept calling `dg.send(buf)` on an
+  // already-CLOSED socket with no callback to catch the failure. The client
+  // never heard about any of this, because nothing here ever sent it an
+  // "error" message — from the outside it looks exactly like "listening,
+  // but the mic just isn't picking anything up."
+  //
+  // Fixed by making the STT connection self-healing instead of a single
+  // fire-and-forget WebSocket: `dg` is now reassignable, and a real close
+  // triggers a bounded number of automatic reconnects (fresh handshake,
+  // same handlers) before finally giving up and telling the client — so a
+  // transient Deepgram-side drop recovers on its own instead of silently
+  // bricking the rest of the call.
+  let dg: WebSocket;
   let dgOpen = false;
+  let dgReconnectAttempts = 0;
+  const MAX_DG_RECONNECT_ATTEMPTS = 3;
   const pendingAudio: Buffer[] = [];
+  // Accumulates Deepgram "Results" transcript segments across one utterance
+  // — see handleDeepgramMessage for why this can't just react to every
+  // is_final. Declared before connectDeepgramStt so its own "message"
+  // handler closes over an already-initialized binding, not just a
+  // same-scope one that happens to be safe only because WS events are
+  // always async.
+  const turnState = { buffer: "" };
 
-  dg.on("open", () => {
-    dgOpen = true;
-    for (const chunk of pendingAudio.splice(0)) dg.send(chunk);
-  });
+  function connectDeepgramStt(): void {
+    const socket = new WebSocket(dgUrl, { headers: { Authorization: `Token ${deps.deepgramApiKey}` } });
+    dg = socket;
+
+    socket.on("open", () => {
+      dgOpen = true;
+      dgReconnectAttempts = 0;
+      for (const chunk of pendingAudio.splice(0)) socket.send(chunk);
+    });
+
+    socket.on("message", (data) => {
+      void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, recordMemoryTurn, () => scopeId, () => {
+        generation++;
+      });
+    });
+
+    socket.on("error", (err) => {
+      console.error("[cairn realtime] Deepgram STT connection error:", err);
+    });
+
+    socket.on("close", (code, reason) => {
+      dgOpen = false;
+      console.log(`[cairn realtime] Deepgram STT connection closed (code ${code}${reason ? `, ${reason}` : ""})`);
+      if (client.readyState !== WebSocket.OPEN) return; // the whole call already ended — nothing to reconnect for
+      if (dgReconnectAttempts >= MAX_DG_RECONNECT_ATTEMPTS) {
+        console.error(`[cairn realtime] Deepgram STT gave up reconnecting after ${MAX_DG_RECONNECT_ATTEMPTS} attempts`);
+        safeSend(client, { type: "error", message: "Speech recognition connection was lost and couldn't be restored — try starting the call again." });
+        return;
+      }
+      dgReconnectAttempts++;
+      console.log(`[cairn realtime] reconnecting to Deepgram STT (attempt ${dgReconnectAttempts}/${MAX_DG_RECONNECT_ATTEMPTS})`);
+      connectDeepgramStt();
+    });
+  }
+
+  connectDeepgramStt();
 
   // ONE Speak connection reused for every turn in this session — a fresh
   // handshake per turn is a real, measurable chunk of the latency this
@@ -411,26 +471,16 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
     });
   }
 
-  // Accumulates Deepgram "Results" transcript segments across one utterance
-  // — see handleDeepgramMessage for why this can't just react to every
-  // is_final.
-  const turnState = { buffer: "" };
-
-  dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, recordMemoryTurn, () => scopeId, () => {
-      generation++;
-    });
-  });
-
-  dg.on("error", (err) => {
-    console.error("[cairn realtime] Deepgram STT connection error:", err);
-    safeSend(client, { type: "error", message: "speech recognition unavailable" });
-  });
-
   client.on("message", (data, isBinary) => {
     if (isBinary) {
       const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-      if (dgOpen) dg.send(buf);
+      // The readyState check (not just dgOpen) is real, defensive belt-and-
+      // suspenders: dgOpen is reset to false the instant "close" fires, but
+      // a mic frame arriving in the same tick as a not-yet-processed close
+      // event should never risk calling .send() on a socket that's already
+      // gone — that used to be exactly how a dead connection kept silently
+      // swallowing audio with no error ever surfacing.
+      if (dgOpen && dg.readyState === WebSocket.OPEN) dg.send(buf);
       else pendingAudio.push(buf);
       return;
     }
