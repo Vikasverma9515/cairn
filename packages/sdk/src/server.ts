@@ -7,10 +7,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
 import { z } from "zod";
 import {
+  classifyUiPattern,
   CopilotRequestSchema,
   CriticVerdictSchema,
+  deriveStructureSignals,
   isTerminalVerb,
   PlannerOutputSchema,
+  renderPlaybookHint,
   TaskSchema,
   VERBS,
   VerbResponseSchema,
@@ -205,6 +208,13 @@ export async function resolveVerb(
 ): Promise<VerbResponse> {
   let candidate: unknown;
   try {
+    // Architecture Pillar 2 — classified from the SAME liveElements this
+    // request already carries for element resolution, no new client
+    // wiring or payload field needed. Real, checkable evidence (which
+    // labels/roles matched), never a bare guess — see ui-patterns.ts's own
+    // doc comment. Absent entirely when nothing matched (a page that's
+    // none of the known patterns), rather than forcing a hint that isn't real.
+    const patternMatches = input.liveElements?.length ? classifyUiPattern(deriveStructureSignals(input.liveElements)) : [];
     // Element-level detail for the current page only, attached here rather
     // than baked into the (static, cached) system prompt — see
     // buildSystemPrompt's comment for why. This payload is already
@@ -215,6 +225,7 @@ export async function resolveVerb(
       ...input,
       currentPageElements: buildPageElements(manifest, input.route),
       currentPageDataShapes: buildPageDataShapes(manifest, input.route),
+      ...(patternMatches.length ? { suggestedApproach: renderPlaybookHint(patternMatches[0].pattern) } : {}),
     });
     candidate = await llm.respond(systemPrompt, userMessage);
   } catch (err) {
@@ -1021,6 +1032,15 @@ directory below plus three things attached to each request:
   or making up a value. "none" means this page's real data shape wasn't
   traced — don't treat that as "this page has no data," just don't invent
   field names or values for it.
+- "suggestedApproach": present only when this page's real, live-scanned
+  elements matched a known UI pattern (a data table, a kanban board, a
+  node/workflow canvas, a search/filter list, a multi-step wizard) — a
+  short, general hint for how that KIND of page is usually best operated
+  (e.g. "check whether this canvas connects nodes via a dropdown or a
+  drag gesture before choosing"). A starting point, never a script — still
+  verify everything against the real liveElements/currentPageElements
+  exactly as you always would; absent entirely when nothing matched, which
+  is not itself a signal of anything.
 Never invent a page, route, id, action, or tool name that isn't listed in
 one of these five places (the route directory, currentPageElements,
 liveElements, webMcpTools, or currentPageDataShapes). If a question is about a page other than

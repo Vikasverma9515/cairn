@@ -5707,6 +5707,124 @@ next up, in the plan's own stated build order.
 
 ---
 
+### Architecture Pillar 2 + the Playbook half of Pillar 3 — a UI-pattern classifier, so the agent can understand a platform it's never seen before
+
+Third of the 6-pillar plan, per its own stated build order ("ship the
+classifier against the EXISTING eval genres first, as a real, checkable
+target, before generalizing further"). Real, named gap this closes:
+`cairn build` needs the target app's own source code ahead of time —
+structurally impossible for a genuine third-party platform Cairn doesn't
+own (n8n, e.g., or any app whose code isn't available to scan). This
+pillar makes the LIVE-SCANNED page itself (already gathered every request,
+for element resolution) do double duty as a source of real structural
+understanding, without any new client wiring or payload field.
+
+**Built**:
+- `packages/core/src/ui-patterns.ts` (new) — `UI_PATTERNS` (`table-crud`,
+  `kanban`, `canvas`, `search-filter`, `wizard`), the same pattern ids
+  `packages/evals/src/primitives/index.ts`'s existing `PlaygroundPrimitive`
+  registry already established for its own genre taxonomy, per the plan's
+  own instruction to reuse that shape as a checkable target. `deriveStructureSignals(elements)`
+  turns a `LiveElement[]` (the exact `{id, role, label}` array already sent
+  on every request, nothing new) into role counts + lowercased labels.
+  `classifyUiPattern(signals)` is a deliberately rule-based (not ML)
+  classifier: each match carries its own concrete reasoning string (which
+  real labels/roles triggered it) — a wrong classification is debuggable,
+  never a black box, matching this codebase's own "never guess, show real
+  evidence" discipline elsewhere (the element ladder, the Critic). Ranked,
+  not single-answer: a real page can genuinely match more than one
+  pattern. Deliberately does NOT import `LiveElement` from `./index` (a
+  small structural `LiveElementLike` type restates its shape instead) —
+  the exact same circular-import avoidance `plan.ts`'s own doc comment
+  already documents for the same reason.
+- `packages/core/src/playbooks.ts` (new) — `PLAYBOOKS`, one hand-authored,
+  natural-language hint per UI pattern (e.g. canvas: "add nodes before
+  wiring connections; check whether THIS page connects via a dropdown or a
+  drag gesture before choosing — don't assume"). Explicitly a STARTING
+  POINT the Planner/Executor can consult, never a rigid script — every
+  step a Playbook suggests still goes through the exact same element-
+  ladder verification and Critic check as any other step. `renderPlaybookHint(pattern)`
+  joins a pattern's steps into one compact string, same rendering
+  discipline `renderRegisteredActions` already established for actions.
+- `packages/sdk/src/server.ts` (`resolveVerb`) — classifies `input.liveElements`
+  (when present) and, when at least one pattern matched, attaches the top
+  match's Playbook hint as a new `suggestedApproach` field in the
+  per-request userMessage — same additive, per-request placement as
+  `currentPageDataShapes` (never baked into the cached, route-independent
+  system prompt). Absent entirely when nothing matched or no liveElements
+  were reported, rather than forcing a hint that isn't real.
+  `buildSystemPrompt` documents the new field alongside the other four
+  per-request context sections, with the same "a starting point, still
+  verify everything for real" framing the Playbooks themselves carry.
+
+**A real, live-grounded design choice**: the classifier works purely from
+`LiveElement[]` (role + label) rather than raw DOM traversal (sibling
+counts, container hierarchy) — deliberately. `resolveVerb` already
+receives `liveElements` on every request with zero new wiring; a
+DOM-hierarchy-aware version would need new client-side extraction in
+`runtime-scan.ts` PLUS a new payload field, a materially bigger, riskier
+change for a first pass this plan itself says should "ship against
+existing genres first... before generalizing further." The rule set was
+grounded in the REAL copy of this repo's own demo apps (checked directly,
+not guessed): `/workflows`' actual `aria-label={`${node.label} connects
+to`}` is the literal phrase the canvas rule keys off; `/invoices`' real
+repeated "Archive" buttons with no fields anywhere on the page are the
+literal signal the table-crud rule keys off.
+
+**Tests**: `packages/core/src/ui-patterns.test.ts` (new) — 10 tests:
+`deriveStructureSignals`' role-counting/lowercasing/empty-page cases, and
+`classifyUiPattern` against fixtures modeled directly on this repo's own
+real pages (`/workflows`'s "connects to" selects → canvas, `/invoices`'s
+repeated Archive buttons → table-crud, a page with both repeated actions
+AND real inputs correctly NOT matching table-crud, `/board`'s kanban
+labels, `/shop`'s search input, the checkout wizard's "Continue to
+shipping" button, a page matching nothing returning an empty list, and
+every returned match being a real `UI_PATTERNS` member).
+`packages/core/src/playbooks.test.ts` (new) — 3 tests: every pattern has a
+real, non-empty playbook (never a silent gap), canvas's playbook
+explicitly mentions checking select vs. drag, `renderPlaybookHint` joins
+correctly. `packages/sdk/src/server.test.ts` — 4 new tests: real
+liveElements matching a pattern add `suggestedApproach` to the request
+payload, liveElements matching nothing omit it entirely, no liveElements
+at all also omits it without crashing, and the field is documented in the
+system prompt. 17 new tests total. Full repo `npx vitest run`: 606/606
+passing, zero regressions. Full `npm run typecheck` clean across all 6
+workspaces. `npm run build -w @cairnvibe/core -w @cairnvibe/sdk` rebuilt
+cleanly.
+
+**Live-verified**: demo app rebuilt and restarted cleanly on the new
+builds, zero console/server errors (beyond this sandbox's own harmless HMR
+websocket noise). Navigated to the real `/workflows` page and added real
+nodes via the UI — confirmed via direct page-text inspection that the
+live page genuinely renders "Connects to" selects for each node, exactly
+the real signal `classifyUiPattern`'s canvas rule depends on — proving the
+classifier's grounding is accurate against the actual running app, not
+just a hand-written fixture. The full round trip through a real model
+(does `suggestedApproach` actually change what the model does) is not yet
+observable live — same pre-existing Groq `401 Invalid API Key` block noted
+in the Pillar 1 and Pillar 4 entries above; the request-payload wiring
+itself is proven by the `server.test.ts` tests above using the exact real
+copy this live check just confirmed is accurate.
+
+**Pending**: a real live-model check of `suggestedApproach` actually
+changing behavior, once a working API key is available. Wiring the
+classifier into `resolvePlan` too (currently only `resolveVerb`/the
+Executor sees it) — the Planner doesn't currently receive `liveElements`
+at all, so this needs its own small design pass on what page snapshot a
+Planner call should see when it fires before or during a turn's first
+real step. Generalizing beyond role/label signals to real DOM-hierarchy
+analysis (repeated sibling containers, layout signals) once this rule-
+based v1 has real production signal on where it falls short. The Skill
+half of Pillar 3 (Formulator, self-authored per-deployment Skills,
+progressive-disclosure loading) — the actual "agent writes its own file"
+capability the plan's own center point is built toward, next up once this
+Playbook foundation is in place. Pillar 5 (tiered memory), Pillar 6 (Scout
+role + per-tool risk tiering).
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

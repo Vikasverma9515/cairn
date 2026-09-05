@@ -736,6 +736,60 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(calls[0].systemPrompt).toContain("currentPageDataShapes"); // documented as a concept, just not populated here
   });
 
+  // Architecture Pillar 2 — classified from the SAME liveElements this
+  // request already carries, no new client wiring needed.
+  it("real liveElements matching a known UI pattern add a suggestedApproach hint to the request payload", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({
+      route: "/invoices",
+      question: "what can I do here?",
+      visible: [],
+      liveElements: [
+        { id: "archive-1", role: "button", label: "Archive" },
+        { id: "archive-2", role: "button", label: "Archive" },
+      ],
+    });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.suggestedApproach).toContain("row");
+  });
+
+  it("liveElements matching no known pattern omit suggestedApproach entirely — never a forced, wrong hint", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({
+      route: "/invoices",
+      question: "what is this?",
+      visible: [],
+      liveElements: [{ id: "about", role: "a", label: "About us" }],
+    });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.suggestedApproach).toBeUndefined();
+  });
+
+  it("no liveElements at all (a page with none, or an older client) also omits suggestedApproach, never crashes", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what is this?", visible: [] });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.suggestedApproach).toBeUndefined();
+  });
+
+  it("suggestedApproach is documented in the system prompt as a real, named field", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what is this?", visible: [] });
+
+    expect(calls[0].systemPrompt).toContain("suggestedApproach");
+  });
+
   // Phase 4 step 4 — registeredActions was the weakest-typed of Cairn's
   // three action-invocation mechanisms (a bare id, no server-visible
   // metadata at all). actionDescriptions is a new, optional, purely

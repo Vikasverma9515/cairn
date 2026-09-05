@@ -621,3 +621,5 @@ export type AgentEvent = z.infer<typeof AgentEventSchema>;
 // Planner/Progress types (Phase 3 — see plan.ts's own doc comment for why
 // this is a plain re-export, not inlined here: avoids a circular import).
 export * from "./plan";
+export * from "./ui-patterns";
+export * from "./playbooks";
