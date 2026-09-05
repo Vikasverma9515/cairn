@@ -5106,6 +5106,100 @@ alone.
 
 ---
 
+### Real root cause of "status says Listening but my input isn't picked up": the capture AudioContext can be silently suspended by the browser, with no way for its own code to notice
+
+Direct, repeated live report: after the agent finishes answering, the UI
+correctly shows "Listening…" but the next thing said sometimes just
+isn't picked up at all — not garbled, not mis-transcribed, genuinely
+never sent. A prior entry this session ("Add real diagnostic logging for
+status says Listening... but nothing gets picked up") added logging for
+this exact symptom but never identified the mechanism; this entry is the
+real, live-reported repeat of the same bug, now root-caused.
+
+**The mechanism**: browsers deliberately suspend an `AudioContext` that
+has no active audio actually reaching real output — a documented power-
+saving policy, not limited to a backgrounded tab. The realtime call's
+CAPTURE-side `AudioContext` (mic → `ScriptProcessorNode` → a gain node
+fixed at `0` → destination) has, by design, no real audible output at
+all — it exists purely to run `onaudioprocess` for mic capture. That
+makes it exactly the shape a browser is most likely to suspend. Once
+suspended, `onaudioprocess` simply stops firing — nothing inside that
+callback can detect or recover from its own silence, since it never
+runs again to do so. `rtStatus`/`this.status` never changes (nothing
+tells it to), so the UI keeps confidently showing "Listening…" while
+genuinely zero audio is being captured. This is a real, externally-
+imposed browser condition, not a logic bug in `maybeResumeListening`,
+`rtStateRef`, or the send-gate — all of which were checked and confirmed
+correct (`setRtStatus` updates `rtStateRef.current` synchronously, no
+stale-closure gap).
+
+A real, separate, second failure mode was checked for at the same time,
+since the user also asked for "proper error handling... always a live
+conversation": nothing previously detected the mic's own
+`MediaStreamTrack` actually ending or going muted mid-call (device
+unplugged, OS-level permission revoked, another app taking exclusive
+mic access) — that would silently produce the identical symptom
+(onaudioprocess still fires, but the samples are dead/absent) with zero
+user-facing indication anything went wrong.
+
+**Built**, mirrored identically in both `index.tsx` and
+`web-component.ts`:
+- A `setInterval` health check (every 2s) for the life of a realtime
+  call: if `audioCtx.state !== "running"`, calls `audioCtx.resume()`
+  (the browser-suspension case); if the mic's own audio track has
+  `readyState === "ended"` or `.muted === true`, surfaces a real,
+  honest error ("The microphone connection was lost — try starting the
+  call again.") and ends the call cleanly via `endRealtime()` rather
+  than leaving it silently stuck.
+- A direct `track.addEventListener("ended", ...)` listener — the
+  track's own real event, firing immediately rather than waiting up to
+  2s for the next poll, for the case the browser/OS actually kills the
+  track outright.
+- `maybeResumeListening()` (both files) now also calls
+  `audioCtx.resume()` immediately at the exact moment a turn ends and
+  listening resumes — closes the up-to-2s gap the periodic poll alone
+  would leave between "the browser suspended capture mid-turn" and the
+  next health-check tick, for the specific, common moment (right after
+  a turn) most likely to matter.
+- Both the interval and the track-ended listener are torn down in the
+  existing `rtCleanupRef.current`/`this.rtCleanup` cleanup function, so
+  a call that ends normally leaves nothing running.
+
+**Why no server-side or protocol change was needed**: this is a purely
+client-side, browser-API-level condition — the WebSocket protocol,
+generation-tagging, and barge-in logic (all fixed earlier this session)
+were never the cause here and needed no changes.
+
+**Tests:** none added — this is browser-Web-Audio-API wiring
+(`AudioContext.state`, `MediaStreamTrack.readyState`/`.muted`, interval/
+event-listener lifecycle) with no pure logic to extract and unit-test in
+isolation, matching how the rest of this same audio-graph setup code in
+both files is already (necessarily) untested at the unit level — a real
+constraint of the runtime, not a shortcut. Full repo `npx vitest run`:
+523/523 passing, zero regressions (nothing here could have affected any
+existing test — no exported function's behavior changed). Full `npm run
+typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not possible in this sandbox — no real microphone or
+browser AudioContext suspension behavior to trigger here. This needs the
+user's own next live test: specifically, a longer session (several
+exchanges) is more likely to hit a real browser-initiated suspension
+than a short one, so the real confirmation is "the mic keeps working
+reliably across a long multi-turn conversation," not just one exchange.
+
+**Pending:** if the mic still occasionally misses input even after this
+fix, the next real diagnostic step is checking the new `rtLog` lines
+this entry adds ("capture AudioContext was suspended — resuming", "mic
+track is no longer live") in the browser console during the next
+live-reported instance — those lines will say definitively whether this
+exact mechanism fired (and was recovered) or whether a genuinely
+different, still-unknown cause is at work, rather than guessing again.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

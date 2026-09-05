@@ -996,6 +996,7 @@ export class CairnWidgetElement extends HTMLElement {
           this.rtTourAudioDoneResolve = null;
           return;
         }
+        void audioCtx.resume().catch(() => {}); // don't wait up to 2s for the periodic health check if the browser already suspended capture
         this.setStatus("rt-listening");
         this.setCaption("");
       };
@@ -1080,7 +1081,31 @@ export class CairnWidgetElement extends HTMLElement {
       processor.connect(silence);
       silence.connect(audioCtx.destination);
 
+      // See index.tsx's own matching doc comment for the real, live-
+      // reported bug this closes: browsers can silently suspend an
+      // AudioContext with no active output (this capture context has
+      // none by design), after which onaudioprocess just stops firing —
+      // "Listening…" stays on screen while nothing is actually captured.
+      const micHealthCheck = setInterval(() => {
+        if (audioCtx.state !== "running") {
+          void audioCtx.resume().catch(() => {});
+        }
+        const track = stream.getAudioTracks()[0];
+        if (track && (track.readyState === "ended" || track.muted)) {
+          this.setAnswer("The microphone connection was lost — try starting the call again.");
+          this.endRealtime();
+        }
+      }, 2000);
+
+      const handleMicTrackEnded = () => {
+        this.setAnswer("The microphone connection was lost — try starting the call again.");
+        this.endRealtime();
+      };
+      stream.getAudioTracks().forEach((t) => t.addEventListener("ended", handleMicTrackEnded));
+
       this.rtCleanup = () => {
+        clearInterval(micHealthCheck);
+        stream.getAudioTracks().forEach((t) => t.removeEventListener("ended", handleMicTrackEnded));
         processor.disconnect();
         source.disconnect();
         stream.getTracks().forEach((t) => t.stop());

@@ -1049,7 +1049,48 @@ export function Copilot({
       processor.connect(silence);
       silence.connect(audioCtx.destination);
 
+      // Real, live-reported bug this closes: "status says Listening but
+      // nothing gets picked up" — traced to browsers deliberately
+      // suspending an AudioContext that has no active OUTPUT (a real,
+      // documented power-saving policy, not backgrounded-tab-only). This
+      // capture context has no real output at all by design (silence's
+      // gain is 0), making it exactly the shape most likely to get
+      // silently suspended — and once suspended, onaudioprocess simply
+      // stops firing, so nothing inside it can detect or recover from its
+      // own silence. A periodic external health check is the only
+      // reliable way to catch this: resume the context if the browser
+      // suspended it, and — a real, separate failure mode — detect the
+      // mic's OWN MediaStreamTrack actually ending or going muted (device
+      // unplugged, OS-level permission revoked mid-call, another app
+      // taking exclusive access) and surface a real, honest error instead
+      // of silently going deaf with the UI still claiming to listen.
+      const micHealthCheck = setInterval(() => {
+        if (audioCtx.state !== "running") {
+          rtLog("capture AudioContext was suspended — resuming", { state: audioCtx.state });
+          void audioCtx.resume().catch((err) => rtLog("failed to resume capture AudioContext", { error: String(err) }));
+        }
+        const track = stream.getAudioTracks()[0];
+        if (track && (track.readyState === "ended" || track.muted)) {
+          rtLog("mic track is no longer live — ending the call", { readyState: track.readyState, muted: track.muted });
+          setAnswer("The microphone connection was lost — try starting the call again.");
+          endRealtime();
+        }
+      }, 2000);
+
+      // The track's own "ended" event is the immediate signal (fires the
+      // instant the OS/browser actually kills the track) — the poll above
+      // is the safety net for anything that doesn't fire it reliably
+      // (muted-without-ended has no dedicated event in the spec).
+      const handleMicTrackEnded = () => {
+        rtLog("mic track ended unexpectedly — ending the call");
+        setAnswer("The microphone connection was lost — try starting the call again.");
+        endRealtime();
+      };
+      stream.getAudioTracks().forEach((t) => t.addEventListener("ended", handleMicTrackEnded));
+
       rtCleanupRef.current = () => {
+        clearInterval(micHealthCheck);
+        stream.getAudioTracks().forEach((t) => t.removeEventListener("ended", handleMicTrackEnded));
         processor.disconnect();
         source.disconnect();
         stream.getTracks().forEach((t) => t.stop());
@@ -1080,6 +1121,7 @@ export function Copilot({
           return;
         }
         rtLog("resumed listening");
+        void audioCtx.resume().catch(() => {}); // don't wait up to 2s for the periodic health check if the browser already suspended capture
         micAudioSentSinceListeningRef.current = false;
         setRtStatus("rt-listening");
         setCaption("");
