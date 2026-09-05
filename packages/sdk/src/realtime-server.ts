@@ -46,7 +46,7 @@ import {
   type CreateCopilotHandlerOptions,
 } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
-import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import type { SkillStore } from "./skill-store";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
@@ -829,6 +829,18 @@ async function finalizeTurn(
   // once the turn concludes, below. Empty is the common case, not a gap.
   const learnedFacts: string[] = [];
 
+  // Architecture Pillar 5 — the Archive tier, checked once per turn
+  // (never always-injected the way Core facts are — those are seeded
+  // once per CONNECTION, in the "context" message handler above). Added
+  // only to THIS turn's own ephemeral working history, never persisted
+  // into the connection's real `history` array below — a fact resurfaced
+  // because it happened to relate to this one question shouldn't linger
+  // in context for the rest of the conversation the way a Core fact
+  // deliberately does.
+  const archiveScopeId = getScopeId?.() ?? null;
+  const archivedSummary = deps.memory && archiveScopeId ? formatArchivedFacts(deps.memory.recallArchivedFacts(archiveScopeId, transcript)) : null;
+  const historyForThisTurn = archivedSummary ? [...history, { role: "assistant" as const, text: archivedSummary }] : history;
+
   try {
     const planLLM = deps.planLLM;
     const criticLLM = deps.criticLLM;
@@ -837,7 +849,7 @@ async function finalizeTurn(
       planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions), skillsPayload);
     }
 
-    const result = await driveAgentLoop(history, {
+    const result = await driveAgentLoop(historyForThisTurn, {
       async getNextStep(loopHistory) {
         const { route, visible, liveElements, webMcpTools } = getContext();
         // Phase 5 step 2 — offered only when there's somewhere real to

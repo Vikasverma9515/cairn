@@ -32,7 +32,7 @@ import {
   type WebMcpTool,
 } from "@cairnvibe/core";
 import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
-import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import { KeyRotator } from "./key-rotator";
 
 const VERB_TOOL_NAME = "respond_with_verb";
@@ -171,6 +171,17 @@ export function createCopilotHandlerWithLLM(
       effectiveHistory = seedHistoryFromMemory([], priorTurns, MAX_HISTORY_TURNS);
       const factsSummary = formatRememberedFacts(options.memory.recallFacts(input.scopeId));
       if (factsSummary) effectiveHistory = [{ role: "assistant", text: factsSummary }, ...effectiveHistory];
+    }
+
+    // Architecture Pillar 5 — the Archive tier, checked on EVERY request
+    // (not just a fresh session — unlike Core facts above, an archived
+    // fact is never always-injected, only surfaced when THIS question
+    // actually relates to it, which can happen at any point in an
+    // ongoing conversation, not only at its start).
+    if (options.memory && input.scopeId) {
+      const archivedMatch = options.memory.recallArchivedFacts(input.scopeId, input.question);
+      const archivedSummary = formatArchivedFacts(archivedMatch);
+      if (archivedSummary) effectiveHistory = [...effectiveHistory, { role: "assistant", text: archivedSummary }];
     }
 
     const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, { ...input, history: effectiveHistory });

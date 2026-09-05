@@ -63,6 +63,9 @@ function fakeMemoryStore() {
     recallFacts: vi.fn().mockReturnValue({}),
     recordTurn: vi.fn(),
     recentTurns: vi.fn().mockReturnValue([]),
+    searchTurns: vi.fn().mockReturnValue([]),
+    archiveFact: vi.fn(),
+    recallArchivedFacts: vi.fn().mockReturnValue({}),
   };
 }
 
@@ -231,6 +234,50 @@ describe("handleDeepgramMessage", () => {
     expect(respond).toHaveBeenCalledTimes(2); // resolveVerb called again after the in-process "tool result", same as any other continuing step
     const verbMessages = sent.filter((m: any) => m.type === "verb");
     expect(verbMessages.every((m: any) => !(m.verb.verb === "call_tool" && m.verb.name === "remember_fact"))).toBe(true);
+  });
+
+  it("Architecture Pillar 5: a real Archive-tier match is surfaced to the model as part of this turn's own working history", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "ok" });
+    const deps = fakeDeps(respond);
+    const memory = fakeMemoryStore();
+    memory.recallArchivedFacts.mockReturnValue({ flakySelector: "the old checkout button was unreliable" });
+    deps.memory = memory;
+    const history: HistoryTurn[] = [];
+
+    await handleDeepgramMessage(
+      resultsMessage("was there ever a flaky selector issue?", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      history,
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(memory.recallArchivedFacts).toHaveBeenCalledWith("user-1", "was there ever a flaky selector issue?");
+    // The real point of the ephemeral placement — never leaks into the
+    // connection's own persistent history array once the turn is done.
+    expect(history.some((h) => h.text.includes("archived memory"))).toBe(false);
+    expect(history).toEqual([
+      { role: "user", text: "was there ever a flaky selector issue?" },
+      { role: "assistant", text: "ok" },
+    ]);
+  });
+
+  it("Architecture Pillar 5: no Archive match, or no scopeId yet, means no extra context and no crash", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "ok" });
+    const deps = fakeDeps(respond);
+    deps.memory = fakeMemoryStore(); // recallArchivedFacts defaults to {}
+
+    await expect(
+      handleDeepgramMessage(resultsMessage("hi", { isFinal: true, speechFinal: true }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
+    ).resolves.not.toThrow();
   });
 
   it("Phase 5 step 2: remember_fact is offered to the model only when memory AND a scopeId are both present", async () => {

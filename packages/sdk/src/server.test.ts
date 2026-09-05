@@ -99,6 +99,9 @@ function fakeMemoryStore() {
     recallFacts: vi.fn().mockReturnValue({}),
     recordTurn: vi.fn(),
     recentTurns: vi.fn().mockReturnValue([]),
+    searchTurns: vi.fn().mockReturnValue([]),
+    archiveFact: vi.fn(),
+    recallArchivedFacts: vi.fn().mockReturnValue({}),
   };
 }
 
@@ -180,6 +183,37 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(memory.recentTurns).not.toHaveBeenCalled();
     const seenHistory = JSON.parse(calls[0].userMessage).history;
     expect(seenHistory).toEqual([{ role: "user", text: "archive the first invoice" }, { role: "assistant", text: "done" }]);
+  });
+
+  // Architecture Pillar 5 — the Archive tier, checked on EVERY request.
+  it("Architecture Pillar 5: a real match in the Archive tier is surfaced to the model, distinct from Core facts", async () => {
+    const memory = fakeMemoryStore();
+    memory.recallArchivedFacts.mockReturnValue({ flakySelector: "the old checkout button was unreliable" });
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({
+      route: "/invoices",
+      question: "was there ever a flaky selector issue?",
+      visible: [],
+      scopeId: "end-user-1",
+      history: [{ role: "user", text: "hi" }], // non-empty — this is an ONGOING session, not a fresh one
+    });
+
+    expect(memory.recallArchivedFacts).toHaveBeenCalledWith("end-user-1", "was there ever a flaky selector issue?");
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory.at(-1)).toEqual({ role: "assistant", text: "Also found in older, archived memory (relevant to this question): flakySelector — the old checkout button was unreliable." });
+  });
+
+  it("Architecture Pillar 5: no Archive match means no extra history entry at all", async () => {
+    const memory = fakeMemoryStore(); // recallArchivedFacts defaults to {}
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({ route: "/invoices", question: "what is this page for?", visible: [], scopeId: "end-user-1", history: [{ role: "user", text: "hi" }] });
+
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory).toEqual([{ role: "user", text: "hi" }]);
   });
 
   it("Phase 5 step 4: a terminal verb is recorded to memory with the real question and real answer", async () => {

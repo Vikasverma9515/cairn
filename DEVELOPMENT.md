@@ -5998,6 +5998,127 @@ remaining pillars in the plan's own stated build order.
 
 ---
 
+### Architecture Pillar 5 — tiered memory (Core/Recall/Archive), extending memory-sqlite.ts without breaking its existing interface
+
+Fifth of the 6-pillar plan. Real, measured finding motivating this, not a
+hunch: swapping a tiered-memory agent for a flat/long-context-only one
+dropped multi-session task completion from ~80% to ~45% (MemoryArena,
+arxiv 2603.07670). `memory-sqlite.ts` was a flat two-table store (facts:
+one upsert per key; turns: a plain recency `LIMIT` query, no search) with
+no cap and no way to reach anything older than the last N turns. This
+splits it into three real tiers, same `MemoryStore` interface (every
+existing method's signature and behavior is unchanged), extended with new
+members for the new capability.
+
+**Built** (`packages/sdk/src/memory-sqlite.ts`):
+- **Core tier** — `rememberFact`/`recallFact`/`recallFacts`, unchanged
+  call signatures, but now genuinely CAPPED at `MAX_CORE_FACTS_PER_SCOPE`
+  (20) — "durable, curated facts, always injected" only means something if
+  the set actually stays small; uncapped, it's just a second, worse-
+  organized turn log. Once a scope's 21st fact is remembered, the least-
+  recently-updated Core fact is moved to Archive (below), not deleted —
+  "the piece that lets memory scale," per the plan's own framing, not a
+  data-loss cliff. Re-writing an EXISTING key is a plain update (never
+  counted as growth, never triggers eviction) — only genuinely new keys
+  can push a scope over the cap. Ties in `updated_at` (realistic: several
+  facts remembered in the same request, or the same millisecond in a
+  tight loop) break deterministically by insertion order (`id ASC`), not
+  left to SQLite's unspecified ordering among equal sort keys.
+- **Recall tier** — `recordTurn`/`recentTurns` unchanged, plus a new
+  `searchTurns(scopeId, query, limit?)`: a real keyword match (crude
+  4+-letter significant-word substring matching, no FTS5 extension or new
+  dependency needed) against past turn CONTENT, letting a later question
+  reach further back than `recentTurns`' own recency window without
+  loading the entire history every time.
+- **Archive tier** (new) — `archiveFact`/`recallArchivedFacts`, a
+  dedicated `cairn_memory_archive` table. Never always-injected the way
+  Core facts are — only surfaced when a real query's keywords actually
+  relate to an archived fact's key OR value. Populated automatically by
+  Core's own cap-eviction above, or directly via `archiveFact` for
+  something that never belonged in the small, always-injected Core set to
+  begin with.
+- `formatArchivedFacts(facts)` — the Archive tier's own version of the
+  existing `formatRememberedFacts`, worded distinctly ("Also found in
+  older, archived memory (relevant to this question)...") so the model
+  can tell a durable Core fact apart from one that only surfaced because
+  this specific question happened to relate to it.
+- **Wiring** (`packages/sdk/src/server.ts`'s `createCopilotHandlerWithLLM`,
+  `packages/sdk/src/realtime-server.ts`'s `finalizeTurn`) — both now check
+  `recallArchivedFacts(scopeId, question)` on EVERY request/turn (not just
+  a fresh session, unlike Core's one-time seed — an archived fact can
+  become relevant at any point in an ongoing conversation). The typed
+  transport appends the match to that request's own history array (already
+  request-scoped, nothing to clean up). The realtime relay builds a
+  SEPARATE, ephemeral `historyForThisTurn` array for `driveAgentLoop`
+  instead of mutating the connection's own persistent `history` — a fact
+  resurfaced because it related to one question is never left lingering in
+  context for the rest of the conversation the way a genuine Core fact
+  deliberately is.
+
+**A real bug found and fixed while writing the tests, not after**: the
+first version of the eviction query (`ORDER BY updated_at ASC LIMIT ?`
+alone) made "least-recently-updated" genuinely ambiguous whenever two
+facts shared a timestamp — realistic given millisecond resolution and a
+tight loop — since SQLite gives no ordering guarantee among rows with an
+equal sort key. Fixed by adding `id ASC` as an explicit tiebreaker before
+this shipped, once a test written to exercise exactly this case made the
+real nondeterminism risk visible.
+
+**Tests**: `packages/sdk/src/memory-sqlite.test.ts` — 18 new tests: Core
+stays intact under the cap, the 21st fact evicts the oldest into Archive
+(not deleting it), re-writing an existing key never triggers eviction,
+cap enforcement is scope-isolated; `searchTurns` finds an older turn
+`recentTurns` with a small limit would miss, matches on any significant
+word not the whole phrase, returns chronologically-ordered results, a
+query with no significant words returns empty (never every turn), no
+match returns empty, and a real limit is respected; `archiveFact`/
+`recallArchivedFacts` — direct archiving, matching on key OR value,
+upsert-not-duplicate, no-match returns `{}`, scope isolation, and Archive
+surviving a simulated process restart the same as Core/Recall already
+did. Plus 2 new tests for `formatArchivedFacts` (real wording distinct
+from `formatRememberedFacts`, null for an empty fact set).
+`packages/sdk/src/server.test.ts` — 2 new tests: a real Archive match is
+surfaced with the right wording, no match means no extra history entry.
+`packages/sdk/src/realtime-server.test.ts` — 2 new tests: a real match
+gets surfaced into the turn's own working history AND never leaks into
+the connection's persistent history afterward; no match/no scopeId yet
+means no extra context and no crash. 22 new tests total. Full repo `npx
+vitest run`: 665/665 passing, zero regressions (every existing
+`memory-sqlite.test.ts`/`fakeMemoryStore` test fixture across both test
+files needed the three new `MemoryStore` methods added as stubs — a real,
+expected consequence of extending a required interface, not a design
+smell). Full `npm run typecheck` clean across all 6 workspaces. `npm run
+build -w @cairnvibe/core -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified**: demo app rebuilt and restarted cleanly on the new
+builds, zero server/console errors. A full live E2E check of the tiered-
+memory behavior itself is NOT yet possible in this environment for an
+honest, structural reason: `examples/demo-app` has never wired a
+`MemoryStore` into either `/api/copilot` or the realtime relay at all
+(confirmed by grep before starting this pillar — zero matches for
+`createSqliteMemoryStore` anywhere in the demo app), so there is no real
+scopeId/memory-backed session running anywhere in this app to exercise
+Core capping, Recall search, or Archive retrieval against live traffic.
+This is the exact same pre-existing gap already noted in the Skill-half-
+of-Pillar-3 entry above (which also flagged `MemoryStore` as never wired
+into `realtime-cli.ts`) — not new to this pillar, and not attempted here
+either, to keep this pass's diff to the actual tiered-memory mechanism
+rather than also standing up a full demo memory deployment. The mechanism
+itself is real, complete, and covered by the 22 tests above, including
+full `createCopilotHandlerWithLLM`/`finalizeTurn` integration tests with
+working fake `MemoryStore`s proving the archive-surfacing wiring is
+correctly connected end to end at the code level.
+
+**Pending**: wiring a real `MemoryStore` into `examples/demo-app` and
+`realtime-cli.ts` so this (and the Skill half of Pillar 3, which has the
+identical gap) can be live-verified against real traffic — a real, scoped
+follow-up, not attempted here. Pillar 6 (Scout role + per-tool risk
+tiering) — the last pillar in the plan's own stated build order.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
