@@ -7,7 +7,6 @@ import {
   GroqVerbLLM,
   buildVerbToolSchema,
   createCopilotHandlerWithLLM,
-  createSpeakerLLM,
   renderRegisteredActions,
   resolveCritic,
   resolvePlan,
@@ -1175,26 +1174,6 @@ describe("GroqStreamingTextLLM", () => {
     await expect(llm.respondStreamed("s", "u", (d) => chunks.push(d))).rejects.toThrow("429");
     expect(chunks).toEqual(["partial"]); // delivered once, never re-emitted
     expect(attempts).toBe(1); // no retry attempted once a chunk had already gone out
-  });
-});
-
-describe("createSpeakerLLM", () => {
-  it("defaults to the anthropic provider", () => {
-    expect(createSpeakerLLM({ apiKey: "fake-key" })).toBeInstanceOf(AnthropicStreamingTextLLM);
-  });
-
-  it("builds a Groq-backed instance when provider is 'groq'", () => {
-    expect(createSpeakerLLM({ provider: "groq", apiKey: "fake-key" })).toBeInstanceOf(GroqStreamingTextLLM);
-  });
-
-  it("throws a clear error for provider 'groq' with no keys available", () => {
-    const originalEnv = process.env.GROQ_API_KEYS;
-    delete process.env.GROQ_API_KEYS;
-    try {
-      expect(() => createSpeakerLLM({ provider: "groq" })).toThrow(/needs apiKey/);
-    } finally {
-      if (originalEnv !== undefined) process.env.GROQ_API_KEYS = originalEnv;
-    }
   });
 });
 

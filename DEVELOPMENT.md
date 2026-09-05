@@ -4709,6 +4709,93 @@ both log lines fire normally and speech still isn't transcribed).
 
 ---
 
+### Remove the Speaker-call speculative-audio-substitution feature — spoken audio must always match displayed text
+
+Direct, explicit user instruction after a live screenshot showed the
+agent's SPOKEN answer correctly addressing an "overview" question while
+the DISPLAYED caption showed the unrelated "I'm not sure how to help
+with that." This is the risk Phase 2 step 1's own doc comments already
+named as "known, accepted" when that feature was built (two
+independently-generated answers to the same question, not guaranteed to
+agree) — it materialized for real, visibly, and the user's direct
+instruction was to remove the feature entirely rather than try to make
+the two calls agree ("remove this feature and make it again... remove
+that button and everything and make this realtime again").
+
+**Built:** removed the entire "dual-call" speculative-substitution path
+from `realtime-server.ts`'s `finalizeTurn`:
+- The speculative `speakerLLM.respondStreamed(...)` call kicked off
+  alongside `driveAgentLoop`, the `speaker: { text }` result wrapper, and
+  its `.then()`/`.catch()` handlers — all removed.
+- `firstStepWasTerminal` (the flag that gated whether a turn was even
+  eligible for the substitution) — removed, including its
+  `onStep`-side assignment.
+- The consumption site's substitution branch (`if (firstStepWasTerminal
+  && speaker.text !== null && ...) textToSpeak = speaker.text;`) —
+  removed. `textToSpeak` is now always exactly `verb.text` — the exact
+  same value the client's own caption already renders. Spoken audio and
+  displayed text can no longer diverge for a single-step terminal turn,
+  by construction, not by coincidence.
+- `speakerLLM` removed from `ConnectionDeps`, from the
+  `handleConnection(...)` call site, and from `createRealtimeServer`'s
+  own `createSpeakerLLM(options)` construction; the `createSpeakerLLM`
+  import removed from `realtime-server.ts`.
+- `createSpeakerLLM` itself removed from `server.ts` — it existed
+  specifically to build the Speaker LLM for this one feature (its own
+  doc comment named exactly this purpose), so it's genuinely dead now,
+  not general infrastructure. Its underlying `StreamingTextLLM`
+  interface and the `AnthropicStreamingTextLLM`/`GroqStreamingTextLLM`
+  classes are kept — confirmed via their own dedicated, independent test
+  coverage (`server.test.ts`'s `describe("AnthropicStreamingTextLLM")` /
+  `describe("GroqStreamingTextLLM")` blocks, which exercise them
+  directly, not through `createSpeakerLLM`) that they're real, reusable,
+  already-tested streaming infrastructure (including this session's own
+  rate-limit-retry fixes) — a future correctly-designed streaming-final-
+  answer feature (the thing Phase 2 step 1 was actually trying to
+  achieve) can build on them without redoing that work, but nothing
+  wires them into a live call path today.
+
+**Tradeoff, stated honestly:** this removes a real latency optimization
+(the speculative call was racing the structured call specifically to
+avoid waiting for a forced-tool-call response to fully render before
+speaking). The structured call's own `verb.text` is now the only source
+for spoken audio, exactly like the architecture before Phase 2 step 1
+existed. Correctness (what's heard always matches what's shown) is
+being deliberately chosen over that latency win, per direct user
+instruction — not an oversight.
+
+**Tests:** removed the 6 now-meaningless tests in
+`realtime-server.test.ts` that existed specifically to test the
+substitution behavior (single-step-uses-speaker-answer,
+falls-back-on-empty, falls-back-on-throw, tour-never-substitutes,
+multi-step-never-uses-stale-turn-0-answer, no-speakerLLM-configured) —
+the feature they tested no longer exists, so keeping them would just be
+asserting nothing meaningful. Removed the `fakeSpeakerLLM` test helper
+and its now-unused `StreamingTextLLM` import. Removed the 3
+`describe("createSpeakerLLM", ...)` tests in `server.test.ts` (defaults
+to anthropic, builds a Groq instance, throws with no keys) — same
+reasoning, the function they test is gone; `AnthropicStreamingTextLLM`/
+`GroqStreamingTextLLM`'s own direct test blocks are untouched and still
+pass. Full repo `npx vitest run`: 516/516 passing (525 minus the 9
+removed tests, zero regressions elsewhere). Full `npm run typecheck`
+clean across all 6 workspaces. `npm run build -w @cairnvibe/sdk`
+rebuilt cleanly.
+
+**Pending:** the real latency work this displaces (making the final
+answer genuinely stream-capable without a second, independently-
+generated call) is still a real, open problem — Phase 2 step 1's
+original plan-file section documented a live Groq spike proving a
+forced tool call never streams at the field level; that finding still
+stands. A future attempt at this needs a design that streams the
+*same* answer incrementally (e.g. streaming the structured call's own
+output if the provider ever supports partial tool-call streaming, or
+restructuring so there's only ever one generated answer, not two) — not
+a second, independently-phrased guess.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -472,31 +472,6 @@ export interface StreamingTextLLM {
   respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string>;
 }
 
-/** Same real rotation/model-selection logic as createToolLLM, but never
- * forces a tool — see StreamingTextLLM's own doc comment for why a
- * genuinely separate factory (not createToolLLM with an empty schema)
- * is the correct shape here, not a shortcut. */
-export function createSpeakerLLM(options: CreateCopilotHandlerOptions = {}): StreamingTextLLM {
-  const provider = options.provider ?? "anthropic";
-
-  if (provider === "groq") {
-    const rotator = options.apiKeys
-      ? new KeyRotator(options.apiKeys)
-      : options.apiKey
-        ? new KeyRotator([options.apiKey])
-        : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
-    if (!rotator) {
-      throw new Error("createSpeakerLLM: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
-    }
-    const model = options.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
-    return new GroqStreamingTextLLM(rotator, model);
-  }
-
-  const client = new Anthropic({ apiKey: options.apiKey });
-  const model = options.model ?? process.env.CAIRN_RUNTIME_MODEL ?? "claude-opus-5";
-  return new AnthropicStreamingTextLLM(client, model);
-}
-
 // ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
