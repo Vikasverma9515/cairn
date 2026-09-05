@@ -25,7 +25,7 @@ import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { executeVerbResponse } from "./verb-executor";
-import { createVadDetector } from "./vad";
+import { createBargeInGate, createVadDetector } from "./vad";
 
 type Status = "idle" | "asking" | "recording" | "rt-connecting" | "rt-listening" | "rt-thinking" | "rt-speaking";
 
@@ -974,6 +974,11 @@ export class CairnWidgetElement extends HTMLElement {
       const silence = audioCtx.createGain();
       silence.gain.value = 0;
       const bargeInVad = createVadDetector();
+      // See index.tsx's own doc comment on its matching bargeInGate for
+      // the real, live-reported bug this closes (a single noise-burst
+      // VAD frame permanently cutting the agent off) and the production
+      // research (Pipecat/LiveKit/Vapi/Deepgram) it's grounded in.
+      const bargeInGate = createBargeInGate();
 
       // Only flips back to "listening" (and lets the mic resume sending)
       // once BOTH the server has said no more audio is coming for this
@@ -1060,9 +1065,12 @@ export class CairnWidgetElement extends HTMLElement {
         // sent yet, and cut the agent off the instant the user starts
         // talking over it instead of making them wait for it to finish.
         if (this.status === "rt-speaking" && !this.touringActive) {
-          if (bargeInVad.process(e.inputBuffer.getChannelData(0)).isSpeech) triggerBargeIn();
+          const frame = bargeInVad.process(e.inputBuffer.getChannelData(0));
+          const frameDurationMs = (e.inputBuffer.length / audioCtx.sampleRate) * 1000;
+          if (bargeInGate.update(frame, frameDurationMs)) triggerBargeIn();
           return;
         }
+        bargeInGate.reset(); // not currently interruptible — don't let stale progress carry into the next speaking phase
 
         if (this.status !== "rt-listening") return; // don't send our own mic while the agent is thinking/speaking
         const pcm = floatTo16BitPCM(downsampleTo16k(e.inputBuffer.getChannelData(0), audioCtx.sampleRate));

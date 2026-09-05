@@ -23,7 +23,7 @@ import { findElement, highlightElement, logMiss, type MissContext } from "./elem
 import { createLiveElementRegistry } from "./runtime-scan";
 import { discoverWebMcpTools } from "./webmcp-client";
 import { executeToolStep, executeVerbResponse } from "./verb-executor";
-import { createVadDetector } from "./vad";
+import { createBargeInGate, createVadDetector } from "./vad";
 
 export interface CopilotProps {
   /** Reserved for a future client-side manifest fetch. Not required — the server handler owns the manifest. */
@@ -996,6 +996,20 @@ export function Copilot({
       const silence = audioCtx.createGain();
       silence.gain.value = 0;
       const bargeInVad = createVadDetector();
+      // Real, live-reported bug this closes: firing triggerBargeIn() off a
+      // SINGLE ~85-100ms VAD frame meant one cough or door-slam frame that
+      // happened to pass the energy+ZCR gate cut the agent off, permanently
+      // (no server-side "was this real" recovery exists anymore — see
+      // vad.ts's own doc comment for why that was removed instead of kept).
+      // Real research into how production voice-agent platforms solve this
+      // (Pipecat, LiveKit Agents, Vapi, Deepgram's Voice Agent API — see
+      // DEVELOPMENT.md) converges on gating the LOCAL trigger on SUSTAINED
+      // speech across a minimum duration instead — Pipecat's own production
+      // spec cites 250ms, Vapi's stopSpeakingPlan defaults to 0.2s. This
+      // gate does exactly that, entirely client-side (no network round trip
+      // or STT-transcript timing involved, so it can't reintroduce the
+      // removed server-side race).
+      const bargeInGate = createBargeInGate();
 
       processor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -1004,20 +1018,24 @@ export function Copilot({
         // Barge-in: while the agent is speaking a real conversational reply,
         // still thinking about one, OR mid-tour, keep listening to the mic
         // locally even though it isn't being sent yet, and cut the agent
-        // off the instant the user starts talking again instead of making
-        // them wait — including during a guided tour, which now cancels the
-        // rest of the walkthrough on interruption (see triggerBargeIn)
-        // instead of being talked-over-proof by design, the way a real
-        // person giving a tour stops when you have a question. The
-        // "rt-thinking" half matters just as much as "rt-speaking": an LLM
-        // turn can easily take a couple of seconds with nothing playing
-        // yet, and without this the mic was completely deaf during that
-        // whole window — found live as "not listening while speaking... no
-        // interrupting system", not just a missed nice-to-have.
+        // off once the user has been sustainedly talking again (bargeInGate,
+        // above) instead of making them wait — including during a guided
+        // tour, which now cancels the rest of the walkthrough on
+        // interruption (see triggerBargeIn) instead of being talked-over-
+        // proof by design, the way a real person giving a tour stops when
+        // you have a question. The "rt-thinking" half matters just as much
+        // as "rt-speaking": an LLM turn can easily take a couple of seconds
+        // with nothing playing yet, and without this the mic was completely
+        // deaf during that whole window — found live as "not listening
+        // while speaking... no interrupting system", not just a missed
+        // nice-to-have.
         if (rtStateRef.current === "rt-speaking" || rtStateRef.current === "rt-thinking") {
-          if (bargeInVad.process(e.inputBuffer.getChannelData(0)).isSpeech) triggerBargeIn();
+          const frame = bargeInVad.process(e.inputBuffer.getChannelData(0));
+          const frameDurationMs = (e.inputBuffer.length / audioCtx.sampleRate) * 1000;
+          if (bargeInGate.update(frame, frameDurationMs)) triggerBargeIn();
           return;
         }
+        bargeInGate.reset(); // not currently interruptible — don't let stale progress from a moment ago carry into the next speaking/thinking phase
 
         if (rtStateRef.current !== "rt-listening") return; // don't send our own mic while the agent is thinking/speaking
         if (!micAudioSentSinceListeningRef.current) {

@@ -87,3 +87,67 @@ export function createVadDetector(): VadDetector {
     },
   };
 }
+
+// A live-reported bug traced this session (see DEVELOPMENT.md) to a
+// server-side "confirm-or-reverse" barge-in design that raced Deepgram's
+// own transcript against a fixed grace window — real, deliberate
+// interruptions routinely lost that race and got treated as false
+// positives. Removing that system fixed the false "resumes from the
+// top," but left barge-in firing on a SINGLE ~85-100ms VAD frame
+// (createVadDetector's own frame-classification granularity at the
+// 4096-sample ScriptProcessorNode buffer size in use) — a single cough
+// or door-slam frame that happens to pass the energy+ZCR gate still cuts
+// the agent off, permanently now, with no recovery at all.
+//
+// Real research into how production voice-agent platforms actually solve
+// this (Pipecat, LiveKit Agents, Vapi, Deepgram's own Voice Agent API —
+// see DEVELOPMENT.md for the full comparison) converges on the same
+// answer, independent of any STT-transcript race: gate the LOCAL VAD
+// trigger on SUSTAINED speech across a minimum duration, not a single
+// frame. Pipecat's own documented production spec cites a 250ms minimum
+// duration; Vapi's stopSpeakingPlan defaults its VAD-duration threshold
+// (voiceSeconds) to 0.2s specifically to "balance responsiveness and
+// avoid false triggers." This is the same idea, entirely client-side —
+// unlike the removed server-side design, it never waits on a network
+// round trip or Deepgram's own transcript timing, so it can't reintroduce
+// that exact race. A brief, real noise burst (a cough, a single loud
+// clack) essentially never sustains cleanly across multiple consecutive
+// frames at these energy/ZCR bands; genuine speech does.
+const BARGE_IN_MIN_SPEECH_MS = 200;
+
+export interface BargeInGate {
+  /** Feed one frame's VAD classification plus that frame's real duration
+   * (samples.length / sampleRate * 1000 — NOT assumed, since sample rate
+   * varies by device/browser). Returns true the instant accumulated
+   * consecutive speech crosses the minimum-duration threshold — fires
+   * exactly once per sustained speech onset. Any non-speech frame resets
+   * the accumulator immediately, so a genuine interruption still cuts in
+   * well under half a second, while an isolated noise burst (which
+   * essentially never sustains across consecutive frames) never fires at
+   * all. */
+  update(frame: VadFrameResult, frameDurationMs: number): boolean;
+  reset(): void;
+}
+
+export function createBargeInGate(minSpeechMs: number = BARGE_IN_MIN_SPEECH_MS): BargeInGate {
+  let accumulatedMs = 0;
+  let fired = false;
+
+  return {
+    update(frame, frameDurationMs) {
+      if (!frame.isSpeech) {
+        accumulatedMs = 0;
+        fired = false;
+        return false;
+      }
+      accumulatedMs += frameDurationMs;
+      if (fired || accumulatedMs < minSpeechMs) return false;
+      fired = true;
+      return true;
+    },
+    reset() {
+      accumulatedMs = 0;
+      fired = false;
+    },
+  };
+}

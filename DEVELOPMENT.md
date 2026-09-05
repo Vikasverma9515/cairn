@@ -4870,6 +4870,128 @@ guess-and-replay step after the fact.
 
 ---
 
+### Real research into production barge-in design, and a sustained-speech gate to close the "one noise burst permanently cuts the agent off" gap the previous fix left open
+
+Direct follow-up instruction after the confirm-or-reverse removal above:
+research how real, production voice-agent companies actually solve
+barge-in/interruption detection — distinguishing real speech from
+background noise, and a genuine "stop"/new utterance from a stray
+sound — and implement it, rather than leaving the local VAD as the only
+line of defense with no minimum-duration gate at all.
+
+**Research** (four independent, real production systems, all converging
+on the same answer):
+- **Pipecat** — a production barge-in pipeline runs VAD continuously
+  during agent speech with an energy gate, a classifier confidence
+  threshold, and a documented **250ms minimum duration** before treating
+  a detection as a real interruption.
+- **LiveKit Agents** — ships both a `min_duration`/`min_words` filter on
+  its interruption config AND a separate "adaptive interruption
+  handling" ML classifier (86% precision / 100% recall at 500ms overlap,
+  rejecting 51% of VAD-only barge-ins as false positives) with a
+  configurable `resume_false_interruption` fallback for whatever still
+  slips through.
+- **Vapi** — `stopSpeakingPlan.voiceSeconds` (VAD-duration threshold)
+  **defaults to 0.2s**, explicitly "to balance responsiveness and avoid
+  false triggers"; `numWords` is a separate, optional, STT-confirmed
+  word-count gate for when even higher precision is wanted (at the cost
+  of 100-200ms extra latency waiting on a real transcript).
+- **Deepgram's Voice Agent API** — blends prosody/syntax/semantics for
+  end-of-turn prediction, but for barge-in specifically still relies on
+  the same real-time VAD-during-agent-speech pattern underneath.
+- Sources: [Voice AI Barge-In and Turn-Taking: A 2026 Implementation
+  Guide](https://futureagi.com/blog/voice-ai-barge-in-turn-taking-2026/),
+  [Voice Agent Interruption Handling (Hamming
+  AI)](https://hamming.ai/resources/voice-agent-interruption-handling-runbook),
+  [LiveKit: Turn detection and
+  interruptions](https://docs.livekit.io/agents/v1/build/turn-detection),
+  [LiveKit: Solving unwanted interruptions with Adaptive Interruption
+  Handling](https://livekit.com/blog/adaptive-interruption-handling),
+  [Vapi: Voice pipeline
+  configuration](https://docs.vapi.ai/customization/voice-pipeline-configuration),
+  [Deepgram Voice Agent
+  API](https://deepgram.com/product/voice-agent-api).
+
+**The real, load-bearing convergence point**: every one of these gates
+the LOCAL, purely-acoustic VAD trigger on a **minimum sustained
+duration** (200-250ms) before ever treating it as a real interruption —
+completely independent of any STT transcript timing. That's the
+critical difference from the confirm-or-reverse design removed in the
+entry above: this fix adds NO network round trip and depends on NO
+Deepgram transcript arriving within a deadline, so it structurally
+cannot reintroduce that same race. A single cough or door-slam frame
+essentially never sustains cleanly across multiple consecutive ~85ms
+VAD frames at real speech energy/ZCR bands; genuine speech does.
+
+**Built:**
+- `createBargeInGate(minSpeechMs = 200)` in `vad.ts` — a small, stateful
+  gate: accumulates consecutive-speech duration frame by frame, resets
+  to 0 the instant a non-speech frame arrives, and fires exactly once
+  per sustained onset once the accumulated duration crosses the
+  threshold. Default of 200ms matches Vapi's own documented default
+  (`voiceSeconds: 0.2`), inside Pipecat's documented 250ms production
+  range.
+- Wired into both `index.tsx` and `web-component.ts`'s
+  `onaudioprocess` handlers: `bargeInVad.process(...)` still classifies
+  each raw frame exactly as before (energy + ZCR + adaptive noise
+  floor, unchanged), but the actual `triggerBargeIn()` call now only
+  fires once `bargeInGate.update(frame, frameDurationMs)` returns true.
+  `frameDurationMs` is computed for real from
+  `e.inputBuffer.length / audioCtx.sampleRate` — never assumed — since
+  device/browser sample rates vary (48kHz vs 44.1kHz changes a
+  4096-sample frame from ~85ms to ~93ms).
+- `bargeInGate.reset()` called whenever mic processing falls through to
+  a non-interruptible state (listening, muted, etc.) so stale
+  in-progress accumulation from a moment ago never silently carries
+  into the next speaking/thinking phase.
+
+**Explicitly NOT built this pass, and why:** an STT-word-count
+confirmation gate (Vapi's `numWords`) or a real ML turn-classifier
+(LiveKit's adaptive model) — both would add real value (distinguishing
+"stop" from "mmhmm," true backchannel-vs-interruption detection per
+[Deepgram's own writeup on
+this](https://deepgram.com/learn/backchannels-vs-interruptions-voice-agents))
+but both need either a transcript round trip (reintroducing exactly the
+timing dependency the previous entry's fix removed) or a real trained
+classifier model (real added bundle weight/latency, the same tradeoff
+`vad.ts`'s own top-of-file comment already declined for the base VAD
+itself). The sustained-duration gate is the one piece of this whole
+landscape that is genuinely free — zero added latency dependency, zero
+added bundle weight — which is why it's the one implemented now; the
+rest is real, legitimate future work, not an oversight.
+
+**Tests:** `vad.test.ts` gains 7 new tests for `createBargeInGate` —
+doesn't fire on a single sub-threshold frame, fires once accumulated
+consecutive speech crosses the threshold, fires exactly once per onset
+(not repeatedly once past threshold), a real isolated single-frame
+noise burst never fires, any non-speech frame resets the accumulator,
+`reset()` clears in-progress state and re-arms a fired onset, and the
+200ms default itself. Full repo `npx vitest run`: 515/515 passing (508
+existing + 7 new, zero regressions). Full `npm run typecheck` clean
+across all 6 workspaces. `npm run build -w @cairnvibe/sdk` rebuilt
+cleanly.
+
+**Live-verified:** not possible in this sandbox — no real microphone or
+speaker hardware here, and the whole point of this fix is real acoustic
+timing (frame-to-frame speech sustain) that can't be faked with a typed
+test. Needs the user's own next live voice test to confirm in practice:
+a real "stop" said clearly should still cut the agent within roughly
+200-300ms (barely perceptible), while an isolated cough/bump/door-slam
+should no longer cut it off at all.
+
+**Pending:** if a real cough/noise still manages to sustain past 200ms
+in practice (a longer throat-clear, a persistent background sound),
+the honest next step per this same research is Vapi's second lever —
+an STT-word-count confirmation gate — not reverting to a blind
+server-side timeout-and-replay. If false interruptions turn out to be
+common enough to matter, LiveKit's real trained adaptive-classifier
+approach is the production-grade answer, at the cost of the real
+model/bundle-weight tradeoff `vad.ts` already declined once.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeRms, computeZcr, createVadDetector } from "./vad";
+import { computeRms, computeZcr, createBargeInGate, createVadDetector, type VadFrameResult } from "./vad";
 
 describe("computeRms", () => {
   it("returns 0 for silence", () => {
@@ -125,5 +125,72 @@ describe("createVadDetector", () => {
     const vad = createVadDetector();
     const result = vad.process(speechLikeFrame(4096, 0.021));
     expect(result.isSpeech).toBe(true); // just above the 0.02 absolute floor
+  });
+});
+
+function speechFrame(): VadFrameResult {
+  return { isSpeech: true, rms: 0.3, zcr: 0.05, noiseFloor: 0 };
+}
+
+function nonSpeechFrame(): VadFrameResult {
+  return { isSpeech: false, rms: 0.01, zcr: 0.05, noiseFloor: 0.01 };
+}
+
+describe("createBargeInGate", () => {
+  it("does not fire on a single speech frame shorter than the minimum duration", () => {
+    const gate = createBargeInGate(200);
+    // One 85ms frame — well under the 200ms floor.
+    expect(gate.update(speechFrame(), 85)).toBe(false);
+  });
+
+  it("fires once accumulated CONSECUTIVE speech crosses the minimum duration — real, sustained speech, not a single burst", () => {
+    const gate = createBargeInGate(200);
+    expect(gate.update(speechFrame(), 85)).toBe(false); // 85ms
+    expect(gate.update(speechFrame(), 85)).toBe(false); // 170ms
+    expect(gate.update(speechFrame(), 85)).toBe(true); // 255ms — crosses 200ms
+  });
+
+  it("fires exactly once per sustained onset, not on every frame after crossing the threshold", () => {
+    const gate = createBargeInGate(200);
+    gate.update(speechFrame(), 85);
+    gate.update(speechFrame(), 85);
+    expect(gate.update(speechFrame(), 85)).toBe(true);
+    expect(gate.update(speechFrame(), 85)).toBe(false); // already fired for this onset
+    expect(gate.update(speechFrame(), 85)).toBe(false);
+  });
+
+  it("real bug this closes: an isolated single-frame noise burst (cough, door slam) never fires — it doesn't sustain across consecutive frames", () => {
+    const gate = createBargeInGate(200);
+    expect(gate.update(speechFrame(), 85)).toBe(false); // the burst's one loud frame
+    expect(gate.update(nonSpeechFrame(), 85)).toBe(false); // silence again — the burst already ended
+    expect(gate.update(nonSpeechFrame(), 85)).toBe(false);
+  });
+
+  it("any non-speech frame resets the accumulator — a brief pause mid-utterance restarts the count instead of carrying over stale progress", () => {
+    const gate = createBargeInGate(200);
+    gate.update(speechFrame(), 85); // 85ms
+    gate.update(speechFrame(), 85); // 170ms — close to firing
+    gate.update(nonSpeechFrame(), 85); // reset to 0
+    expect(gate.update(speechFrame(), 85)).toBe(false); // only 85ms since the reset
+    expect(gate.update(speechFrame(), 85)).toBe(false); // 170ms
+    expect(gate.update(speechFrame(), 85)).toBe(true); // 255ms — crosses 200ms
+  });
+
+  it("reset() clears in-progress accumulation and re-arms an onset that already fired", () => {
+    const gate = createBargeInGate(200);
+    gate.update(speechFrame(), 85);
+    gate.update(speechFrame(), 85);
+    expect(gate.update(speechFrame(), 85)).toBe(true); // fired once
+
+    gate.reset();
+    expect(gate.update(speechFrame(), 85)).toBe(false); // starts over from 0ms
+    expect(gate.update(speechFrame(), 85)).toBe(false);
+    expect(gate.update(speechFrame(), 85)).toBe(true); // fires again after re-accumulating
+  });
+
+  it("defaults to 200ms — matching the real production defaults found in Vapi's stopSpeakingPlan (voiceSeconds: 0.2s default) and inside Pipecat's documented 250ms production spec's own range", () => {
+    const gate = createBargeInGate(); // no explicit minSpeechMs
+    expect(gate.update(speechFrame(), 199)).toBe(false);
+    expect(gate.update(speechFrame(), 1)).toBe(true); // crosses 200ms exactly
   });
 });
