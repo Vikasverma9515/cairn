@@ -24,6 +24,8 @@ export function CopilotWithActions() {
       reportMissesEndpoint="/api/copilot/misses"
       transcribeEndpoint="/api/copilot/transcribe"
       speakEndpoint="/api/copilot/speak"
+      planEndpoint="/api/copilot/plan"
+      criticEndpoint="/api/copilot/critic"
       realtimeUrl="ws://localhost:3010"
       persona="Cairn"
     />

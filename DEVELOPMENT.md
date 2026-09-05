@@ -5551,6 +5551,162 @@ per-tool risk tiering) — next up, in the plan's own stated build order.
 
 ---
 
+### Architecture Pillar 4 — default-on planning and a real Planner/Critic for the typed transport (closing "today explicitly realtime-only by deferral, not by decision")
+
+Second of the 6-pillar plan. Two real, named gaps closed:
+1. The realtime relay's own Planner call was gated lazily — `onStep` only
+   built `planPromise` once a turn's FIRST step had already come back
+   non-terminal, one full model round trip later than necessary.
+2. The typed/HTTP transport (`index.tsx`'s `runTypedAgentLoop`) had ZERO
+   Planner/Critic wiring at all — confirmed by grep before starting, and
+   called out explicitly in the plan file's own "what's actually built
+   today" section, with realtime-server.ts's own code comment admitting
+   it: "today explicitly realtime-only by deferral, not by decision."
+
+**A real design decision made and documented, not silently skipped**: the
+plan also asks for "a lightweight Critic pass after every terminal answer
+too." Building that literally — running a real second LLM call after
+EVERY single terminal answer, including trivial one-shot questions like
+"what does this button do" — has two real problems: it roughly doubles
+LLM call volume for the common case (this session already hit genuine
+Groq quota exhaustion more than once from cumulative testing volume, a
+concrete, already-experienced cost), and there is no safe, well-defined
+action to take if the Critic disagrees with a terminal "explain" answer —
+overriding a model's own correct answer with a second, cheaper, possibly-
+wrong model's guess has no real upside and a real downside. Deferred,
+honestly, rather than half-built; see Pending below for what it would
+actually need.
+
+**Built**:
+- `packages/sdk/src/agent-loop.ts` — new `looksMultiStep(question:
+  string): boolean`, a cheap, local, dependency-free heuristic for "this
+  goal probably needs more than one real step" (sequencing language:
+  "then," "after that," "once you," "and then," "first ... then," etc.),
+  checked BEFORE the first real step runs at all. Lives here rather than
+  `server.ts` specifically so BOTH transports can share the exact same
+  check — this file is plain TypeScript imported as raw source by
+  `index.tsx`'s browser bundle AND compiled for `realtime-server.ts`'s
+  Node build, while `server.ts` imports the Anthropic/Groq SDKs and can
+  never reach the client. Deliberately conservative: a false negative
+  just falls back to the existing lazy-after-step-1 path (zero
+  regression); a false positive costs one Planner call that would have
+  started a moment later anyway, never a wrong answer.
+- `packages/sdk/src/realtime-server.ts` — `finalizeTurn` now kicks off
+  `planPromise` EAGERLY, before `driveAgentLoop` even starts, whenever
+  `looksMultiStep(transcript)` is true; the old lazy branch inside
+  `onStep` is now a real fallback (`if (planLLM && !planPromise)`) instead
+  of the only path, so a heuristic miss still gets a plan, just one step
+  later, exactly as before this change. The inline duplicate fallback-
+  plan literal (`{ version: 1, goal: transcript, facts: [], tasks: [...] }`)
+  was replaced with a call to the newly-exported `fallbackPlan` from
+  `server.ts` — one real implementation instead of two copies that could
+  drift.
+- `packages/sdk/src/server.ts` — `fallbackPlan` exported (was a private
+  helper); two new HTTP handler factories following the exact
+  `createCopilotHandler`/`createCopilotHandlerWithLLM` pattern already
+  established for the verb endpoint:
+  - `createPlanHandler(manifest, options)` / `createPlanHandlerWithLLM(manifest, planLLM, options)`
+    — validates `{ goal, version? }` against a new `PlanRequestSchema`,
+    calls the same `resolvePlan` the realtime relay already calls
+    in-process, returns the real `Plan` as JSON.
+  - `createCriticHandler(options)` / `createCriticHandlerWithLLM(criticLLM)`
+    — validates `{ task, goal, verb, observation? }` against a new
+    `CriticRequestSchema` (built directly in `server.ts`, not
+    `packages/core/src/plan.ts`, specifically to avoid the circular-
+    import risk `plan.ts`'s own doc comment already flags for importing
+    `VerbResponseSchema` from `./index`), calls `resolveCritic`, returns
+    the real `CriticVerdict` as JSON.
+  Both degrade exactly like their in-process counterparts on an LLM
+  failure — a real 200 with a safe fallback (a single-task plan, or a
+  "continue" verdict), never a 500, so a Planner/Critic hiccup can't ever
+  block the turn.
+- `packages/sdk/src/index.tsx` — two new optional `CopilotProps`,
+  `planEndpoint`/`criticEndpoint` (same additive, opt-in discipline as
+  `speakEndpoint`/`transcribeEndpoint` — omitting either keeps the typed
+  loop exactly as it was, zero overhead). `runTypedAgentLoop` gained the
+  full Planner/Critic loop, mirroring `finalizeTurn`'s own shape verbatim
+  (eager `looksMultiStep`-gated kickoff, lazy fallback on the first
+  continuing step, a `runCritic` closure with the same task-completion/
+  replan/give-up/stall-budget logic realtime already has) reached over
+  real `fetch()` calls to the two new endpoints instead of in-process LLM
+  objects (`fetchPlan`/`fetchCriticVerdict`, both with the same
+  never-block-the-turn resilience as their server-side counterparts). The
+  loop's own outcome handling extended for the two new outcomes
+  `driveAgentLoop` can now genuinely produce on this transport:
+  `"critic-complete"` synthesizes `{ verb: "explain", text:
+  verdict.reasoning }` (no raw server response exists for this — it's a
+  harness-level conclusion, not something `endpoint` itself returned) and
+  `"critic-give-up"` uses the Critic's own real reasoning as the give-up
+  message instead of the generic fallback — same two cases
+  `finalizeTurn` already handles, now shared by both transports.
+- `examples/demo-app/app/api/copilot/plan/route.ts` and
+  `.../critic/route.ts` (new) — thin wrappers mirroring the existing
+  `copilot/route.ts` exactly, calling `createPlanHandler`/
+  `createCriticHandler`. `components/CopilotWithActions.tsx` wired
+  `planEndpoint="/api/copilot/plan"` and
+  `criticEndpoint="/api/copilot/critic"` onto the real `<Copilot>` — the
+  demo app's typed transport now genuinely exercises this, not just a
+  test double.
+
+**Tests**: `packages/sdk/src/agent-loop.test.ts` — 3 new tests for
+`looksMultiStep` (real sequencing language across several phrasings,
+conservative on plain single-step questions and a bare "and" that isn't
+sequencing, case-insensitivity). `packages/sdk/src/realtime-server.test.ts`
+— 2 new tests: a multi-step-looking transcript starts the real Planner
+call while the first step is STILL PENDING (not merely "started fast" —
+proven by holding the first step's own promise open and asserting the
+Planner call already fired before it resolves), and a plain transcript
+still gets exactly one real Planner call via the lazy fallback, unchanged.
+`packages/sdk/src/server.test.ts` — 7 new tests for
+`createPlanHandler`/`createCriticHandler`: a real request returns a real
+assembled Plan/verdict, a non-default plan version passes through, an
+invalid request body is refused with 400 before ever reaching the LLM (for
+both), and an LLM failure still returns 200 with the same safe fallback
+`resolvePlan`/`resolveCritic` themselves fall back to. 12 new tests total.
+Full repo `npx vitest run`: 589/589 passing, zero regressions. Full `npm
+run typecheck` clean across all 6 workspaces (including `demo-app`, which
+now imports the two new handler factories). `npm run build -w
+@cairnvibe/core -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified**: demo app rebuilt and restarted cleanly on the new
+`@cairnvibe/core`/`@cairnvibe/sdk` builds, zero server/console errors. Sent
+a real compound question through the widget's text box on the `/invoices`
+page ("check the amount on Acme Co and then archive it") and confirmed via
+direct network inspection: `looksMultiStep` correctly flagged it, the
+client fired a REAL request to the new `/api/copilot/plan` endpoint (200
+OK), and the endpoint's response was the correct fallback-plan JSON shape
+— genuine end-to-end proof the new client wiring, the new route, and
+`createPlanHandler`'s resilience path all work together for real, not just
+in unit tests. The underlying Planner LLM call itself still failed (same
+pre-existing Groq `401 Invalid API Key` issue noted in the Pillar 1 entry
+above — every configured key still isn't authenticating), which is exactly
+why the response came back as the fallback plan rather than a real
+Planner-authored one — expected, not a new bug. `/api/copilot` itself also
+still returned its own generic LLM-failure `explain`, meaning the turn
+ended on iteration 0 as terminal, so `runCritic` correctly never fired
+(matches its own "continuing steps only" contract) — the Critic endpoint's
+real wiring is therefore proven by the unit/integration tests above, not
+yet by a live non-fallback round trip; that needs the same working API key
+the rest of this session's live checks have been blocked on.
+
+**Pending**: a real live-model check of the full Planner→Executor→Critic
+loop end to end once a working LLM API key is available (unit/integration
+tests cover the logic in full; only the "does a real model actually
+produce a continuing step, then a real Critic verdict" path needs a live
+key). The deliberately-deferred "Critic pass after every terminal answer"
+sub-feature — if built later, it should be observability-only (narrate the
+verdict via the existing `"thk"` event stream) rather than able to
+override a terminal answer, for the reasons explained above; needs its own
+design pass on whether the added LLM cost is worth it once the Formulator/
+Skills pipeline (Pillar 3) exists to make use of that signal. Pillar 2
+(UI-pattern classifier + Playbooks), Pillar 3 (self-authored Skills),
+Pillar 5 (tiered memory), Pillar 6 (Scout role + per-tool risk tiering) —
+next up, in the plan's own stated build order.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

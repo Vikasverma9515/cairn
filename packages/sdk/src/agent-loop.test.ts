@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { driveAgentLoop, summarizeVerbForHistory } from "./agent-loop";
+import { driveAgentLoop, looksMultiStep, summarizeVerbForHistory } from "./agent-loop";
 import type { AgentEvent, CriticVerdict, HistoryTurn, VerbResponse } from "@cairnvibe/core";
+
+describe("looksMultiStep", () => {
+  it("flags real compound-goal sequencing language", () => {
+    expect(looksMultiStep("check the price and then buy it")).toBe(true);
+    expect(looksMultiStep("Find the invoice, then archive it.")).toBe(true);
+    expect(looksMultiStep("Once you find it, open the detail view.")).toBe(true);
+    expect(looksMultiStep("First check the price, then decide.")).toBe(true);
+  });
+
+  it("is conservative on a plain, single-step question — a false negative just falls back to the existing lazy gate, never a wrong answer", () => {
+    expect(looksMultiStep("what does this button do")).toBe(false);
+    expect(looksMultiStep("archive Acme Co.")).toBe(false);
+    expect(looksMultiStep("show me clients and invoices")).toBe(false);
+  });
+
+  it("is case-insensitive", () => {
+    expect(looksMultiStep("CHECK THE PRICE AND THEN BUY IT")).toBe(true);
+  });
+});
 
 function verdict(kind: CriticVerdict["verdict"], reasoning = "test"): CriticVerdict {
   return { verdict: kind, reasoning };

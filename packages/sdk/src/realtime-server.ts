@@ -28,12 +28,13 @@
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { AgentEvent, HistoryTurn, LiveElement, Manifest, Plan, ProgressLedger, VerbResponse, WebMcpTool } from "@cairnvibe/core";
-import { driveAgentLoop, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
+import { driveAgentLoop, looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import {
   buildSystemPrompt,
   createCriticLLM,
   createPlanLLM,
   createVerbLLM,
+  fallbackPlan,
   renderRegisteredActions,
   resolveCritic,
   resolvePlan,
@@ -754,13 +755,18 @@ async function finalizeTurn(
     }
   }
 
-  // Phase 3 steps 2-3 — kicked off on the SAME lazy gate as the ack
-  // above (only once a turn has already revealed it needs more than one
-  // step); real Plan/Progress state the Critic (below) actually acts on,
-  // not just observability. Only the realtime transport is wired this
-  // way — the typed/HTTP path would need the `{verb, plan?, progress?}`
-  // wire-contract change the plan file's own risk section already
-  // flagged, deferred until it's genuinely needed there too.
+  // Architecture Pillar 4 — real Plan/Progress state the Critic (below)
+  // actually acts on, not just observability. Started EAGERLY, before the
+  // first real step even runs, when looksMultiStep(transcript) already
+  // flags this as a probable compound goal — replacing the old lazy gate
+  // (kicked off only once a turn had already revealed a non-terminal
+  // first step, one full model round trip later than it needed to be).
+  // A false-negative heuristic miss still falls back to that same lazy
+  // path below (`if (planLLM && !planPromise)`), so nothing regresses —
+  // this only ever makes planning START EARLIER, never skips it. Only
+  // the realtime transport had this Plan/Progress wiring until now — see
+  // index.tsx's runTypedAgentLoop for the typed/HTTP transport's own
+  // version, added in the same pass.
   let planPromise: Promise<Plan> | null = null;
   let plan: Plan | null = null;
   let progress: ProgressLedger | null = null;
@@ -769,6 +775,10 @@ async function finalizeTurn(
   try {
     const planLLM = deps.planLLM;
     const criticLLM = deps.criticLLM;
+
+    if (planLLM && looksMultiStep(transcript)) {
+      planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
+    }
 
     const result = await driveAgentLoop(history, {
       async getNextStep(loopHistory) {
@@ -820,7 +830,11 @@ async function finalizeTurn(
           // emitEvent above — same real speakStreamed() call, reached
           // through the event stream instead of an inline side effect.
           emitEvent({ type: "inj", text: ACK_PHRASES[Math.floor(Math.random() * ACK_PHRASES.length)], at: Date.now() });
-          if (planLLM) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
+          // The lazy fallback — only fires when looksMultiStep missed
+          // (planPromise is still null): a real Plan is still guaranteed
+          // before the Critic needs one, just one round trip later than
+          // the eager path above.
+          if (planLLM && !planPromise) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
         }
         return false;
       },
@@ -853,7 +867,7 @@ async function finalizeTurn(
               // NEW blocking wait so much as picking up work already in
               // flight.
               if (!plan) {
-                plan = planPromise ? await planPromise : { version: 1, goal: transcript, facts: [], tasks: [{ id: "t1", description: transcript, doneContract: "The stated goal has been achieved.", status: "in_progress" }] };
+                plan = planPromise ? await planPromise : fallbackPlan(transcript, 1);
                 progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
               }
               const currentProgress = progress!;

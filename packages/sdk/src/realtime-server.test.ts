@@ -717,6 +717,91 @@ describe("handleDeepgramMessage", () => {
     expect(speakStreamed).toHaveBeenNthCalledWith(2, "Here's what I found.");
   });
 
+  it("Architecture Pillar 4: a transcript that looksMultiStep starts the Planner call immediately, in parallel with the FIRST step — not gated on that step already coming back non-terminal", async () => {
+    const { client } = fakeClient();
+    let verbCalls = 0;
+    let resolveFirstVerb: (v: unknown) => void = () => {};
+    const firstVerbGate = new Promise((resolve) => {
+      resolveFirstVerb = resolve;
+    });
+    const respond = vi.fn().mockImplementation(async () => {
+      verbCalls++;
+      if (verbCalls === 1) return firstVerbGate; // deliberately never resolves until the test says so
+      return { verb: "explain", text: "done" };
+    });
+    const deps = fakeDeps(respond);
+    let planCalled = false;
+    deps.planLLM = {
+      respond: async () => {
+        planCalled = true;
+        return { goal: "check the price and then buy it", facts: [], tasks: [{ id: "t1", description: "check then buy", doneContract: "bought" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    const turnPromise = handleDeepgramMessage(
+      resultsMessage("check the price and then buy it", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    // Give real microtasks a chance to run WITHOUT ever resolving the
+    // first verb call — proves the Planner started even though the first
+    // step is still genuinely pending, not merely "started fast".
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(planCalled).toBe(true);
+
+    resolveFirstVerb({ verb: "read", target: "archive-btn" });
+    await turnPromise;
+  });
+
+  it("Architecture Pillar 4: a transcript that does NOT looksMultiStep still gets a Planner call, just via the lazy fallback once the first step reveals it's non-terminal", async () => {
+    const { client } = fakeClient();
+    let verbCalls = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      verbCalls++;
+      if (verbCalls === 1) return { verb: "read", target: "archive-btn" };
+      return { verb: "explain", text: "done" };
+    });
+    const deps = fakeDeps(respond);
+    let planCalls = 0;
+    deps.planLLM = {
+      respond: async () => {
+        planCalls++;
+        return { goal: "what does this button say", facts: [], tasks: [{ id: "t1", description: "check the button", doneContract: "checked" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("what does this button say", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(planCalls).toBe(1); // still exactly one real Planner call — just started one step later
+  });
+
   it("Phase 4 step 3: the real Planner call carries the connection's real manifest — page directory and data-shape names, not just the bare transcript", async () => {
     const { client } = fakeClient();
     let call = 0;

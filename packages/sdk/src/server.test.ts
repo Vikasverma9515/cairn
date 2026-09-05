@@ -7,6 +7,8 @@ import {
   GroqVerbLLM,
   buildVerbToolSchema,
   createCopilotHandlerWithLLM,
+  createCriticHandlerWithLLM,
+  createPlanHandlerWithLLM,
   renderRegisteredActions,
   resolveCritic,
   resolvePlan,
@@ -1586,5 +1588,84 @@ describe("resolveCritic", () => {
     const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} }, "submit_verdict", "Submit your verdict.");
     await resolveCritic(llm, task, "goal", { verb: "click", target: "x" }, "result");
     expect(seenTools[0].name).toBe("submit_verdict");
+  });
+});
+
+describe("createPlanHandler / createCriticHandler — Architecture Pillar 4's typed-transport HTTP endpoints", () => {
+  function fakeLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("createPlanHandler: a real request returns a real, fully-assembled Plan", async () => {
+    const llm = fakeLLM(async () => ({
+      goal: "Archive my old invoices",
+      facts: [],
+      tasks: [{ id: "t1", description: "Archive Acme Co.", doneContract: "Acme Co. shows status Archived" }],
+    }));
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const result = await handler({ goal: "Archive my old invoices" });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ version: 1, goal: "Archive my old invoices" });
+  });
+
+  it("createPlanHandler: passes through a real non-default version, for a genuine Planner revision", async () => {
+    const llm = fakeLLM(async () => ({ goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] }));
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const result = await handler({ goal: "x", version: 3 });
+    expect((result.body as { version: number }).version).toBe(3);
+  });
+
+  it("createPlanHandler: an invalid request body is refused with 400, never reaching the LLM", async () => {
+    const respond = vi.fn();
+    const handler = createPlanHandlerWithLLM(manifest, fakeLLM(respond));
+    const result = await handler({ notGoal: "x" });
+    expect(result.status).toBe(400);
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("createPlanHandler: an LLM failure still returns 200 with a real, usable fallback plan — never blocks the turn on a Planner hiccup", async () => {
+    const llm = fakeLLM(async () => {
+      throw new Error("network blip");
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const result = await handler({ goal: "Archive my old invoices" });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ goal: "Archive my old invoices", tasks: [{ id: "t1", description: "Archive my old invoices" }] });
+  });
+
+  it("createCriticHandler: a real request returns a real verdict", async () => {
+    const llm = fakeLLM(async () => ({ verdict: "task_complete", reasoning: "Acme Co. now shows status Archived." }));
+    const handler = createCriticHandlerWithLLM(llm);
+    const result = await handler({
+      task: { id: "t1", description: "Archive Acme Co.", doneContract: "Acme Co. shows status Archived", status: "in_progress" },
+      goal: "Archive Acme Co.",
+      verb: { verb: "click", target: "archive-btn" },
+      observation: "Acme Co. now shows status Archived.",
+    });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ verdict: "task_complete", reasoning: "Acme Co. now shows status Archived." });
+  });
+
+  it("createCriticHandler: an invalid request body (missing task) is refused with 400, never reaching the LLM", async () => {
+    const respond = vi.fn();
+    const handler = createCriticHandlerWithLLM(fakeLLM(respond));
+    const result = await handler({ goal: "x", verb: { verb: "click", target: "x" } });
+    expect(result.status).toBe(400);
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("createCriticHandler: an LLM failure still returns 200 with the same safe 'continue' verdict resolveCritic itself falls back to", async () => {
+    const llm = fakeLLM(async () => {
+      throw new Error("network blip");
+    });
+    const handler = createCriticHandlerWithLLM(llm);
+    const result = await handler({
+      task: { id: "t1", description: "x", doneContract: "x", status: "in_progress" },
+      goal: "x",
+      verb: { verb: "click", target: "x" },
+      observation: "x",
+    });
+    expect(result.status).toBe(200);
+    expect((result.body as { verdict: string }).verdict).toBe("continue");
   });
 });

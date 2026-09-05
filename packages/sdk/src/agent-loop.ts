@@ -24,6 +24,32 @@ import { isTerminalVerb, type AgentEvent, type CriticVerdict, type HistoryTurn, 
 /** 4 exchanges — matches the cap both original drivers independently used. */
 export const MAX_HISTORY_TURNS = 8;
 
+/**
+ * Architecture Pillar 4 — a cheap, LOCAL signal for "this goal probably
+ * needs more than one real step," checked BEFORE the first step even
+ * runs, so a caller can start the Planner call in PARALLEL with the
+ * first getNextStep instead of only after that first step already came
+ * back non-terminal (the "lazy gate" the plan singles out for
+ * replacement — realtime-server.ts's own onStep used to build planPromise
+ * only once `!terminal && iteration === 0` was already true, one full
+ * model round trip later than it needed to be). Deliberately
+ * conservative, on purpose: a false negative here just falls back to
+ * that same lazy-after-step-1 behavior — unchanged, zero regression —
+ * while a false positive costs one Planner call that would have started
+ * a moment later anyway, never a wrong answer. Genuine UI-pattern-aware
+ * classification (Pillar 2, not built yet) can replace this heuristic
+ * later without changing what calls it. Lives here (not server.ts) so
+ * BOTH transports can use the exact same check: this file is plain,
+ * dependency-free TypeScript imported as raw source by index.tsx's
+ * browser bundle AND compiled for realtime-server.ts's Node build — a
+ * server-only file (server.ts imports the Anthropic/Groq SDKs) can never
+ * be imported from the client widget.
+ */
+const MULTI_STEP_SIGNAL = /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b)\b/;
+export function looksMultiStep(question: string): boolean {
+  return MULTI_STEP_SIGNAL.test(question.toLowerCase());
+}
+
 export function summarizeVerbForHistory(verb: VerbResponse): string {
   if ("text" in verb && verb.text) return verb.text;
   switch (verb.verb) {

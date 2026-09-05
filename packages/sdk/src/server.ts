@@ -5,11 +5,13 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
+import { z } from "zod";
 import {
   CopilotRequestSchema,
   CriticVerdictSchema,
   isTerminalVerb,
   PlannerOutputSchema,
+  TaskSchema,
   VERBS,
   VerbResponseSchema,
   type CriticVerdict,
@@ -22,7 +24,7 @@ import {
   type VerbResponse,
   type WebMcpTool,
 } from "@cairnvibe/core";
-import { MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
+import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import { KeyRotator } from "./key-rotator";
 
@@ -382,8 +384,13 @@ function assemblePlan(output: PlannerOutput, version: number): Plan {
 /** The real, single-task plan used when the Planner call itself fails —
  * "do the whole goal as one task" is always a valid (if unstructured)
  * plan, so a Planner hiccup degrades the redesign back to today's
- * behavior instead of blocking the turn. */
-function fallbackPlan(goal: string, version: number): Plan {
+ * behavior instead of blocking the turn. Exported so every caller that
+ * needs "a plan, even a trivial one, right now" (e.g. a Critic call that
+ * fires before a real Planner result has come back) builds the exact
+ * same shape instead of hand-rolling a duplicate literal — realtime-
+ * server.ts's own finalizeTurn and index.tsx's runTypedAgentLoop both do
+ * this, for the same reason. */
+export function fallbackPlan(goal: string, version: number): Plan {
   return {
     version,
     goal,
@@ -470,6 +477,73 @@ export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLL
  * for the Planner's own tool instead — see resolvePlan. */
 export function createPlanLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
   return createToolLLM(options, buildPlanToolSchema(), PLAN_TOOL_NAME, PLAN_TOOL_DESCRIPTION);
+}
+
+const PlanRequestSchema = z
+  .object({
+    goal: z.string().min(1),
+    version: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+const CriticRequestSchema = z
+  .object({
+    task: TaskSchema,
+    goal: z.string().min(1),
+    verb: VerbResponseSchema,
+    observation: z.string().nullable().optional(),
+  })
+  .strict();
+
+export type PlanHandler = (body: unknown) => Promise<{ status: number; body: Plan | { error: string } }>;
+export type CriticHandler = (body: unknown) => Promise<{ status: number; body: CriticVerdict | { error: string } }>;
+
+/**
+ * Architecture Pillar 4 — the typed/HTTP transport's own real Planner
+ * endpoint, closing the gap the plan file names directly: "the typed/
+ * HTTP path (index.tsx's runTypedAgentLoop) has zero Planner/Critic
+ * wiring at all... today explicitly realtime-only by deferral, not by
+ * decision." A thin HTTP wrapper around the exact same resolvePlan the
+ * realtime relay already calls in-process — the LLM call itself only
+ * ever needs to happen server-side (it holds the real API key), so a
+ * client-side caller (index.tsx) reaches it over a real request instead
+ * of importing resolvePlan directly, same reasoning as createCopilotHandler
+ * itself.
+ */
+export function createPlanHandler(manifest: Manifest, options: CreateCopilotHandlerOptions = {}): PlanHandler {
+  return createPlanHandlerWithLLM(manifest, createPlanLLM(options), options);
+}
+
+/** Same as createPlanHandler, but with the LLM injected — used by tests to fake it, same pattern as createCopilotHandlerWithLLM. */
+export function createPlanHandlerWithLLM(
+  manifest: Manifest,
+  planLLM: VerbLLM,
+  options: { registeredActions?: string[]; actionDescriptions?: Record<string, string> } = {},
+): PlanHandler {
+  const actionsText = renderRegisteredActions(options.registeredActions ?? [], options.actionDescriptions ?? {});
+  return async function handlePlanRequest(body: unknown) {
+    const parsed = PlanRequestSchema.safeParse(body);
+    if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
+    const plan = await resolvePlan(planLLM, parsed.data.goal, parsed.data.version ?? 1, manifest, actionsText || undefined);
+    return { status: 200, body: plan };
+  };
+}
+
+/** Architecture Pillar 4's Critic counterpart to createPlanHandler — see
+ * its own doc comment. A thin HTTP wrapper around the same resolveCritic
+ * the realtime relay already calls in-process. */
+export function createCriticHandler(options: CreateCopilotHandlerOptions = {}): CriticHandler {
+  return createCriticHandlerWithLLM(createCriticLLM(options));
+}
+
+/** Same as createCriticHandler, but with the LLM injected — used by tests to fake it. */
+export function createCriticHandlerWithLLM(criticLLM: VerbLLM): CriticHandler {
+  return async function handleCriticRequest(body: unknown) {
+    const parsed = CriticRequestSchema.safeParse(body);
+    if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
+    const verdict = await resolveCritic(criticLLM, parsed.data.task, parsed.data.goal, parsed.data.verb, parsed.data.observation);
+    return { status: 200, body: verdict };
+  };
 }
 
 /**
