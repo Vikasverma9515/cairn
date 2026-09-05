@@ -14,6 +14,7 @@ import {
   isTerminalVerb,
   PlannerOutputSchema,
   renderPlaybookHint,
+  slugifySkillId,
   TaskSchema,
   VERBS,
   VerbResponseSchema,
@@ -23,7 +24,10 @@ import {
   type Manifest,
   type Plan,
   type PlannerOutput,
+  type Skill,
+  type SkillSummary,
   type Task,
+  type UiPatternId,
   type VerbResponse,
   type WebMcpTool,
 } from "@cairnvibe/core";
@@ -353,7 +357,7 @@ export async function resolveVerb(
  * on this function's call site in realtime-server.ts). The Critic (step
  * 3) is what makes a Plan's tasks/doneContracts actually drive behavior.
  */
-export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest, actionsText?: string): Promise<Plan> {
+export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest, actionsText?: string, skills?: { summariesText?: string; suggestedInstructions?: string }): Promise<Plan> {
   let candidate: unknown;
   try {
     // manifest/actionsText are appended, optional, and default to absent —
@@ -367,10 +371,18 @@ export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manif
     // buildSystemPrompt/buildVerbToolSchema use for registered actions —
     // pass renderRegisteredActions(...)'s own output, not a hand-rolled
     // string, so the Planner and Executor never describe the same
-    // capability two different ways.
+    // capability two different ways. skills (Architecture Pillar 3) is
+    // the same additive shape: `summariesText` (renderSkillSummaries'
+    // output — every this-deployment Skill's name+description, cheap to
+    // always include) and `suggestedInstructions` (matchSkillByGoal's own
+    // match, full instructions, only when one genuinely matched this
+    // goal) — both optional, both absent by default for a caller with no
+    // SkillStore configured.
     const payload: Record<string, unknown> = { goal };
     if (manifest) payload.pages = buildPlannerPageDirectory(manifest);
     if (actionsText) payload.actions = actionsText;
+    if (skills?.summariesText) payload.skills = skills.summariesText;
+    if (skills?.suggestedInstructions) payload.suggestedSkill = skills.suggestedInstructions;
     const userMessage = JSON.stringify(payload);
     candidate = await llm.respond(buildPlannerSystemPrompt(), userMessage);
   } catch (err) {
@@ -488,6 +500,89 @@ export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLL
  * for the Planner's own tool instead — see resolvePlan. */
 export function createPlanLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
   return createToolLLM(options, buildPlanToolSchema(), PLAN_TOOL_NAME, PLAN_TOOL_DESCRIPTION);
+}
+
+/**
+ * Architecture Pillar 3 (Skill half) — the Formulator. Runs once a task
+ * genuinely completes (not per-step — cheap on purpose, matching the plan
+ * file's own framing), compiling whatever real, Critic-verified
+ * `learnedFact`s were collected along the way (CriticVerdictSchema's own
+ * doc comment is the enforcement point for "never user data") into one
+ * Skill. Deliberately DETERMINISTIC, not a fourth kind of real LLM call —
+ * every fact it compiles already passed through the Critic's own
+ * verification, so there's nothing left to "figure out" that would
+ * justify the added cost/latency/failure surface of another model round
+ * trip; see DEVELOPMENT.md's own entry for the real cost reasoning
+ * (this session already hit genuine Groq quota exhaustion more than once
+ * from cumulative call volume). Returns null when nothing was learned —
+ * the common case, not an error; a caller should simply not save anything.
+ */
+export function compileSkill(goal: string, learnedFacts: string[], pattern?: UiPatternId): Skill | null {
+  if (learnedFacts.length === 0) return null;
+  const name = goal.length > 80 ? `${goal.slice(0, 79)}…` : goal;
+  const firstFact = learnedFacts[0];
+  return {
+    id: slugifySkillId(name),
+    name,
+    description: firstFact.length > 120 ? `${firstFact.slice(0, 119)}…` : firstFact,
+    instructions: learnedFacts.join(" "),
+    pattern,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+const SIGNIFICANT_WORD_MIN_LENGTH = 4;
+// Real, common phrasing variance between a Skill's own name (usually a
+// gerund, "Connecting nodes...") and a later goal restating the same idea
+// ("connect the node...") means exact word equality misses obvious
+// matches ("connecting" vs "connect", "nodes" vs "node"). A crude 4-
+// character-prefix "stem" — not a real stemming library, deliberately —
+// catches this common case without a new dependency, at the cost of
+// occasional false-positive stems on short unrelated words; the min
+// significant-word length above already screens out the shortest, most
+// collision-prone words.
+const STEM_LENGTH = 4;
+
+function significantWordStems(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= SIGNIFICANT_WORD_MIN_LENGTH)
+      .map((w) => w.slice(0, STEM_LENGTH)),
+  );
+}
+
+/**
+ * Architecture Pillar 3 (Skill half) — the retrieval side. A cheap,
+ * deterministic keyword-overlap match against a NEW goal (never another
+ * real LLM call, same reasoning as compileSkill above) — real progressive
+ * disclosure: every Skill's summary is cheap enough to always list (see
+ * SkillStore's own doc comment), but only the ONE Skill whose own name
+ * shares real, significant words with the current goal gets its full
+ * instructions loaded. A caller still needs its own SkillStore.getSkill
+ * call to fetch those full instructions for whatever this returns — this
+ * function only ever sees cheap summaries, never a full Skill.
+ */
+export function matchSkillByGoal(summaries: SkillSummary[], goal: string): SkillSummary | null {
+  const goalStems = significantWordStems(goal);
+  if (goalStems.size === 0) return null;
+
+  let best: SkillSummary | null = null;
+  let bestScore = 0;
+  for (const summary of summaries) {
+    const score = Array.from(significantWordStems(summary.name)).filter((stem) => goalStems.has(stem)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = summary;
+    }
+  }
+  return best;
+}
+
+/** Same rendering discipline as renderRegisteredActions — "id (description)" per Skill, for the Planner's own userMessage. */
+export function renderSkillSummaries(summaries: SkillSummary[]): string {
+  return summaries.map((s) => `${s.name} (${s.description})`).join("; ");
 }
 
 const PlanRequestSchema = z
@@ -1248,6 +1343,8 @@ The user message may include "pages" — a real directory of this app's actual r
 
 It may also include "actions" — real, deployment-specific actions this app actually supports, by id, with a description in parens where one exists (e.g. "archiveInvoice (Archives the invoice; cannot be undone.)"). When a task is best achieved through one of these, say so concretely in the task's description (e.g. "use the archiveInvoice action") instead of only describing it as clicking around — the execution layer will still decide exactly how, but a task that already knows a real action exists is more likely to use it. Never invent an action id that isn't listed.
 
+It may also include "skills" — real, previously-learned notes this exact deployment has already confirmed about its own platform (name and a one-line description each, e.g. "Connecting nodes on the workflow canvas (The canvas connects nodes via a dropdown, not a drag gesture.)"), and "suggestedSkill" — the FULL learned instructions for the one skill that most closely matches THIS goal, when one does. Treat both as a real, verified starting point for how this specific platform behaves — still a hint, never a script: the execution layer still verifies every real step against the actual page regardless of what a skill suggests.
+
 Break the goal into as FEW tasks as genuinely make sense — most goals need only 1-3 tasks; only split further when steps are genuinely independent or need to happen in a specific real order. Each task needs:
 - id: a short, stable id, e.g. "t1", "t2".
 - description: what this task achieves, concrete enough to act on.
@@ -1285,6 +1382,11 @@ function buildCriticToolSchema(): Record<string, unknown> {
       verdict: { type: "string", enum: ["continue", "task_complete", "replan", "give_up"] },
       expected: { type: "string", description: "Only for replan — what SHOULD have happened, per the task's doneContract." },
       actual: { type: "string", description: "Only for replan — what actually happened instead, per the real observation." },
+      learnedFact: {
+        type: "string",
+        description:
+          "Only for task_complete, and only if this step revealed a genuinely NEW, confirmed-true fact about how THIS PLATFORM behaves (e.g. \"the canvas connects nodes via a dropdown, not a drag gesture\" or \"the search box needs about 300ms before results update\") — never a fact about any one user's own data or content. Omit entirely on every other verdict, or when nothing new was learned (the common case).",
+      },
       reasoning: { type: "string", description: "2-3 sentences, specific to what actually happened in THIS step, not generic." },
     },
     required: ["verdict", "reasoning"],
@@ -1302,6 +1404,8 @@ Score the verdict:
 - "continue": real progress happened but the doneContract isn't satisfied yet — more steps are needed on this same task.
 - "replan": the real observation contradicts what the task expected (a click didn't register, the wrong element was targeted, an error occurred) — the current approach isn't working and needs a different plan. Fill in "expected" (what the doneContract implied should happen) and "actual" (what really happened instead).
 - "give_up": repeated real attempts have failed and continuing wouldn't help — be honest about being stuck rather than looping forever.
+
+When you say "task_complete", also consider "learnedFact": did this step's real outcome reveal a genuinely NEW, confirmed-true fact about how THIS PLATFORM behaves — something worth remembering for a similar goal later (e.g. "the canvas connects nodes via a dropdown, not a drag gesture")? Only ever a structural fact about the platform itself, NEVER anything about this user's own data or content (never a person's name, an amount, a specific record). Leave it out entirely if nothing new was learned — that's the common case, not a gap to fill.
 
 Never trust the action's own claim of success — judge only the real observation. reasoning: 2-3 sentences, specific to what actually happened in this step, not generic.`;
 }

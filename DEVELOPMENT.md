@@ -5825,6 +5825,179 @@ role + per-tool risk tiering).
 
 ---
 
+### The Skill half of Architecture Pillar 3 — the agent writes its own map: self-authored, verified Skills
+
+Fourth of the 6-pillar plan, and the plan's own stated center point: "after
+a real task completes, the Critic flags which steps were genuinely new,
+useful, confirmed-correct facts about this specific platform... a new,
+lightweight Formulator compiles the task's newly-confirmed facts into a
+real Skill file... next time a similar goal comes up on the SAME platform,
+the Planner lists available Skills' names+descriptions first (cheap),
+loads the full instructions only for the one that actually matches."
+
+**A real, deliberate scope decision, stated up front**: the Formulator is
+DETERMINISTIC, not a fourth kind of real LLM call. Every fact it compiles
+already passed through the Critic's own verification — there's nothing
+left to "figure out" that would justify a model round trip, and this
+session already hit genuine Groq quota exhaustion more than once from
+cumulative call volume across earlier work. Retrieval (matching a Skill to
+a new goal) is the same: a cheap, deterministic keyword-stem overlap
+check, never a model call. Both are honest, real v1s — an LLM-authored
+Formulator (nicer prose, real summarization across many facts) is a
+reasonable later upgrade once there's production signal this matters, not
+a corner cut silently.
+
+**Built**:
+- `packages/core/src/plan.ts` — `CriticVerdictSchema` gained an optional
+  `learnedFact` field, only meaningful on `task_complete`: a genuinely new,
+  confirmed-true, PLATFORM-structural fact this step's real outcome
+  revealed (e.g. "the canvas connects nodes via a dropdown, not a drag
+  gesture") — never a fact about any one user's own data, enforced by the
+  Critic's own system prompt (`buildCriticSystemPrompt`), not just
+  convention.
+- `packages/core/src/skills.ts` (new) — `Skill` (id/name/description/
+  instructions/pattern/createdAt) and `SkillSummary` (the cheap,
+  always-listable id/name/description/pattern subset — the real mechanism
+  behind progressive disclosure: a summary never carries the full
+  instructions). Modeled on Anthropic's own Agent Skills format (name +
+  one-line description always cheap to list; full instructions loaded only
+  once a task matches), the same progressive-disclosure mechanism this
+  very session's own Skill tool already uses. `slugifySkillId` derives a
+  stable id from a Skill's own name.
+- `packages/sdk/src/skill-store.ts` (new) — `SkillStore` (`saveSkill`,
+  `listSkillSummaries`, `getSkill`), sqlite-backed, mirroring
+  `memory-sqlite.ts`'s own shape but scoped along a DIFFERENT axis on
+  purpose: a `MemoryStore` scopeId is per-user/session (unchanged, still
+  exactly what it always was); a `SkillStore` scopeId is meant to be
+  per-DEPLOYMENT — the whole app, shared across every user who talks to it,
+  the same scope `ui-manifest.json` itself already has. A dedicated table
+  (not reusing `memory-sqlite`'s facts table with a JSON blob) specifically
+  so `listSkillSummaries` can select just id/name/description/pattern at
+  the SQL level — a deployment with many learned Skills never pays to load
+  every Skill's full instructions just to list what's available.
+  `saveSkill` upserts by `(scopeId, id)` — a re-learned Skill for the same
+  real capability replaces the old one, never accumulates duplicates.
+  Exported as `@cairnvibe/sdk/skill-store` (new package.json export entry).
+- `packages/sdk/src/server.ts` — the Formulator/retrieval functions:
+  - `compileSkill(goal, learnedFacts, pattern?)` — the Formulator. Returns
+    `null` when nothing was learned (the common case, not an error). Name
+    comes from the goal (truncated to 80 chars), description from the
+    first learned fact (truncated to 120), instructions from every learned
+    fact joined together.
+  - `matchSkillByGoal(summaries, goal)` — the retrieval side. A crude
+    4-character-prefix "stem" comparison (not a real stemming library,
+    deliberately) between the goal's and each Skill's own significant
+    (4+ letter) words — handles the real, common phrasing variance between
+    a Skill's name (usually a gerund, "Connecting nodes...") and a later
+    goal restating the same idea ("connect the node...") that exact-word
+    matching would miss entirely (found while writing this: the first
+    version of this function, using exact-word equality, failed its own
+    "connect the webhook node" vs. "Connecting nodes on the workflow
+    canvas" test case for exactly this reason — fixed before this shipped,
+    not after).
+  - `renderSkillSummaries(summaries)` — same "id (description)" rendering
+    discipline as `renderRegisteredActions`.
+  - `resolvePlan` gained an optional 6th parameter,
+    `{summariesText?, suggestedInstructions?}` — same additive-payload
+    discipline as `actionsText`: attaches `skills`/`suggestedSkill` to the
+    Planner's own userMessage only when a caller actually has something
+    real to say. `buildPlannerSystemPrompt` documents both fields.
+  - `buildCriticSystemPrompt`/`buildCriticToolSchema` updated to ask for
+    `learnedFact` on `task_complete`, with the "never user data" constraint
+    stated explicitly in the prompt itself, not left to be inferred.
+- `packages/sdk/src/realtime-server.ts` — the actual wiring, per-turn:
+  - Computed once, up front (before the eager Planner kickoff): this
+    deployment's Skill summaries (`skillsScopeId` — new `ConnectionDeps`/
+    `CreateRealtimeServerOptions` field, defaults to `"default"`), and
+    `matchSkillByGoal` against the transcript for a `suggestedInstructions`
+    hint — both threaded into every `resolvePlan` call site (the eager
+    kickoff, the lazy fallback, and the Critic's own replan branch).
+  - A `learnedFacts: string[]` accumulator, pushed to inside the `runCritic`
+    closure whenever a verdict carries one.
+  - The Formulator itself fires once, right after `driveAgentLoop` resolves
+    (for every non-aborted outcome) — classifies the turn's current live
+    context via Pillar 2's own `classifyUiPattern`/`deriveStructureSignals`
+    (a best-effort snapshot, not necessarily the exact page a given fact
+    was learned on — an acceptable trade for a Skill meant to be a general
+    per-platform note, not a per-page one), compiles whatever facts were
+    collected, and saves the result via `deps.skills.saveSkill` when a
+    `SkillStore` is configured and at least one fact was actually learned.
+  - `ConnectionDeps`/`CreateRealtimeServerOptions` both gained optional
+    `skills`/`skillsScopeId` fields, same zero-overhead-when-absent
+    discipline as `memory` — an existing deployment with no `SkillStore`
+    configured sees no change in behavior at all.
+
+**Tests**: `packages/core/src/skills.test.ts` (new) — 7 tests: `slugifySkillId`
+(hyphenation, collapsing runs of non-alphanumeric characters, trimming,
+falling back to a real non-empty id for a name with nothing alphanumeric
+in it) and `SkillSchema` (accepts a real Skill, `pattern` is genuinely
+optional, rejects one missing required fields). `packages/sdk/src/
+skill-store.test.ts` (new) — 9 tests: file/
+directory creation, save+read round-trip, a miss returns null, upsert
+replaces rather than duplicates, summaries never carry instructions, an
+unclassified Skill's pattern reads back as undefined not null, real scope
+isolation between two deployments, multiple Skills in one scope all list,
+and sharing an already-open Database connection. `packages/sdk/src/
+server.test.ts` — 17 new tests: `compileSkill` (null on no facts, a real
+compiled Skill, truncation on an oversized goal/fact, undefined pattern
+when unclassified), `matchSkillByGoal` (a real stem match, no match
+returns null, empty summaries, short/common words don't count),
+`renderSkillSummaries` (rendering, joining, empty list), `resolvePlan`'s
+new skills payload (passes through, omitted when absent, documented in the
+system prompt), and `resolveCritic`'s `learnedFact` passthrough (carried
+through unchanged, undefined in the common case, documented with its own
+privacy constraint in the system prompt). `packages/sdk/src/
+realtime-server.test.ts` — 4 new tests: a `task_complete` verdict with a
+real `learnedFact` gets compiled and saved as a real Skill once the turn
+concludes; no `learnedFact` means nothing gets saved; no `SkillStore`
+configured means zero overhead and no crash; a previously-learned Skill
+matching a new (multi-step-looking) goal surfaces its full instructions to
+the Planner's own userMessage. 37 new tests total. Full repo `npx vitest
+run`: 643/643 passing, zero regressions. Full `npm run typecheck` clean
+across all 6 workspaces. `npm run build -w @cairnvibe/core -w
+@cairnvibe/sdk` rebuilt cleanly; added the `./skill-store` entry to
+`packages/sdk/package.json`'s `exports` map (the same pattern
+`./memory-sqlite` already established) so a consumer can actually import
+`createSqliteSkillStore`.
+
+**Live-verified**: demo app rebuilt and restarted cleanly on the new
+builds, zero server/console errors — confirms the shared-schema change
+(`CriticVerdictSchema`'s new optional field) and the new core/sdk modules
+didn't break anything already wired into the running app. The actual
+Skill save→retrieve round trip through a real browser session is NOT yet
+live-verified, for two compounding, honestly-stated reasons: (1) the same
+pre-existing Groq `401 Invalid API Key` block noted in every entry above
+this one blocks observing a real model's own behavior either way, and (2)
+more fundamentally, this demo app's realtime relay (`cairn-realtime`,
+where `ConnectionDeps.skills` actually lives) isn't started in this
+session and `realtime-cli.ts` doesn't yet expose a way to configure a
+`SkillStore` from the CLI/env the way `--with`/manifest/provider already
+are — the SAME pre-existing gap `memory` (Phase 5's `MemoryStore`) already
+has today, never addressed for that either. The library-level mechanism
+(storage, Formulator, retrieval heuristic, Critic extension, full
+`ConnectionDeps` wiring) is real, complete, and covered by the 30 tests
+above, including a full `finalizeTurn` integration test with a working
+fake `SkillStore` proving the save-then-later-retrieve loop functions
+correctly end to end at the code level.
+
+**Pending**: wiring a real `SkillStore` (and, for consistency, a
+`MemoryStore`) into `realtime-cli.ts` so an actual deployment can turn
+this on without hand-writing its own server — real, scoped follow-up work,
+not attempted here to keep this pass's diff to the actual Pillar 3
+mechanism. The same wiring for the typed/HTTP transport (`index.tsx`'s
+runTypedAgentLoop) — Skills are realtime-only for now, the same shape gap
+Pillar 4 itself found and closed for Planner/Critic, deliberately not
+re-opened here given how much this session has already built; a
+reasonable next increment once this mechanism has real production signal.
+A real live-model check of the full learn→save→retrieve→apply loop, once
+a working API key and the CLI wiring above both exist. Pillar 5 (tiered
+memory), Pillar 6 (Scout role + per-tool risk tiering) — the two
+remaining pillars in the plan's own stated build order.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -623,3 +623,4 @@ export type AgentEvent = z.infer<typeof AgentEventSchema>;
 export * from "./plan";
 export * from "./ui-patterns";
 export * from "./playbooks";
+export * from "./skills";

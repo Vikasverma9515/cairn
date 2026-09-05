@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { VerbResponseSchema, type Manifest, type Task } from "@cairnvibe/core";
+import { VerbResponseSchema, type Manifest, type SkillSummary, type Task } from "@cairnvibe/core";
 import {
   AnthropicStreamingTextLLM,
   AnthropicVerbLLM,
   GroqStreamingTextLLM,
   GroqVerbLLM,
   buildVerbToolSchema,
+  compileSkill,
   createCopilotHandlerWithLLM,
   createCriticHandlerWithLLM,
   createPlanHandlerWithLLM,
+  matchSkillByGoal,
   renderRegisteredActions,
+  renderSkillSummaries,
   resolveCritic,
   resolvePlan,
   type GroqLikeClient,
@@ -1721,5 +1724,168 @@ describe("createPlanHandler / createCriticHandler — Architecture Pillar 4's ty
     });
     expect(result.status).toBe(200);
     expect((result.body as { verdict: string }).verdict).toBe("continue");
+  });
+});
+
+describe("compileSkill — Architecture Pillar 3's Formulator", () => {
+  it("returns null when nothing was learned — the common case, not an error", () => {
+    expect(compileSkill("Archive Acme Co.", [])).toBeNull();
+  });
+
+  it("compiles a real Skill from the accumulated, Critic-verified learned facts", () => {
+    const skill = compileSkill(
+      "Connect the trigger to the email action",
+      ["The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.", "Adding a node requires picking its type from the button row first."],
+      "canvas",
+    );
+    expect(skill).not.toBeNull();
+    expect(skill!.name).toBe("Connect the trigger to the email action");
+    expect(skill!.description).toBe("The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.");
+    expect(skill!.instructions).toContain("dropdown labeled 'connects to'");
+    expect(skill!.instructions).toContain("picking its type from the button row");
+    expect(skill!.pattern).toBe("canvas");
+    expect(skill!.id).toBe("connect-the-trigger-to-the-email-action");
+  });
+
+  it("truncates a very long goal/fact for name/description rather than blowing up the Skill's own summary size", () => {
+    const longGoal = "a".repeat(200);
+    const longFact = "b".repeat(200);
+    const skill = compileSkill(longGoal, [longFact]);
+    expect(skill!.name.length).toBeLessThanOrEqual(80);
+    expect(skill!.description.length).toBeLessThanOrEqual(120);
+  });
+
+  it("a Skill compiled with no classified pattern leaves pattern undefined, not null", () => {
+    const skill = compileSkill("x", ["a real fact"]);
+    expect(skill!.pattern).toBeUndefined();
+  });
+});
+
+describe("matchSkillByGoal — Architecture Pillar 3's retrieval side", () => {
+  const summaries: SkillSummary[] = [
+    { id: "connect-nodes", name: "Connecting nodes on the workflow canvas", description: "Uses a dropdown, not drag.", pattern: "canvas" },
+    { id: "search-tips", name: "Searching the product catalog", description: "Results update after ~300ms.", pattern: "search-filter" },
+  ];
+
+  it("matches the Skill whose name shares real, significant words with the new goal", () => {
+    const match = matchSkillByGoal(summaries, "connect the webhook node to the slack action");
+    expect(match?.id).toBe("connect-nodes");
+  });
+
+  it("returns null when nothing shares any significant word with the goal — never a wrong guess", () => {
+    expect(matchSkillByGoal(summaries, "archive this invoice")).toBeNull();
+  });
+
+  it("returns null for an empty summaries list", () => {
+    expect(matchSkillByGoal([], "connect nodes")).toBeNull();
+  });
+
+  it("short/common words don't count as a match on their own", () => {
+    // "the" and "a" are far too common to mean anything — only real, significant (4+ letter) words count.
+    expect(matchSkillByGoal(summaries, "find the a on")).toBeNull();
+  });
+});
+
+describe("renderSkillSummaries", () => {
+  it("renders each summary as 'name (description)', same discipline as renderRegisteredActions", () => {
+    const rendered = renderSkillSummaries([{ id: "x", name: "Connecting nodes", description: "Uses a dropdown.", pattern: "canvas" }]);
+    expect(rendered).toBe("Connecting nodes (Uses a dropdown.)");
+  });
+
+  it("joins multiple summaries with '; '", () => {
+    const rendered = renderSkillSummaries([
+      { id: "a", name: "Skill A", description: "Does A." },
+      { id: "b", name: "Skill B", description: "Does B." },
+    ]);
+    expect(rendered).toBe("Skill A (Does A.); Skill B (Does B.)");
+  });
+
+  it("an empty list renders as an empty string", () => {
+    expect(renderSkillSummaries([])).toBe("");
+  });
+});
+
+describe("resolvePlan — Architecture Pillar 3's skills wiring", () => {
+  function fakePlanLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("when skills.summariesText/suggestedInstructions are passed, they land verbatim in the Planner's userMessage", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "connect the nodes", 1, undefined, undefined, {
+      summariesText: "Connecting nodes (Uses a dropdown.)",
+      suggestedInstructions: "The canvas connects nodes via a dropdown.",
+    });
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.skills).toBe("Connecting nodes (Uses a dropdown.)");
+    expect(parsed.suggestedSkill).toBe("The canvas connects nodes via a dropdown.");
+  });
+
+  it("omits skills/suggestedSkill entirely when absent — same additive discipline as pages/actions", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x");
+
+    expect(JSON.parse(seenUserMessage)).toEqual({ goal: "x" });
+  });
+
+  it("the Planner's system prompt documents the optional skills/suggestedSkill fields", async () => {
+    let seenSystemPrompt = "";
+    const llm = fakePlanLLM(async (systemPrompt) => {
+      seenSystemPrompt = systemPrompt;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x");
+
+    expect(seenSystemPrompt).toContain('"skills"');
+    expect(seenSystemPrompt).toContain('"suggestedSkill"');
+  });
+});
+
+describe("resolveCritic — Architecture Pillar 3's learnedFact wiring", () => {
+  const task: Task = { id: "t1", description: "Connect the nodes", doneContract: "Nodes are connected", status: "in_progress" };
+
+  function fakeCriticLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("a task_complete verdict may carry a real learnedFact, passed through unchanged", async () => {
+    const llm = fakeCriticLLM(async () => ({
+      verdict: "task_complete",
+      reasoning: "The two nodes now show a connection.",
+      learnedFact: "The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.",
+    }));
+    const verdict = await resolveCritic(llm, task, "Connect the nodes", { verb: "select", target: "connects-to", value: "Send Email" }, "Connected.");
+    expect(verdict.learnedFact).toBe("The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.");
+  });
+
+  it("the common case — no learnedFact — leaves it undefined, not an empty string", async () => {
+    const llm = fakeCriticLLM(async () => ({ verdict: "continue", reasoning: "Not there yet." }));
+    const verdict = await resolveCritic(llm, task, "Connect the nodes", { verb: "click", target: "x" }, "y");
+    expect(verdict.learnedFact).toBeUndefined();
+  });
+
+  it("the Critic's system prompt documents learnedFact and its own privacy constraint", async () => {
+    let seenSystemPrompt = "";
+    const llm: VerbLLM = {
+      respond: async (systemPrompt) => {
+        seenSystemPrompt = systemPrompt;
+        return { verdict: "continue", reasoning: "x" };
+      },
+    };
+    await resolveCritic(llm, task, "goal", { verb: "click", target: "x" }, "result");
+    expect(seenSystemPrompt).toContain("learnedFact");
+    expect(seenSystemPrompt.toLowerCase()).toContain("never");
   });
 });

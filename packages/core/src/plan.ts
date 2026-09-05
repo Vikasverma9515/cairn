@@ -114,6 +114,22 @@ export const CriticVerdictSchema = z
      * full-context re-derivation. Absent for every other verdict. */
     expected: z.string().optional(),
     actual: z.string().optional(),
+    /**
+     * Architecture Pillar 3 (Skill half) — only meaningful on
+     * "task_complete". A genuinely NEW, confirmed-true, PLATFORM-
+     * structural fact this step's real outcome revealed (e.g. "the
+     * canvas's node-connection field is a dropdown labeled 'connects to',
+     * not a drag gesture" or "the search box needs about 300ms before
+     * results update") — never a fact about any one user's own data,
+     * enforced by the Critic's own system prompt (buildCriticSystemPrompt
+     * in server.ts), not just by convention. This is the exact "which
+     * steps were genuinely new/useful/confirmed-correct" signal Voyager's
+     * own skill-library discipline requires: only a real, Critic-verified
+     * outcome ever contributes a fact, never an unverified guess. Absent
+     * when this step didn't teach anything worth remembering — the common
+     * case, not an error.
+     */
+    learnedFact: z.string().optional(),
     reasoning: z.string().min(1),
   })
   .strict();

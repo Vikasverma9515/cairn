@@ -27,15 +27,18 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { AgentEvent, HistoryTurn, LiveElement, Manifest, Plan, ProgressLedger, VerbResponse, WebMcpTool } from "@cairnvibe/core";
+import { classifyUiPattern, deriveStructureSignals, type AgentEvent, type HistoryTurn, type LiveElement, type Manifest, type Plan, type ProgressLedger, type VerbResponse, type WebMcpTool } from "@cairnvibe/core";
 import { driveAgentLoop, looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import {
   buildSystemPrompt,
+  compileSkill,
   createCriticLLM,
   createPlanLLM,
   createVerbLLM,
   fallbackPlan,
+  matchSkillByGoal,
   renderRegisteredActions,
+  renderSkillSummaries,
   resolveCritic,
   resolvePlan,
   resolveVerb,
@@ -44,6 +47,7 @@ import {
 } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
 import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+import type { SkillStore } from "./skill-store";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
 const DEFAULT_STT_MODEL = "nova-2";
@@ -121,6 +125,12 @@ export interface CreateRealtimeServerOptions extends CreateCopilotHandlerOptions
    * its "context" message (see ConnectionDeps' own doc comment) — this SDK
    * invents no identity of its own. */
   memory?: MemoryStore;
+  /** Architecture Pillar 3 (Skill half) — see ConnectionDeps' own doc
+   * comment. Optional; omitting it keeps every connection exactly as it
+   * was before this existed. */
+  skills?: SkillStore;
+  /** See ConnectionDeps' own doc comment. Defaults to "default" when `skills` is set but this is omitted. */
+  skillsScopeId?: string;
 }
 
 type ServerMessage =
@@ -213,7 +223,22 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
       activeConnections--;
       console.log(`[cairn realtime] connection ${connectionId} closed — ${activeConnections} active`);
     });
-    handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability, memory: options.memory }).catch(
+    handleConnection(client, {
+      deepgramApiKey,
+      sttModel,
+      ttsVoice,
+      llm,
+      planLLM,
+      criticLLM,
+      systemPrompt,
+      manifest: options.manifest,
+      registeredActions,
+      actionDescriptions,
+      capability,
+      memory: options.memory,
+      skills: options.skills,
+      skillsScopeId: options.skillsScopeId,
+    }).catch(
       (err) => {
         console.error(`[cairn realtime] connection ${connectionId} error:`, err);
         safeSend(client, { type: "error", message: "internal error" });
@@ -255,6 +280,20 @@ export interface ConnectionDeps {
    * absent means no memory read/write happens for any connection, ever
    * — today's exact behavior. */
   memory?: MemoryStore;
+  /**
+   * Architecture Pillar 3 (Skill half) — real, persistent storage for
+   * self-authored Skills (skill-store.ts). A DIFFERENT axis of scope than
+   * `memory` above: Skills are meant to be shared across every user who
+   * talks to this deployment (the same scope `ui-manifest.json` itself
+   * already has), never per-user — see skill-store.ts's own doc comment.
+   * Optional; absent means no Skill retrieval/saving happens at all, zero
+   * overhead, today's exact behavior.
+   */
+  skills?: SkillStore;
+  /** The deployment-wide scope Skills are stored/looked up under when
+   * `skills` is configured. Defaults to "default" — a single-deployment
+   * setup, today's only real usage — when omitted. */
+  skillsScopeId?: string;
 }
 
 async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promise<void> {
@@ -772,12 +811,30 @@ async function finalizeTurn(
   let progress: ProgressLedger | null = null;
   const STALL_THRESHOLD = 3; // Magentic-One-sized bounded budget before the harness itself escalates to give_up, rather than trusting the Critic alone to notice it's stalling
 
+  // Architecture Pillar 3 (Skill half) — real, per-deployment Skills
+  // (skill-store.ts), a DIFFERENT scope axis than `memory` (per-user).
+  // Computed once, up front, since both the Planner (retrieval) and the
+  // Critic (accumulating what gets saved after this turn) need it.
+  const skillsScopeId = deps.skillsScopeId ?? "default";
+  const skillSummaries = deps.skills ? deps.skills.listSkillSummaries(skillsScopeId) : [];
+  const matchedSkillSummary = skillSummaries.length ? matchSkillByGoal(skillSummaries, transcript) : null;
+  const skillsPayload = skillSummaries.length
+    ? {
+        summariesText: renderSkillSummaries(skillSummaries) || undefined,
+        suggestedInstructions: matchedSkillSummary ? (deps.skills!.getSkill(skillsScopeId, matchedSkillSummary.id)?.instructions ?? undefined) : undefined,
+      }
+    : undefined;
+  // Every real, Critic-verified learnedFact from this turn's steps — the
+  // Formulator (compileSkill) compiles whatever's here into a real Skill
+  // once the turn concludes, below. Empty is the common case, not a gap.
+  const learnedFacts: string[] = [];
+
   try {
     const planLLM = deps.planLLM;
     const criticLLM = deps.criticLLM;
 
     if (planLLM && looksMultiStep(transcript)) {
-      planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
+      planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions), skillsPayload);
     }
 
     const result = await driveAgentLoop(history, {
@@ -834,7 +891,7 @@ async function finalizeTurn(
           // (planPromise is still null): a real Plan is still guaranteed
           // before the Critic needs one, just one round trip later than
           // the eager path above.
-          if (planLLM && !planPromise) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
+          if (planLLM && !planPromise) planPromise = resolvePlan(planLLM, transcript, 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions), skillsPayload);
         }
         return false;
       },
@@ -879,6 +936,12 @@ async function finalizeTurn(
               // emitEvent's own doc comment on why that's a deliberate,
               // small v1 scope).
               emitEvent({ type: "thk", text: verdict.reasoning, at: Date.now() });
+              // Architecture Pillar 3 (Skill half) — accumulate whatever
+              // this step's real, Critic-verified fact was; the
+              // Formulator compiles whatever's here into a real Skill
+              // once the turn concludes, below. The common case adds
+              // nothing here at all.
+              if (verdict.learnedFact) learnedFacts.push(verdict.learnedFact);
 
               if (verdict.verdict === "task_complete") {
                 currentTask.status = "done";
@@ -899,7 +962,7 @@ async function finalizeTurn(
               if (verdict.verdict === "replan") {
                 // A fresh Planner call, a real new version — never a
                 // silent patch to the existing plan.
-                plan = await resolvePlan(planLLM, transcript, plan.version + 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions));
+                plan = await resolvePlan(planLLM, transcript, plan.version + 1, deps.manifest, renderRegisteredActions(deps.registeredActions, deps.actionDescriptions), skillsPayload);
                 progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
                 return { ...verdict, verdict: "continue" };
               }
@@ -924,6 +987,20 @@ async function finalizeTurn(
     });
 
     if (result.outcome === "aborted") return;
+
+    // Architecture Pillar 3 (Skill half) — the Formulator, run once per
+    // turn (not per-step — cheap on purpose). Saves nothing when nothing
+    // was learned (the common case) or no SkillStore is configured (zero
+    // overhead, today's exact behavior). Classified from whatever this
+    // exact moment's live context reports — a best-effort snapshot, not
+    // necessarily the exact page a given fact was learned on, which is
+    // an acceptable trade for a Skill meant to be a general per-platform
+    // note rather than a per-page one.
+    if (deps.skills && learnedFacts.length > 0) {
+      const patternMatches = classifyUiPattern(deriveStructureSignals(getContext().liveElements));
+      const skill = compileSkill(transcript, learnedFacts, patternMatches[0]?.pattern);
+      if (skill) deps.skills.saveSkill(skillsScopeId, skill);
+    }
 
     if (result.outcome === "terminal" || result.outcome === "unparseable" || result.outcome === "critic-complete") {
       const verb: VerbResponse =
