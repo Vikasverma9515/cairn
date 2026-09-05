@@ -4176,6 +4176,121 @@ environment — traced directly from the user's own real terminal output
 
 ---
 
+## Live bug-fix pass: the ACTUAL original root cause — a stale React closure that fired on every single realtime turn, plus real, comprehensive logging
+
+Every fix in this series so far patched a real, distinct symptom of "two
+speakers" — but re-reading the demo app's own terminal output one more
+time, following an explicit user request for real, detailed logging
+("literally everything... so we can see where the system is breaking"),
+found something more fundamental underneath all of them: `[cairn
+talker] act:` (confirmed, by grepping the whole codebase, to log
+EXCLUSIVELY from `realtime-server.ts`'s own Talker event stream — never
+from the typed `/api/copilot` handler) was followed, on EVERY SINGLE
+TURN, by a `POST /api/copilot/speak` call — the TYPED HTTP speak
+endpoint, which realtime NEVER calls on its own (it streams TTS audio
+directly over the WebSocket via Deepgram's own Speak connection, with no
+HTTP round trip at all). Something was calling the typed `speak()`
+function on every realtime reply, not just occasionally.
+
+Traced to `index.tsx`'s `handleVerb`'s `onExplain` callback:
+`if (!realtimeActive) void speak(text);` — `realtimeActive` is a plain
+`const` derived from React state (`status.startsWith("rt-")`),
+recomputed fresh on every render. But `handleVerb` is invoked from
+`ws.onmessage`, a callback assigned exactly ONCE, inside
+`startRealtime()`, and never reassigned for that connection's entire
+life. The `realtimeActive` it closed over was frozen at whatever value
+existed at THAT render — which is BEFORE the click handler's own state
+updates land, so `status` is still `"idle"`. `!realtimeActive` was
+therefore `true` on literally every realtime turn, for the entire
+history of this feature — calling `speak()` (the typed path) IN
+ADDITION to the correct realtime audio playback, every single time.
+This is the real, original root cause behind "two speakers" — every
+earlier entry in this series (`typedPlaybackSuspendedRef`, the
+generation-tagging wire-protocol fix, the watchdog fix) was closing
+real gaps in how the SYMPTOM of this bug got handled, without any of
+them having found the actual SOURCE generating it on every turn. The
+same stale-closure pattern was ALSO present in `runTour()`
+(`wasRealtimeListening = realtimeActive`, and the
+`setRtStatus("rt-listening")` call at the tour's own end) — meaning a
+realtime-triggered tour ALWAYS narrated through the wrong (typed)
+pipeline, and — this is the likely direct cause of the "why is it not
+listening to me" report — the code responsible for telling the mic to
+resume listening after the tour ended NEVER RAN, because it too was
+gated on the same permanently-frozen `realtimeActive`.
+
+`rtStateRef` already exists in this file specifically to prevent this
+exact class of bug ("mirrors `status` for use inside audio callbacks
+(avoids stale closures)" — its own pre-existing doc comment) — it just
+wasn't used in these three spots. `web-component.ts` was checked and
+confirmed NOT to have this bug: its `realtimeActive` is a `get`
+accessor, which re-reads `this.status` fresh on every access regardless
+of when the enclosing closure was created — a plain class instance
+doesn't have React's per-render closure problem at all.
+
+**Built:**
+- `index.tsx`: `onExplain`'s check, `runTour`'s `wasRealtimeListening`
+  capture, and `runTour`'s own end-of-tour `setRtStatus("rt-listening")`
+  guard — all three switched from the stale `realtimeActive` const to
+  `rtStateRef.current.startsWith("rt-")`, which is always current
+  regardless of which render's closure is executing.
+- A real, comprehensive logging pass, directly answering the user's own
+  request: a new `rtLog(event, details)` helper (tag `[cairn rt]`, easy
+  to filter on) now fires at every meaningful point in the realtime
+  lifecycle — connection open/close/error, every message type received
+  (with its generation and key fields), every stale-message drop (with
+  both the dropped and current generation numbers so a mismatch is
+  visible at a glance), every barge-in and thinking-watchdog fire, every
+  call start/end, and — critically — the exact `onExplain` decision of
+  whether a reply is spoken over the realtime socket or falls back to
+  the typed HTTP path, so this exact class of bug is now something a
+  browser console can show directly instead of needing another full
+  investigation to re-diagnose. `audio_chunk` messages are deliberately
+  NOT logged per-chunk (dozens per turn would flood the console) — chunk
+  count shows up as one line at `speaking_end`/`turn_complete` instead.
+  Existing scattered `console.warn` calls for the typed/realtime race
+  fixes earlier in this series were folded into the same `rtLog` tag for
+  consistency, so one filter shows everything.
+
+**Tests:** no new automated test — same honest limitation as every
+other entry in this series, now stated more directly: this repository
+has no React Testing Library / jsdom test infrastructure at all (`grep`
+confirmed — every existing SDK test targets a pure-logic module,
+`index.tsx`'s actual component behavior has never been under test).
+Setting one up is real, legitimate, disproportionately large work
+relative to this fix; flagged as pending rather than built. Full
+regression suite re-run as the safety check instead: 519/519 tests pass
+repo-wide (unchanged — no test file touched), zero regressions. Full
+`npm run typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment — traced directly from grepping the codebase for every
+`"[cairn talker]"` log site (confirming realtime-only) and cross-
+referencing the demo app's own terminal output (confirming `/api/
+copilot/speak` fired on every single turn, not intermittently), not
+guessed at. The new logging is specifically what should make the NEXT
+live test, whatever it finds, diagnosable directly from the browser
+console instead of needing another multi-step investigation like this
+one.
+
+**Pending:**
+- No React component test harness exists in this repo — a real,
+  standalone piece of future work (jsdom + React Testing Library + a
+  mock WebSocket/AudioContext) that would let this exact class of bug
+  (a stale closure in a long-lived WebSocket callback) be caught by a
+  test instead of only by live, symptom-chasing debugging across
+  multiple sessions, as happened here.
+- Worth auditing whether any OTHER long-lived closure in this file
+  (attached once inside `startRealtime()` and never reassigned) reads a
+  plain `const` derived from React state instead of a ref — `onExplain`
+  and `runTour` were the two found and fixed this pass because they
+  were the ones with live, reported symptoms; a systematic sweep for
+  the same pattern elsewhere wasn't done.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -368,7 +368,33 @@ export function Copilot({
     executeVerbResponse(raw, pathname, {
       onExplain: (text) => {
         setAnswer(text);
-        if (!realtimeActive) void speak(text); // realtime mode gets audio over the socket instead
+        // A REAL, deep, long-standing bug found live — not introduced by
+        // today's other fixes, just newly diagnosed: this function is a
+        // plain closure defined fresh every render, but when a "verb" WS
+        // message arrives it's invoked through ws.onmessage — a callback
+        // assigned ONCE, inside startRealtime(), and never reassigned for
+        // the rest of that connection's life. `realtimeActive` there is
+        // therefore frozen at whatever it was AT THE MOMENT startRealtime()
+        // was called — which is BEFORE the click handler's own state
+        // updates land, so it reads `false` for literally the entire
+        // lifetime of every realtime call. `!realtimeActive` was therefore
+        // ALWAYS true here, on every single realtime turn — this ran
+        // speak() (the typed HTTP path) in addition to the correct
+        // realtime audio_chunk playback, every time. This is the actual,
+        // original root cause of "two speakers" — the earlier
+        // typedPlaybackSuspendedRef fix only ever suppressed the resulting
+        // AUDIO once this was already firing, it never stopped the
+        // firing itself (or the wasted LLM/TTS call and quota burn
+        // underneath it). rtStateRef mirrors status specifically to avoid
+        // this class of bug in a callback like this one (see its own doc
+        // comment) — using it here instead of the stale const is the
+        // actual fix.
+        if (rtStateRef.current.startsWith("rt-")) {
+          rtLog("explain: realtime call active, letting the socket's own audio_chunk stream speak this");
+        } else {
+          rtLog("explain: no realtime call active, using the typed speak() HTTP path");
+          void speak(text);
+        }
       },
       onNavigate: (route) => router.push(route),
       onMiss: reportMiss,
@@ -397,7 +423,16 @@ export function Copilot({
    */
   async function runTour(steps: TourStep[]) {
     const myGeneration = ++tourGenerationRef.current;
-    const wasRealtimeListening = realtimeActive;
+    // Same real stale-closure bug as onExplain's own fix above, and the
+    // reason a realtime-triggered tour spoke through the wrong pipeline
+    // (or, after that fix suppressed the wrong pipeline's audio, spoke
+    // through nothing at all — "tour did not speak anything") and could
+    // leave the mic never properly told to resume listening afterward
+    // (see the `setRtStatus("rt-listening")` call at the end of this
+    // function, fixed the same way). rtStateRef.current is always
+    // current, regardless of which render's closure this particular
+    // invocation runs inside.
+    const wasRealtimeListening = rtStateRef.current.startsWith("rt-");
     touringRef.current = true;
     if (wasRealtimeListening) setRtStatus("rt-speaking");
     // No archiveCurrentExchange() here: whatever triggered this tour (a typed
@@ -475,7 +510,13 @@ export function Copilot({
       if (tourGenerationRef.current !== myGeneration) return;
       setTourStep(null);
       setCaption("");
-      if (wasRealtimeListening && realtimeActive) setRtStatus("rt-listening");
+      // The most damaging half of this stale-closure bug: this used to
+      // read the stale `realtimeActive` const, which meant this call was
+      // ALWAYS skipped for a tour reached via realtime — the mic was
+      // never explicitly told to resume listening once the tour ended.
+      // rtStateRef.current.startsWith("rt-") is what actually reflects
+      // whether the connection is still live right now.
+      if (wasRealtimeListening && rtStateRef.current.startsWith("rt-")) setRtStatus("rt-listening");
     } finally {
       if (tourGenerationRef.current === myGeneration) touringRef.current = false;
     }
@@ -578,7 +619,7 @@ export function Copilot({
       // matching guard for the TEXT half, which would otherwise still
       // leak through even with the audio silenced.
       if (typedPlaybackSuspendedRef.current) {
-        console.warn("[cairn] dropping a stale typed reply's text — a realtime call started while it was still in flight");
+        rtLog("dropping stale typed reply's text — a realtime call started while it was still in flight");
       } else {
         handleVerb(lastRawResponse);
       }
@@ -741,7 +782,7 @@ export function Copilot({
       // typedPlaybackSuspendedRef's own doc comment for why that's a real,
       // live-found overlapping-audio case, not a hypothetical one.
       if (typedPlaybackSuspendedRef.current) {
-        console.warn("[cairn] dropping a typed reply's audio — a realtime call started while it was still being fetched");
+        rtLog("dropping stale typed reply's audio — a realtime call started while it was still being fetched");
         return;
       }
       void playPcmStream(res.body);
@@ -766,7 +807,7 @@ export function Copilot({
       // doc comment — a realtime call can start while this fetch was in
       // flight, same real risk here.
       if (typedPlaybackSuspendedRef.current) {
-        console.warn("[cairn] dropping a typed reply's audio — a realtime call started while it was still being fetched");
+        rtLog("dropping stale typed reply's audio — a realtime call started while it was still being fetched");
         return;
       }
       await playPcmStream(res.body);
@@ -803,7 +844,7 @@ export function Copilot({
       // closed connection mid-turn), don't let the tour hang on this step
       // forever with the mic never resuming — move on instead.
       setTimeout(() => {
-        if (!settled) console.warn("[cairn] tour step audio confirmation timed out — continuing");
+        if (!settled) rtLog("tour step audio confirmation timed out after 15s — continuing anyway");
         finish();
       }, 15000);
       ws.send(JSON.stringify({ type: "speak", text }));
@@ -871,6 +912,7 @@ export function Copilot({
     // race past the `realtimeActive` check twice and open two sessions,
     // which is exactly what "hearing the agent twice, in parallel" was.
     if (!realtimeUrl || !micSupported || realtimeActive || rtStartingRef.current) return;
+    rtLog("starting realtime call", { url: realtimeUrl });
     rtStartingRef.current = true;
     // A typed/mic-recorded reply's audio can still be mid-playback on its
     // own separate graph (typedPlaybackGainRef, only ever touched by
@@ -1000,7 +1042,7 @@ export function Copilot({
         disarmThinkingWatchdog();
         rtThinkingWatchdogRef.current = setTimeout(() => {
           rtThinkingWatchdogRef.current = null;
-          console.warn("[cairn] realtime turn timed out waiting on the server — resuming listening");
+          rtLog("thinking watchdog fired — server took over 20s, resuming listening and abandoning that turn");
           // Real, live-found gap: this used to only reset LOCAL state,
           // never telling the server anything — so a turn that was simply
           // SLOW (not actually stuck; e.g. retrying a rate-limited call
@@ -1042,6 +1084,7 @@ export function Copilot({
       // now-stale audio_chunk/speaking_end that was already in flight, so a
       // few straggling chunks can't sneak back in and resume playback.
       function triggerBargeIn() {
+        rtLog("barge-in triggered", { wasTouring: touringRef.current, discardedAudioChunks: rtScheduledSourcesRef.current.length });
         disarmThinkingWatchdog();
         stopScheduledRtAudio();
         rtAudioDoneArrivingRef.current = true;
@@ -1064,6 +1107,7 @@ export function Copilot({
       }
 
       ws.onopen = () => {
+        rtLog("connection open");
         sendFreshContext();
         setRtStatus("rt-listening");
         rtStartingRef.current = false;
@@ -1080,8 +1124,12 @@ export function Copilot({
       // discipline every other wire-protocol addition in this codebase
       // follows.
       function isStaleRtMessage(msg: { generation?: unknown }): boolean {
-        return typeof msg.generation === "number" && msg.generation < rtLastFinalGenerationRef.current;
+        const stale = typeof msg.generation === "number" && msg.generation < rtLastFinalGenerationRef.current;
+        if (stale) rtLog("dropped stale message", { type: (msg as { type?: unknown }).type, messageGeneration: msg.generation, currentGeneration: rtLastFinalGenerationRef.current });
+        return stale;
       }
+
+      let audioChunkCount = 0;
 
       ws.onmessage = (event) => {
         if (typeof event.data !== "string") return; // audio now arrives as base64 inside audio_chunk, not raw binary frames
@@ -1089,6 +1137,7 @@ export function Copilot({
         if (msg.type === "interim") {
           setCaption(msg.text);
         } else if (msg.type === "final") {
+          rtLog("final transcript", { text: msg.text, generation: msg.generation });
           rtLastFinalGenerationRef.current = typeof msg.generation === "number" ? msg.generation : 0;
           archiveCurrentExchange(); // the previous turn's pair is complete — move it into history before this one starts overwriting caption/answer
           setCaption(msg.text);
@@ -1112,6 +1161,7 @@ export function Copilot({
           armThinkingWatchdog();
         } else if (msg.type === "verb") {
           if (isStaleRtMessage(msg)) return; // belongs to a turn a later "final" already superseded
+          rtLog("verb received", { verb: msg.verb?.verb, generation: msg.generation });
           const parsedStep = safeParseVerbResponse(msg.verb);
           if (parsedStep && !TERMINAL_VERBS.has(parsedStep.verb)) {
             // A continuing agent-loop step (click/fill/read/call_tool) —
@@ -1135,11 +1185,14 @@ export function Copilot({
           handleVerb(msg.verb);
         } else if (msg.type === "speaking_start") {
           if (isStaleRtMessage(msg)) return;
+          rtLog("speaking start", { generation: msg.generation });
+          audioChunkCount = 0;
           disarmThinkingWatchdog();
           rtAudioDoneArrivingRef.current = false;
           setRtStatus("rt-speaking");
         } else if (msg.type === "audio_chunk") {
           if (isStaleRtMessage(msg)) return; // the literal "two speakers" case — a chunk from an abandoned turn, already in flight when the barge-in landed
+          audioChunkCount++;
           const ctx = rtPlaybackCtxRef.current;
           const gain = rtPlaybackGainRef.current;
           if (!ctx || !gain) return;
@@ -1175,6 +1228,7 @@ export function Copilot({
           };
         } else if (msg.type === "speaking_end" || msg.type === "turn_complete") {
           if (isStaleRtMessage(msg)) return; // a newer turn's own speaking_end/turn_complete will arrive and resume listening correctly on its own
+          rtLog(msg.type, { audioChunks: audioChunkCount, generation: msg.generation });
           // turn_complete covers a verb with nothing spoken (a plain
           // highlight/navigate/do often has no text) — no audio_chunk ever
           // arrives for it, so rtScheduledSourcesRef is already empty and
@@ -1183,6 +1237,7 @@ export function Copilot({
           rtAudioDoneArrivingRef.current = true;
           maybeResumeListening();
         } else if (msg.type === "error") {
+          rtLog("server error", { message: msg.message });
           // Must actually unstick the turn, not just show the message —
           // otherwise the mic never resumes and the session is stuck
           // exactly the way a silently-dropped response used to leave it.
@@ -1206,10 +1261,12 @@ export function Copilot({
       };
 
       ws.onerror = () => {
+        rtLog("connection error");
         setAnswer("Couldn't connect to the realtime voice service.");
         endRealtime();
       };
-      ws.onclose = () => {
+      ws.onclose = (closeEvent) => {
+        rtLog("connection closed", { code: closeEvent.code, reason: closeEvent.reason, wasIdle: rtStateRef.current === "idle" });
         if (rtStateRef.current !== "idle") endRealtime();
       };
     } catch {
@@ -1221,6 +1278,7 @@ export function Copilot({
   }
 
   function endRealtime() {
+    rtLog("ending realtime call", { statusAtEnd: rtStateRef.current });
     if (rtThinkingWatchdogRef.current) {
       clearTimeout(rtThinkingWatchdogRef.current);
       rtThinkingWatchdogRef.current = null;
@@ -1480,6 +1538,20 @@ function CairnMark() {
       <rect x="8.2" y="4.5" width="3.6" height="2.6" rx="0.5" fill="currentColor" opacity="0.5" />
     </svg>
   );
+}
+
+// Real-time lifecycle logging — every message received, every decision made
+// about it (played, spoken, dropped, and why), every state transition. Added
+// specifically so a live session's actual behavior is visible in the browser
+// console instead of only inferable from symptoms after the fact — every bug
+// found and fixed in this file today was diagnosed from screenshots and
+// terminal output because nothing like this existed before. `[cairn rt]` is
+// the tag to filter on. Deliberately excludes per-audio_chunk noise (dozens
+// of chunks per turn would flood the console) — chunk activity shows up as
+// a one-line count at speaking_end/turn_complete instead.
+function rtLog(event: string, details?: Record<string, unknown>): void {
+  if (details) console.log("[cairn rt]", event, details);
+  else console.log("[cairn rt]", event);
 }
 
 // ---------------------------------------------------------------------------
