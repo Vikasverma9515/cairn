@@ -13,7 +13,7 @@
 // that today's L3 LLM-generated purpose/title can only ever GUESS at,
 // even though the real answer is sitting right there in the source.
 
-import { Node, SyntaxKind } from "ts-morph";
+import { SyntaxKind } from "ts-morph";
 import type { Project } from "ts-morph";
 import { getElementText } from "./l1-scan";
 

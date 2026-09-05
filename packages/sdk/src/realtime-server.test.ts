@@ -824,11 +824,7 @@ describe("handleDeepgramMessage", () => {
     const { client } = fakeClient();
     const respond = vi.fn().mockResolvedValue({ verb: "tour", steps: [{ text: "Step one." }, { text: "Step two." }] });
     const deps = fakeDeps(respond);
-    let speakerCalled = false;
-    deps.speakerLLM = fakeSpeakerLLM(async () => {
-      speakerCalled = true;
-      return "This should never be spoken for a tour.";
-    });
+    deps.speakerLLM = fakeSpeakerLLM(async () => "This should never be spoken for a tour.");
     const speakStreamed = vi.fn().mockResolvedValue(undefined);
     const history: HistoryTurn[] = [];
     const turnState = { buffer: "" };
@@ -1200,7 +1196,7 @@ describe("handleDeepgramMessage", () => {
   });
 
   it("agent loop: hitting the iteration cap with no terminal verb degrades honestly instead of hanging", async () => {
-    const { client, sent } = fakeClient();
+    const { client } = fakeClient();
     const respond = vi.fn().mockResolvedValue({ verb: "read", target: "archive-btn" });
     const deps = fakeDeps(respond);
     const speakStreamed = vi.fn().mockResolvedValue(undefined);

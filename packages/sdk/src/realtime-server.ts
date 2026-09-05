@@ -42,7 +42,7 @@ import {
   type CapabilityTier,
   type CreateCopilotHandlerOptions,
 } from "./server";
-import { DeepgramSpeakStream, splitFlushableSentences } from "./tts-stream";
+import { DeepgramSpeakStream } from "./tts-stream";
 import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";

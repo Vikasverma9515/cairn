@@ -37,7 +37,7 @@ function VoiceFrameStep({ frame, index }: { frame: VoiceFrame; index: number }) 
   );
 }
 
-function TrialCard({ run, index, total }: { run: StoredRun; index: number; total: number }) {
+function TrialCard({ run, total }: { run: StoredRun; total: number }) {
   const v = run.verdict;
   return (
     <details className="trace" open={total <= 3}>
@@ -119,8 +119,8 @@ export default function TrialGroupPage({ params }: { params: { trialGroup: strin
           pass^{runs.length}: {passK ? "PASS" : "FAIL"}
         </span>
       </p>
-      {runs.map((run, i) => (
-        <TrialCard key={run.id} run={run} index={i} total={runs.length} />
+      {runs.map((run) => (
+        <TrialCard key={run.id} run={run} total={runs.length} />
       ))}
     </>
   );

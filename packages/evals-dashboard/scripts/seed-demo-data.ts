@@ -64,7 +64,10 @@ function verdict(pass: boolean, taskSuccess: number, efficiency: number, reasoni
   return { taskSuccess, efficiency, correctness: pass ? 0.95 : 0.6, safety: 1, latency, persona: null, policyCompliance: null, reasoning, pass };
 }
 
-function seedGroup(scenarioId: string, transport: "typed" | "voice", commit: string, trials: { result: ScenarioRunResult; verdict: Verdict }[]) {
+// scenarioId/transport are unused in the body — kept as parameters purely as
+// readable documentation at each call site below (which scenario/transport
+// this group of trials belongs to), not because the function needs them.
+function seedGroup(_scenarioId: string, _transport: "typed" | "voice", commit: string, trials: { result: ScenarioRunResult; verdict: Verdict }[]) {
   const group = randomUUID();
   trials.forEach((t, i) => recordRun(db, commit, t.result, t.verdict, { group, index: i + 1 }));
 }
