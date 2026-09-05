@@ -4796,6 +4796,80 @@ a second, independently-phrased guess.
 
 ---
 
+### Remove the confirm-or-reverse barge-in "grace window" — a real, live-reported cause of "I say stop and it restarts from the top"
+
+Direct, live bug report: saying "stop" while the agent was mid-answer
+cut the audio, paused for about a second, and then the SAME answer
+started playing again from the very beginning. Traced to Phase 2 step
+2's "confirm-or-reverse" barge-in design in `realtime-server.ts`: every
+barge-in armed a 600ms grace window, and unless a real Deepgram
+transcript for the interruption arrived and called `confirmRealSpeech()`
+within that window, the code concluded the barge-in must have been a
+false positive (a cough, a door slam) and re-spoke `lastSpokenText`
+from the top via a fresh `speakStreamed()` call. Deepgram's own
+transcript for a short, clearly-real interruption like "stop" routinely
+took longer than 600ms to arrive — so a deliberate, successful
+interruption looked exactly like an unconfirmed false alarm and got
+"resumed" every time. The client had no special handling for the
+server's own `resume_speaking` message either (confirmed by grep — it
+doesn't appear anywhere in `index.tsx`/`web-component.ts`), so the
+"resume" was indistinguishable from the agent just starting the whole
+answer over. Direct user instruction: there should be no such system at
+all — barge-in should be "normal," an immediate, permanent stop, the
+way every other voice assistant does it.
+
+**Built:** removed the entire confirm-or-reverse mechanism:
+- `triggerServerBargeIn()` (`realtime-server.ts`) simplified to exactly
+  three lines: bump `generation` (drops any audio/verb already in
+  flight or in the pipe), clear the Speak stream, unstick a pending
+  `speakStreamed()` call. No grace window, no resume, no guessing.
+- Removed `lastSpokenText`, `bargeInConfirmation`
+  (`createBargeInConfirmation`/`BargeInConfirmation`, both previously
+  exported for its own standalone tests), `BARGE_IN_CONFIRM_WINDOW_MS`,
+  and `confirmRealSpeech()`.
+- Removed the `onRealTranscript` parameter from `handleDeepgramMessage`
+  entirely (not just stopped passing it) — its only real purpose was
+  feeding `confirmRealSpeech()`, which no longer exists; keeping an
+  optional parameter with zero live consumer would just be new dead
+  code of the same shape this session already cleaned up once.
+- Removed the `resume_speaking` server->client message type from
+  `ServerMessage` — nothing sends it anymore.
+- Left the client (`index.tsx`/`web-component.ts`) untouched: local
+  barge-in detection (the RMS-energy VAD on the mic, `triggerBargeIn()`
+  stopping already-scheduled audio and sending `{type: "barge_in"}`)
+  was already correct and immediate — the bug was entirely server-side,
+  in what happened *after* that message arrived.
+
+**Tests:** removed `describe("createBargeInConfirmation", ...)`'s 5
+tests (the timer state machine itself, now deleted) and the 3
+`onRealTranscript`-specific tests in `realtime-server.test.ts` — all
+tested a mechanism that no longer exists. Every other
+`handleDeepgramMessage` call site that positionally passed
+`recordMemoryTurn`/`getScopeId`/`bumpGeneration` past the now-removed
+`onRealTranscript` slot was updated to drop one placeholder `undefined`
+each, so those arguments land in their real (now one-earlier) position
+— verified by running `realtime-server.test.ts` alone first (32/32
+passing) before the full suite. Full repo `npx vitest run`: 508/508
+passing (516 minus the 8 removed tests, zero regressions elsewhere).
+Full `npm run typecheck` clean across all 6 workspaces. `npm run build
+-w @cairnvibe/sdk` rebuilt cleanly.
+
+**Pending:** the real, honest problem the confirm-or-reverse design was
+trying to solve — a raw RMS-energy VAD trigger has no idea whether it
+just heard real speech or a cough/door slam, so *some* real barge-ins
+today will be false positives that now just permanently cut the agent
+off with no attempt to recover — is now fully un-mitigated, per direct
+instruction to remove the system rather than tune it. If false-positive
+barge-in turns out to be a real, separately-reported problem later, the
+honest fix is a better LOCAL trigger (a real VAD library instead of raw
+RMS energy — already flagged as a known gap in the plan file's Phase 2
+comparison table) rather than resurrecting a server-side
+guess-and-replay step after the fact.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

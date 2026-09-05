@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { HistoryTurn, Manifest } from "@cairnvibe/core";
 import type { VerbLLM } from "./server";
-import { createBargeInConfirmation, formatRememberedFacts, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
+import { formatRememberedFacts, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
 import type { MemoryTurnRecord } from "./memory-sqlite";
 
 const manifest: Manifest = {
@@ -118,64 +118,6 @@ describe("formatRememberedFacts", () => {
   });
 });
 
-describe("createBargeInConfirmation", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("fires onUnconfirmed after the window elapses with no confirm() call", () => {
-    const confirmation = createBargeInConfirmation(600);
-    const onUnconfirmed = vi.fn();
-
-    confirmation.start(onUnconfirmed);
-    vi.advanceTimersByTime(599);
-    expect(onUnconfirmed).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(onUnconfirmed).toHaveBeenCalledTimes(1);
-  });
-
-  it("confirm() before the window elapses cancels onUnconfirmed entirely — the real speech case", () => {
-    const confirmation = createBargeInConfirmation(600);
-    const onUnconfirmed = vi.fn();
-
-    confirmation.start(onUnconfirmed);
-    vi.advanceTimersByTime(300);
-    confirmation.confirm();
-    vi.advanceTimersByTime(1000);
-    expect(onUnconfirmed).not.toHaveBeenCalled();
-  });
-
-  it("a second start() before the first resolves restarts the window instead of stacking two timers", () => {
-    const confirmation = createBargeInConfirmation(600);
-    const onUnconfirmed = vi.fn();
-
-    confirmation.start(onUnconfirmed);
-    vi.advanceTimersByTime(500);
-    confirmation.start(onUnconfirmed); // a second barge-in before the first window elapsed
-    vi.advanceTimersByTime(500); // 500ms since the restart — the ORIGINAL window (600ms from the first start) would have already fired if not properly reset
-    expect(onUnconfirmed).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(100); // now 600ms since the restart
-    expect(onUnconfirmed).toHaveBeenCalledTimes(1);
-  });
-
-  it("cancel() before the window elapses stops it — the connection-teardown case", () => {
-    const confirmation = createBargeInConfirmation(600);
-    const onUnconfirmed = vi.fn();
-
-    confirmation.start(onUnconfirmed);
-    confirmation.cancel();
-    vi.advanceTimersByTime(1000);
-    expect(onUnconfirmed).not.toHaveBeenCalled();
-  });
-
-  it("confirm() with no pending window is a safe no-op", () => {
-    const confirmation = createBargeInConfirmation(600);
-    expect(() => confirmation.confirm()).not.toThrow();
-  });
-});
 
 describe("handleDeepgramMessage", () => {
   it("a single speech_final segment triggers exactly one turn", async () => {
@@ -220,7 +162,6 @@ describe("handleDeepgramMessage", () => {
       { buffer: "" },
       () => 0,
       neverCalledWaitForToolResult,
-      undefined,
       recordMemoryTurn,
     );
 
@@ -263,7 +204,6 @@ describe("handleDeepgramMessage", () => {
       () => 0,
       neverCalledWaitForToolResult, // if this were ever called, it would throw — proving the client round trip is genuinely skipped
       undefined,
-      undefined,
       () => "user-1",
     );
 
@@ -294,7 +234,6 @@ describe("handleDeepgramMessage", () => {
       () => 0,
       neverCalledWaitForToolResult,
       undefined,
-      undefined,
       () => "user-1",
     );
 
@@ -321,7 +260,6 @@ describe("handleDeepgramMessage", () => {
       { buffer: "" },
       () => 0,
       neverCalledWaitForToolResult,
-      undefined,
       undefined,
       () => null, // no scopeId for this connection
     );
@@ -351,64 +289,10 @@ describe("handleDeepgramMessage", () => {
       () => 0,
       neverCalledWaitForToolResult,
       undefined,
-      undefined,
       () => "user-1",
     );
 
     expect(memory.rememberFact).not.toHaveBeenCalled();
-  });
-
-  // Phase 2 step 2 — onRealTranscript is the confirmation signal
-  // triggerServerBargeIn's grace window waits for.
-  it("Phase 2 step 2: onRealTranscript fires on a non-final (interim) transcript — the fastest possible confirmation, before speech_final ever arrives", async () => {
-    const { client } = fakeClient();
-    const deps = fakeDeps(vi.fn());
-    const onRealTranscript = vi.fn();
-
-    await handleDeepgramMessage(
-      resultsMessage("hel", { isFinal: false }),
-      client,
-      deps,
-      getContext,
-      async () => {},
-      [],
-      { buffer: "" },
-      () => 0,
-      neverCalledWaitForToolResult,
-      onRealTranscript,
-    );
-
-    expect(onRealTranscript).toHaveBeenCalledTimes(1);
-  });
-
-  it("Phase 2 step 2: onRealTranscript never fires for a message with no real transcript content", async () => {
-    const { client } = fakeClient();
-    const deps = fakeDeps(vi.fn());
-    const onRealTranscript = vi.fn();
-
-    await handleDeepgramMessage(
-      JSON.stringify({ type: "Results", is_final: false, channel: { alternatives: [{ transcript: "" }] } }),
-      client,
-      deps,
-      getContext,
-      async () => {},
-      [],
-      { buffer: "" },
-      () => 0,
-      neverCalledWaitForToolResult,
-      onRealTranscript,
-    );
-
-    expect(onRealTranscript).not.toHaveBeenCalled();
-  });
-
-  it("Phase 2 step 2: omitting onRealTranscript entirely is a safe no-op — every existing call site keeps working unchanged", async () => {
-    const { client } = fakeClient();
-    const deps = fakeDeps(vi.fn());
-
-    await expect(
-      handleDeepgramMessage(resultsMessage("hello", { isFinal: false }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
-    ).resolves.not.toThrow();
   });
 
   it("real bug: two is_final chunks for ONE utterance (a natural mid-sentence pause) do NOT trigger two turns — only the speech_final one does", async () => {
@@ -560,7 +444,6 @@ describe("handleDeepgramMessage", () => {
       neverCalledWaitForToolResult,
       undefined,
       undefined,
-      undefined,
       bumpGeneration,
     );
     await handleDeepgramMessage(
@@ -573,7 +456,6 @@ describe("handleDeepgramMessage", () => {
       turnState,
       () => generation,
       neverCalledWaitForToolResult,
-      undefined,
       undefined,
       undefined,
       bumpGeneration,

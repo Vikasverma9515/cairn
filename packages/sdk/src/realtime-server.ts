@@ -147,13 +147,6 @@ type ServerMessage =
   /** No more audio chunks are coming for this turn. The client may still be mid-playback of what it already has. */
   | { type: "speaking_end"; generation: number }
   | { type: "turn_complete"; generation: number }
-  /** Phase 2 step 2 — a barge-in the server concluded was a false positive
-   * (no confirming transcript arrived within the grace window) is being
-   * re-spoken from the top. Purely informational — the client needs no
-   * special handling; the speaking_start/audio_chunk/speaking_end
-   * sequence that follows is already handled identically to any other
-   * turn starting to speak. */
-  | { type: "resume_speaking" }
   /** Phase 2 step 3 — the ack phrase's text, sent alongside the audio
    * that speaks it. Purely informational (see emitEvent's own "inj"
    * case) — mainly so packages/evals' voiceFrames capture has something
@@ -161,55 +154,12 @@ type ServerMessage =
   | { type: "ack"; text: string }
   | { type: "error"; message: string };
 
-/**
- * Phase 2 step 2 — the timer state machine behind confirm-or-reverse
- * barge-in, extracted as a small, standalone, directly testable unit
- * (real fake-timer tests, not buried in handleConnection's own giant
- * closure where nothing about it could be exercised in isolation).
- * `start` begins (or restarts, on a second barge-in before the first
- * resolved) a grace window; `confirm` cancels it the moment real speech
- * is recognized; `cancel` is the connection-teardown escape hatch. No
- * opinion on WHAT confirming or timing out means — that's
- * triggerServerBargeIn's own job — this only owns "is there a pending
- * window, and did it get confirmed before it elapsed."
- */
-export interface BargeInConfirmation {
-  start(onUnconfirmed: () => void): void;
-  confirm(): void;
-  cancel(): void;
-}
-
 // seedHistoryFromMemory/formatRememberedFacts moved to memory-sqlite.ts
 // (Phase 5 step 4) — the SAME shared, storage-agnostic logic both the
 // realtime relay and the typed/HTTP transport need. Re-exported here
 // (not just imported) so every existing import from "./realtime-server"
 // keeps working unchanged.
 export { seedHistoryFromMemory, formatRememberedFacts };
-
-export function createBargeInConfirmation(windowMs: number): BargeInConfirmation {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  return {
-    start(onUnconfirmed) {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
-        onUnconfirmed();
-      }, windowMs);
-    },
-    confirm() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    },
-    cancel() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    },
-  };
-}
 
 export function createRealtimeServer(options: CreateRealtimeServerOptions): http.Server {
   const registeredActions = options.registeredActions ?? [];
@@ -390,65 +340,29 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
     return { stream: speakStream, ready: speakStreamReady! };
   }
 
-  // Phase 2 step 2 — confirm-or-reverse. The client's own RMS-energy
-  // trigger (packages/sdk/src/index.tsx and web-component.ts's
-  // onaudioprocess, BARGE_IN_RMS_THRESHOLD) already cuts audio LOCALLY,
-  // immediately, before this even runs — real research into that code
-  // found it fires on raw energy alone, with zero confirmation and zero
-  // way back today: a cough or a door slam cuts the agent off exactly as
-  // hard as real speech does, permanently. This is the STT-as-
-  // confirmation half the plan asks for, entirely server-side (the
-  // client needs no changes — a fresh speaking_start/audio_chunk
-  // sequence is already handled identically to any other turn starting
-  // to speak, confirmed by reading its onmessage handler before writing
-  // this). `lastSpokenText` is set by speakStreamed itself, right
-  // before anything is queued — real, not tracked, is what "resume"
-  // replays.
-  const BARGE_IN_CONFIRM_WINDOW_MS = 600;
-  let lastSpokenText: string | null = null;
-  const bargeInConfirmation = createBargeInConfirmation(BARGE_IN_CONFIRM_WINDOW_MS);
-
-  function confirmRealSpeech(): void {
-    bargeInConfirmation.confirm();
-  }
-
-  // Discards whatever the current turn is still synthesizing/sending, and
-  // unsticks a pending speakStreamed() call if one is in flight — Deepgram's
-  // "Clear" isn't guaranteed to itself trigger a "Flushed" confirmation, so
-  // without this the interrupted call's promise would hang forever.
+  // A real, live-reported bug in what used to live here: a "confirm-or-
+  // reverse" grace window that, on ANY barge-in with no confirming STT
+  // transcript arriving within 600ms, concluded it was a false positive
+  // and RE-SPOKE THE SAME TEXT FROM THE TOP. Live symptom, reported
+  // directly: saying "stop" cut the agent off, paused for about a
+  // second, then the exact same answer started playing again from the
+  // beginning — because Deepgram's own transcript for "stop" routinely
+  // arrived a little later than the 600ms window, so every clean,
+  // deliberate interruption looked exactly like an unconfirmed false
+  // alarm and got "resumed." Direct user instruction: there should be no
+  // such system at all — a barge-in should behave like it does in any
+  // normal voice assistant, an immediate, permanent stop, never a guess
+  // at whether to talk over the user again. `triggerServerBargeIn` is
+  // now exactly that: bump generation (drops any audio/verb already in
+  // flight), clear the TTS stream, unstick a pending speakStreamed()
+  // call — and nothing else.
   function triggerServerBargeIn(): void {
     generation++;
     speakStream?.clear();
     onCurrentTurnFlushed?.();
-
-    const textToResume = lastSpokenText;
-    if (!textToResume) {
-      bargeInConfirmation.cancel(); // nothing was being said — nothing to confirm or resume
-      return;
-    }
-    // bargeInConfirmation is cleared by confirmRealSpeech the moment ANY
-    // non-empty transcript arrives (interim or final — see
-    // handleDeepgramMessage) — Deepgram's own recognizer is what tells
-    // us the RMS trigger was right. If nothing confirms within the
-    // window, this concludes it was a false positive and re-speaks the
-    // SAME text from the top — a real, honest simplification: this is
-    // "resume" as "restart," not a byte-exact continuation from the
-    // interrupted point (tracking exact playback position through a
-    // network+TTS pipeline is real, separate work, not attempted here
-    // for a v1 whose main job is "don't leave the agent permanently cut
-    // off on a false alarm").
-    const myGeneration = generation;
-    bargeInConfirmation.start(() => {
-      if (myGeneration !== generation) return; // a real, later barge-in already superseded this one
-      safeSend(client, { type: "resume_speaking" });
-      speakStreamed(textToResume).catch((err) => {
-        console.error("[cairn realtime] failed to resume speech after a false-positive barge-in:", err);
-      });
-    });
   }
 
   async function speakStreamed(text: string): Promise<void> {
-    lastSpokenText = text;
     const myGeneration = generation;
     const { stream, ready } = ensureSpeakStream();
 
@@ -503,7 +417,7 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   const turnState = { buffer: "" };
 
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech, recordMemoryTurn, () => scopeId, () => {
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, recordMemoryTurn, () => scopeId, () => {
       generation++;
     });
   });
@@ -599,7 +513,6 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
       // already closed
     }
     speakStream?.close();
-    bargeInConfirmation.cancel();
   });
 }
 
@@ -613,14 +526,6 @@ export async function handleDeepgramMessage(
   turnState: { buffer: string },
   getGeneration: () => number,
   waitForToolResult: () => Promise<string>,
-  /** Phase 2 step 2 — called once for every message carrying real
-   * (non-empty) transcript content, interim or final. Optional and a
-   * no-op by default so every existing call site (own or a test's) that
-   * doesn't pass this keeps behaving exactly as before. The realtime
-   * connection's own confirmRealSpeech clears a pending false-positive-
-   * barge-in timer when this fires — see triggerServerBargeIn's own
-   * doc comment for the full mechanism. */
-  onRealTranscript?: () => void,
   /** Phase 5 — called with each real (role, text) turn as it's finalized,
    * right alongside the same-shaped `history.push`. Optional and a no-op
    * by default so every existing call site keeps working unchanged. The
@@ -674,7 +579,6 @@ export async function handleDeepgramMessage(
   if (msg.type !== "Results") return;
   const transcript: string | undefined = msg.channel?.alternatives?.[0]?.transcript;
   if (!transcript) return;
-  onRealTranscript?.();
 
   if (!msg.is_final) {
     safeSend(client, { type: "interim", text: turnState.buffer ? `${turnState.buffer} ${transcript}` : transcript });
@@ -783,8 +687,8 @@ async function finalizeTurn(
         // only way to know (packages/evals' voiceFrames capture full
         // frames, but an "inj" event never otherwise reaches the client
         // as readable text, only as synthesized audio). Purely
-        // informational, same precedent as "resume_speaking" — a client
-        // that ignores unknown message types loses nothing.
+        // informational — a client that ignores unknown message types
+        // loses nothing.
         safeSend(client, { type: "ack", text: event.text });
         ackPromise = speakStreamed(event.text);
         return;
