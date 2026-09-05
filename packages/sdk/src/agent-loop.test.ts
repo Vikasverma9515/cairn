@@ -412,4 +412,11 @@ describe("summarizeVerbForHistory", () => {
       summarizeVerbForHistory({ verb: "batch", actions: [{ verb: "click", target: "a" }, { verb: "read", target: "b" }] }),
     ).toBe("(2 steps: click, read)");
   });
+
+  it("describes drag/select/key the same real way as click/fill/read — Pillar 1's richer action vocabulary", () => {
+    expect(summarizeVerbForHistory({ verb: "drag", target: "node-a", to: "node-b" })).toBe("(dragged node-a to node-b)");
+    expect(summarizeVerbForHistory({ verb: "select", target: "status-dropdown", value: "Overdue" })).toBe('(selected "Overdue" in status-dropdown)');
+    expect(summarizeVerbForHistory({ verb: "key", target: "search-box", key: "Enter" })).toBe("(pressed Enter on search-box)");
+    expect(summarizeVerbForHistory({ verb: "key", key: "Escape" })).toBe("(pressed Escape)");
+  });
 });

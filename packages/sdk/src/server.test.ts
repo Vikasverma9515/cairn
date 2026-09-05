@@ -327,6 +327,44 @@ describe("createCopilotHandlerWithLLM", () => {
     expect((result.body as { verb: string }).verb).toBe("explain");
   });
 
+  it("drag: real target and destination ids both pass through; either being invented is refused", async () => {
+    const okHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "drag", target: "create-invoice", to: "start-call" }));
+    const okResult = await okHandler({ route: "/invoices", question: "drag that onto the call button", visible: [] });
+    expect(okResult.body).toEqual({ verb: "drag", target: "create-invoice", to: "start-call" });
+
+    const badFrom = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "drag", target: "made-up-id", to: "start-call" }));
+    const badFromResult = await badFrom({ route: "/invoices", question: "drag it", visible: [] });
+    expect((badFromResult.body as { verb: string }).verb).toBe("explain");
+
+    const badTo = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "drag", target: "create-invoice", to: "made-up-id" }));
+    const badToResult = await badTo({ route: "/invoices", question: "drag it", visible: [] });
+    expect((badToResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("select: a real target passes through; an unknown one is refused", async () => {
+    const okHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "select", target: "create-invoice", value: "Overdue" }));
+    const okResult = await okHandler({ route: "/invoices", question: "set the status", visible: [] });
+    expect(okResult.body).toEqual({ verb: "select", target: "create-invoice", value: "Overdue" });
+
+    const badHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "select", target: "made-up-id", value: "Overdue" }));
+    const badResult = await badHandler({ route: "/invoices", question: "set the status", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("key: a real target passes through, an omitted target (currently-focused element) is allowed, an unknown target is refused", async () => {
+    const withTarget = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "key", target: "create-invoice", key: "Escape" }));
+    const withTargetResult = await withTarget({ route: "/invoices", question: "press escape on it", visible: [] });
+    expect(withTargetResult.body).toEqual({ verb: "key", target: "create-invoice", key: "Escape" });
+
+    const noTarget = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "key", key: "Enter" }));
+    const noTargetResult = await noTarget({ route: "/invoices", question: "press enter", visible: [] });
+    expect(noTargetResult.body).toEqual({ verb: "key", key: "Enter" });
+
+    const badHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "key", target: "made-up-id", key: "Enter" }));
+    const badResult = await badHandler({ route: "/invoices", question: "press enter on it", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
   it("call_tool: a real WebMCP tool name from this exact request passes through", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,
@@ -401,6 +439,35 @@ describe("createCopilotHandlerWithLLM", () => {
       liveElements: [{ id: "live-3", role: "button", label: "tel-jBU07k_CX74V" }],
     });
     expect((result.body as { verb: string }).verb).toBe("batch");
+  });
+
+  it("batch: drag/select/key steps are validated the same real way as click/fill/read", async () => {
+    const okHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "drag", target: "create-invoice", to: "start-call" },
+          { verb: "select", target: "create-invoice", value: "Overdue" },
+          { verb: "key", key: "Enter" },
+        ],
+      }),
+    );
+    const okResult = await okHandler({ route: "/invoices", question: "do the sequence", visible: [] });
+    expect((okResult.body as { verb: string }).verb).toBe("batch");
+
+    const badHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "drag", target: "create-invoice", to: "made-up-id" },
+          { verb: "select", target: "create-invoice", value: "Overdue" },
+        ],
+      }),
+    );
+    const badResult = await badHandler({ route: "/invoices", question: "do the sequence", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
   });
 
   it("capability 'act' is the only tier that allows batch — explain and guide refuse it, same as fill/call_tool", async () => {
@@ -1347,6 +1414,32 @@ describe("buildVerbToolSchema", () => {
   it("declares a nullable continueAfter property, for navigate's own compound-goal escape hatch", () => {
     const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown }> };
     expect(schema.properties.continueAfter.type).toEqual(["boolean", "null"]);
+  });
+
+  it("declares nullable 'to' and 'key' properties, for drag's destination and key's keypress", () => {
+    const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown }> };
+    expect(schema.properties.to.type).toEqual(["string", "null"]);
+    expect(schema.properties.key.type).toEqual(["string", "null"]);
+  });
+
+  it("the batch actions enum includes drag/select/key alongside the original four, with 'to'/'key' properties declared", () => {
+    const schema = buildVerbToolSchema([]) as {
+      properties: { actions: { items: { properties: { verb: { enum: string[] }; to: { type: unknown }; key: { type: unknown } } } } };
+    };
+    expect(schema.properties.actions.items.properties.verb.enum).toEqual(["click", "fill", "read", "call_tool", "drag", "select", "key"]);
+    expect(schema.properties.actions.items.properties.to.type).toEqual(["string", "null"]);
+    expect(schema.properties.actions.items.properties.key.type).toEqual(["string", "null"]);
+  });
+
+  it("a flat drag/select/key response round-trips through VerbResponseSchema, same companion-null treatment as every other verb", () => {
+    const flatDrag = { verb: "drag", target: "node-a", to: "node-b", text: null, route: null, action: null, value: null, name: null, args: null, steps: null, key: null };
+    expect(VerbResponseSchema.safeParse(flatDrag)).toEqual({ success: true, data: { verb: "drag", target: "node-a", to: "node-b" } });
+
+    const flatSelect = { verb: "select", target: "status-dropdown", value: "Overdue", text: null, route: null, action: null, name: null, args: null, steps: null, to: null, key: null };
+    expect(VerbResponseSchema.safeParse(flatSelect)).toEqual({ success: true, data: { verb: "select", target: "status-dropdown", value: "Overdue" } });
+
+    const flatKey = { verb: "key", key: "Enter", target: null, text: null, route: null, action: null, value: null, name: null, args: null, steps: null, to: null };
+    expect(VerbResponseSchema.safeParse(flatKey)).toEqual({ success: true, data: { verb: "key", key: "Enter" } });
   });
 
   it("a flat navigate response with continueAfter: true round-trips through VerbResponseSchema", () => {

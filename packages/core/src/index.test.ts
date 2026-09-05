@@ -139,6 +139,60 @@ describe("safeParseVerbResponse", () => {
     );
   });
 
+  it("accepts the richer action vocabulary: drag, select, key", () => {
+    expect(safeParseVerbResponse({ verb: "drag", target: "node-a", to: "node-b" })).toEqual({
+      verb: "drag",
+      target: "node-a",
+      to: "node-b",
+    });
+    expect(safeParseVerbResponse({ verb: "select", target: "status-dropdown", value: "Overdue" })).toEqual({
+      verb: "select",
+      target: "status-dropdown",
+      value: "Overdue",
+    });
+    expect(safeParseVerbResponse({ verb: "key", target: "search-input", key: "Enter" })).toEqual({
+      verb: "key",
+      target: "search-input",
+      key: "Enter",
+    });
+    // key's target is genuinely optional — omitted means "whatever's focused".
+    expect(safeParseVerbResponse({ verb: "key", key: "Escape" })).toEqual({ verb: "key", key: "Escape" });
+  });
+
+  it("drag/select require both real ids; key requires a real key name", () => {
+    expect(safeParseVerbResponse({ verb: "drag", target: "node-a" })).toBeNull();
+    expect(safeParseVerbResponse({ verb: "select", target: "status-dropdown" })).toBeNull();
+    expect(safeParseVerbResponse({ verb: "key" })).toBeNull();
+  });
+
+  it("drag/select/key are continuing steps, not terminal — same as click/fill/read/call_tool", () => {
+    expect(TERMINAL_VERBS.has("drag")).toBe(false);
+    expect(TERMINAL_VERBS.has("select")).toBe(false);
+    expect(TERMINAL_VERBS.has("key")).toBe(false);
+    expect(isTerminalVerb({ verb: "drag", target: "a", to: "b" })).toBe(false);
+    expect(isTerminalVerb({ verb: "select", target: "a", value: "b" })).toBe(false);
+    expect(isTerminalVerb({ verb: "key", key: "Enter" })).toBe(false);
+  });
+
+  it("batch accepts drag/select/key steps alongside click/fill/read/call_tool", () => {
+    const parsed = safeParseVerbResponse({
+      verb: "batch",
+      actions: [
+        { verb: "drag", target: "node-a", to: "node-b" },
+        { verb: "select", target: "status-dropdown", value: "Overdue" },
+        { verb: "key", key: "Tab" },
+      ],
+    });
+    expect(parsed).toEqual({
+      verb: "batch",
+      actions: [
+        { verb: "drag", target: "node-a", to: "node-b" },
+        { verb: "select", target: "status-dropdown", value: "Overdue" },
+        { verb: "key", key: "Tab" },
+      ],
+    });
+  });
+
   it("accepts a batch of 2-5 steps, rejects fewer than 2 or more than 5", () => {
     const twoSteps = safeParseVerbResponse({
       verb: "batch",

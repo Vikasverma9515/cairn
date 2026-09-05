@@ -365,6 +365,141 @@ describe("executeVerbResponse", () => {
     });
   });
 
+  // Hand-rolled Node stand-ins for the browser event constructors dragElement/
+  // pressKey use (element-ladder.ts) — same reasoning as this file's own
+  // fakeElement/fakeInput: no jsdom in this repo's test environment.
+  class FakeMouseEvent {
+    type: string;
+    constructor(type: string) {
+      this.type = type;
+    }
+  }
+  class FakeKeyboardEvent {
+    type: string;
+    key: string;
+    constructor(type: string, opts: { key: string }) {
+      this.type = type;
+      this.key = opts.key;
+    }
+  }
+
+  function fakeDraggable(rect: { left: number; top: number; width: number; height: number }) {
+    return {
+      getBoundingClientRect: () => rect,
+      dispatchEvent: vi.fn(),
+      scrollIntoView: vi.fn(),
+      classList: { add: vi.fn(), remove: vi.fn() },
+    } as unknown as HTMLElement;
+  }
+
+  it("drag (agent loop): drags the resolved source onto the resolved destination and reports a real observation", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    vi.stubGlobal("MouseEvent", FakeMouseEvent);
+    try {
+      const opts = makeOptions();
+      const from = fakeDraggable({ left: 0, top: 0, width: 10, height: 10 });
+      const to = fakeDraggable({ left: 100, top: 100, width: 10, height: 10 });
+      const liveElements = new Map([
+        ["node-a", from],
+        ["node-b", to],
+      ]);
+      executeVerbResponse({ verb: "drag", target: "node-a", to: "node-b" }, "/canvas", { ...opts, liveElements });
+      expect((from.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.some((c) => (c[0] as FakeMouseEvent).type === "mousedown")).toBe(true);
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "drag", target: "node-a", ok: true, observation: "Dragged it to node-b." }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("drag (agent loop): a miss on the source reports a failed observation and never touches the destination", () => {
+    const opts = makeOptions();
+    const to = fakeDraggable({ left: 0, top: 0, width: 10, height: 10 });
+    const liveElements = new Map([["node-b", to]]);
+    executeVerbResponse({ verb: "drag", target: "does-not-exist", to: "node-b" }, "/canvas", { ...opts, liveElements });
+    expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "drag", target: "does-not-exist", ok: false, observation: "Could not find that element on the page." });
+    expect(to.dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it("drag (agent loop): a miss on the destination reports its own distinct observation", () => {
+    const opts = makeOptions();
+    const from = fakeDraggable({ left: 0, top: 0, width: 10, height: 10 });
+    const liveElements = new Map([["node-a", from]]);
+    executeVerbResponse({ verb: "drag", target: "node-a", to: "does-not-exist" }, "/canvas", { ...opts, liveElements });
+    expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "drag", target: "node-a", ok: false, observation: "Could not find the drop destination on the page." });
+  });
+
+  function fakeSelect(optionPairs: { text: string; value: string }[]) {
+    return {
+      tagName: "SELECT",
+      value: "",
+      options: optionPairs.map((o) => ({ textContent: o.text, value: o.value })),
+      dispatchEvent: vi.fn(),
+      scrollIntoView: vi.fn(),
+      classList: { add: vi.fn(), remove: vi.fn() },
+    } as unknown as HTMLSelectElement;
+  }
+
+  it("select (agent loop): chooses the real option by its visible text and reports the value back", async () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const select = fakeSelect([
+        { text: "Paid", value: "PAID" },
+        { text: "Overdue", value: "OVERDUE" },
+      ]);
+      const liveElements = new Map([["status-dropdown", select]]);
+      executeVerbResponse({ verb: "select", target: "status-dropdown", value: "Overdue" }, "/invoices", { ...opts, liveElements });
+      expect(select.value).toBe("OVERDUE");
+    });
+  });
+
+  it("select (agent loop): no matching option reports a failed observation instead of guessing", () => {
+    withWindowStub(() => {
+      const opts = makeOptions();
+      const select = fakeSelect([{ text: "Paid", value: "PAID" }]);
+      const liveElements = new Map([["status-dropdown", select]]);
+      executeVerbResponse({ verb: "select", target: "status-dropdown", value: "Cancelled" }, "/invoices", { ...opts, liveElements });
+      expect(opts.onToolStep).toHaveBeenCalledWith({
+        verb: "select",
+        target: "status-dropdown",
+        ok: false,
+        observation: 'Could not find an option matching "Cancelled".',
+      });
+    });
+  });
+
+  it("key (agent loop): presses the key on the resolved target and reports it", () => {
+    vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
+    try {
+      const opts = makeOptions();
+      const input = fakeInput();
+      const liveElements = new Map([["search-box", input]]);
+      executeVerbResponse({ verb: "key", target: "search-box", key: "Enter" }, "/invoices", { ...opts, liveElements });
+      const events = (input.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as FakeKeyboardEvent).type);
+      expect(events).toEqual(["keydown", "keypress", "keyup"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("key (agent loop): with no target, presses the key on whatever's currently focused", () => {
+    const activeElement = { focus: vi.fn(), dispatchEvent: vi.fn() } as unknown as HTMLElement;
+    vi.stubGlobal("document", { activeElement });
+    vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
+    try {
+      const opts = makeOptions();
+      executeVerbResponse({ verb: "key", key: "Escape" }, "/invoices", opts);
+      expect(activeElement.focus).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("key (agent loop): a named target that isn't found reports a failed observation", () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "key", target: "does-not-exist", key: "Tab" }, "/invoices", opts);
+    expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "key", target: "does-not-exist", ok: false, observation: "Could not find that element on the page." });
+  });
+
   it("call_tool (agent loop): calls the real WebMCP tool and reports its result", async () => {
     const executeTool = vi.fn().mockResolvedValue("3 overdue invoices");
     const tool = { name: "count-overdue-invoices" };
@@ -486,6 +621,47 @@ describe("executeVerbResponse", () => {
       expect(executeTool).toHaveBeenCalled();
       expect(el.click).toHaveBeenCalledTimes(1);
       expect(opts.onToolStep.mock.calls[0][0].ok).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("batch: drag/select/key steps run in order alongside the original four verbs", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    vi.stubGlobal("MouseEvent", FakeMouseEvent);
+    vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
+    try {
+      const opts = makeOptions();
+      const from = fakeDraggable({ left: 0, top: 0, width: 10, height: 10 });
+      const to = fakeDraggable({ left: 50, top: 50, width: 10, height: 10 });
+      const select = fakeSelect([{ text: "Overdue", value: "OVERDUE" }]);
+      const input = fakeInput();
+      const liveElements = new Map<string, any>([
+        ["node-a", from],
+        ["node-b", to],
+        ["status-dropdown", select],
+        ["search-box", input],
+      ]);
+      executeVerbResponse(
+        {
+          verb: "batch",
+          actions: [
+            { verb: "drag", target: "node-a", to: "node-b" },
+            { verb: "select", target: "status-dropdown", value: "Overdue" },
+            { verb: "key", target: "search-box", key: "Enter" },
+          ],
+        },
+        "/canvas",
+        { ...opts, liveElements },
+      );
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(select.value).toBe("OVERDUE");
+      const result = opts.onToolStep.mock.calls[0][0];
+      expect(result.verb).toBe("batch");
+      expect(result.ok).toBe(true);
+      expect(result.observation).toContain("Dragged it to node-b.");
+      expect(result.observation).toContain('Selected "Overdue".');
+      expect(result.observation).toContain("Pressed Enter.");
     } finally {
       vi.unstubAllGlobals();
     }

@@ -44,6 +44,12 @@ export function summarizeVerbForHistory(verb: VerbResponse): string {
       return `(read ${verb.target})`;
     case "call_tool":
       return `(called ${verb.name})`;
+    case "drag":
+      return `(dragged ${verb.target} to ${verb.to})`;
+    case "select":
+      return `(selected "${verb.value}" in ${verb.target})`;
+    case "key":
+      return `(pressed ${verb.key}${verb.target ? ` on ${verb.target}` : ""})`;
     case "batch":
       return `(${verb.actions.length} steps: ${verb.actions.map((a) => a.verb).join(", ")})`;
     default:

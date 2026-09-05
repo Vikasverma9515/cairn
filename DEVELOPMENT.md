@@ -5394,6 +5394,163 @@ output during the next live-reported instance rather than guessing again.
 
 ---
 
+### Architecture Pillar 1 — a richer, still-verified action vocabulary: drag, select, key (the concrete fix for "operate literally any platform," starting with node-canvas editors like n8n)
+
+The first of a 6-pillar architecture plan (see the plan file this session
+approved: "General platform capability — the agent learns a platform and
+writes its own playbook for it") aimed at making Cairn's agent capable of
+operating any real web platform, not just an app pre-scanned at build time.
+Real, named gap this closes: the action vocabulary was click/fill/read/
+call_tool/navigate/do/highlight/open/tour/batch — nothing that can connect
+two nodes on a workflow canvas, choose a dropdown option, or send a
+keypress. "Operate n8n" is structurally impossible without at least a drag
+gesture; this pillar adds exactly the three verbs the plan called out as
+step 1, in the plan's own stated order (`upload`/`scroll`/`wait_for` are
+deliberately deferred — `upload` in particular needs its own design pass
+for the "real native file picker only" constraint).
+
+**Built**:
+- `packages/core/src/index.ts` — `VERBS` gained `"drag"`, `"select"`,
+  `"key"`; `VerbResponseSchema` gained matching discriminated-union variants
+  (`drag: { target, to }`, `select: { target, value }`, `key: { target?,
+  key }`); `BatchActionSchema` got the same three variants so a batch can
+  mix them with the original four. All three are continuing steps — never
+  added to `TERMINAL_VERBS` — so `isTerminalVerb` (added earlier this
+  session for `navigate`'s `continueAfter`) already treats them correctly
+  with zero further changes needed there.
+- `packages/sdk/src/element-ladder.ts` — three new real-DOM-action
+  functions, each following the same "never invented, only ever a real
+  target already resolved through the element ladder" discipline as
+  `fillElement`/`readElement`:
+  - `selectOption(el, visibleText)` — native `<select>` gets a direct
+    `.value` set (matched by the option's real visible text, exact then
+    substring, same two-tier matching `findElement` already uses) plus the
+    same input+change event pair `fillElement` fires so React notices; a
+    custom listbox/combobox (`role="option"`, Radix/Headless-UI-shaped)
+    falls back to clicking the matching option-shaped descendant, since
+    there's no real `<option>` to set on those.
+  - `dragElement(from, to, steps=5)` — a real multi-point pointer-event
+    sequence (mousedown → several mousemoves → mouseup, center-to-center),
+    firing both `PointerEvent` (when available) and `MouseEvent` variants so
+    canvas/kanban/sortable libraries that only listen for one or the other
+    both get real events — same technique this session's own iOS Simulator
+    tooling already uses for `touch_path`, applied to DOM pointer events.
+  - `pressKey(el, key)` — focuses the target first (a real keypress always
+    lands on whatever's focused), fires keydown/keyup, plus a keypress in
+    between for the two keys that still get one in a real browser
+    (Enter/Tab) — not for pure navigation keys like arrows, matching modern
+    browser behavior.
+- `packages/sdk/src/verb-executor.ts` — `dispatchVerb` gained `"drag"`/
+  `"select"`/`"key"` cases (single-step and inside `executeOneBatchAction`),
+  each following the exact click/fill shape: resolve via `findElement`
+  (or `findElementWithRetry` in the batch path), miss → `onMiss` + a failed
+  `ToolStepResult`, success → `highlightElement` + the real action +
+  `waitForDomSettle()` before reporting back (drag/select can trigger an
+  async re-render exactly like click/fill already can — e.g. a canvas
+  redrawing a new connection line, a dependent field appearing after a
+  select). `key` never highlights (pressing a key doesn't call attention to
+  a NEW element the way click/fill/drag/select do) and skips
+  `waitForDomSettle` only in the sense that it still awaits it before
+  reporting, for the same "next step needs the settled DOM" reason.
+  `ToolStepResult.verb`'s union type extended accordingly.
+- `packages/sdk/src/server.ts` (`resolveVerb`) — the same "must name
+  something real" gate `click`/`fill`/`read` already got extended to
+  `select` (its `target`), `drag` (both `target` AND `to`, refusing the
+  whole turn if either is invented), and `key` (its `target` only when the
+  model actually supplied one — an omitted target legitimately means
+  "whatever's focused," never something to validate against real state).
+  The batch gate's per-action check extended the same way. `TIER_ALLOWED_VERBS`
+  needed no change — its `act` tier is `new Set(VERBS)`, so the three new
+  verbs are automatically included at the one tier that already allows
+  click/fill.
+- `packages/sdk/src/server.ts` (`buildVerbToolSchema` + system prompt) —
+  new nullable `to`/`key` wire properties (with the same
+  Groq-sends-null-for-inapplicable-fields tolerance every other optional
+  field already has), `target`'s and `value`'s descriptions extended to
+  cover drag/select, the batch actions' verb enum extended to all seven,
+  and three new system-prompt bullets explaining drag/select/key to the
+  model in the same style as the existing click/fill/read/call_tool
+  bullets (concrete examples: connecting canvas nodes, moving a kanban
+  card, choosing a real dropdown option by its visible text never an
+  internal value, pressing Escape/Enter/Tab/arrows).
+- `packages/sdk/src/agent-loop.ts` and `packages/sdk/src/index.tsx` —
+  both copies of `summarizeVerbForHistory` (the shared extracted one, and
+  the separate raw/defensive one `index.tsx` still uses for the realtime
+  path) gained drag/select/key cases, so a continuing step's own history
+  entry reads like "(dragged node-a to node-b)" instead of silently falling
+  through to the generic "(no response)" default case the switch already
+  had.
+
+**Tests**: `packages/core/src/index.test.ts` — 4 new tests (accepts all
+three shapes; rejects a drag/select missing a required field or a key
+missing `key`; confirms none of the three are in `TERMINAL_VERBS`/
+`isTerminalVerb`; batch accepts all three mixed with the original four).
+`packages/sdk/src/element-ladder.test.ts` — 12 new tests for
+`selectOption`/`dragElement`/`pressKey` (native select exact + substring
+match + no-match case, custom-listbox click-through + no-match case, the
+real pointer/mouse event sequence with correct center-to-center
+coordinates, the optional PointerEvent branch firing when available and
+never throwing when it isn't, the real keydown/keypress/keyup sequence and
+Enter/Tab's extra keypress). `packages/sdk/src/verb-executor.test.ts` — 10
+new single-step tests (success + both miss cases for drag, success + no-
+match for select, success + no-target-uses-focused-element + miss for key)
+plus 1 new batch test exercising all three in one batch alongside the
+combined-observation check. `packages/sdk/src/server.test.ts` — 8 new
+tests: `resolveVerb`'s real-vs-invented gate for each of the three verbs
+individually, the batch version of the same gate, and 3 `buildVerbToolSchema`/
+`VerbResponseSchema` tests confirming the new wire properties and the
+companion-null flat-response round-trip (the same real Groq-shaped bug
+class earlier session entries already found and fixed for the original
+verbs). `packages/sdk/src/agent-loop.test.ts` — 1 new test covering all
+three `summarizeVerbForHistory` cases. 30 new tests total. Full repo `npx
+vitest run`: 577/577 passing, zero regressions. Full `npm run typecheck`
+clean across all 6 workspaces.
+
+**A real gotcha hit and fixed while building this** (not a bug in the new
+code — a rediscovery of a gap this session already found once before,
+during the `isTerminalVerb` work): `@cairnvibe/core`'s package.json
+`exports` field resolves the `"node"` condition to `./dist/index.js`, so
+Vitest (which runs under Node) validated every new-verb test against the
+STALE pre-Pillar-1 schema until `npm run build -w @cairnvibe/core` was run
+— surfacing as all-new-tests-failing with `onToolStep` never called at all
+(the parse silently failed and fell through to the generic explain
+fallback, not a visible error). Fixed by rebuilding core before writing the
+sdk-side tests, same fix as before, now the second time this exact class of
+mistake has been made and caught this session — worth remembering for every
+future core schema change: rebuild core FIRST, before writing or running
+any test in a package that imports from it.
+
+**Live-verified**: the demo app boots cleanly on the rebuilt `@cairnvibe/
+core`+`@cairnvibe/sdk` (zero console errors, zero server errors), and a
+real end-to-end request through the widget's text box round-tripped
+through `/api/copilot` and `/api/copilot/speak` with real 200 responses —
+confirming the rebuilt schema/server code didn't break the existing click/
+explain path. The actual LLM response itself came back as a generic
+"Something went wrong on my end" because every configured Groq API key is
+now returning a real `401 Invalid API Key` (confirmed directly in the dev
+server's own log — `AuthenticationError: 401 ... "invalid_api_key"`) — a
+genuine, external credential problem, not a code issue, and not something
+this session can fix without new keys from the user (the same category of
+external blocker this session's Groq/Deepgram key swaps addressed
+earlier — these keys appear to have since stopped authenticating
+entirely). This means the specific behavior of drag/select/key being
+correctly CHOSEN by a real model (as opposed to correctly EXECUTED once
+chosen, which the unit/integration tests above do cover in full) is not
+yet live-verified, and won't be until a working Groq (or other provider)
+key is back in `examples/demo-app/.env`.
+
+**Pending**: `upload`, `scroll`, and `wait_for` (the plan's remaining
+Pillar 1 verbs, deliberately deferred — `upload` needs its own design pass
+for the "real native picker only, agent never supplies a path" constraint);
+a real live-model check of drag/select/key once a working LLM API key is
+available; Pillar 2 through 6 of the same plan (UI-pattern classifier,
+self-authored Skills, default-on planning, tiered memory, Scout role +
+per-tool risk tiering) — next up, in the plan's own stated build order.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -6,7 +6,7 @@
 // enforces the same schema independently — never trust the client alone.
 
 import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { findElement, findElementWithRetry, fillElement, highlightElement, logMiss, readElement, waitForDomSettle, type MissContext } from "./element-ladder";
+import { dragElement, findElement, findElementWithRetry, fillElement, highlightElement, logMiss, pressKey, readElement, selectOption, waitForDomSettle, type MissContext } from "./element-ladder";
 import { executeWebMcpTool } from "./webmcp-client";
 
 /** The real result of one agent-loop step (click/fill/read/call_tool/
@@ -17,7 +17,7 @@ import { executeWebMcpTool } from "./webmcp-client";
  * finalizeTurn for the realtime one — this module only ever executes one
  * step (or one batch of steps) at a time. */
 export interface ToolStepResult {
-  verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate";
+  verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate" | "drag" | "select" | "key";
   target?: string;
   ok: boolean;
   observation: string;
@@ -275,6 +275,61 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       return;
     }
 
+    case "drag": {
+      if (verb.text) options.onExplain(verb.text);
+      const from = findElement(verb.target, options.liveElements);
+      const to = from ? findElement(verb.to, options.liveElements) : null;
+      if (!from || !to) {
+        (options.onMiss ?? logMiss)({ attempted: from ? verb.to : verb.target, route });
+        options.onToolStep?.({ verb: "drag", target: verb.target, ok: false, observation: from ? "Could not find the drop destination on the page." : "Could not find that element on the page." });
+        return;
+      }
+      highlightElement(from);
+      dragElement(from, to);
+      // Same real re-render race as click/fill — a drop can trigger an
+      // async re-render (a canvas connection line, a reordered list) that
+      // hasn't settled the instant the pointer sequence finishes.
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "drag", target: verb.target, ok: true, observation: `Dragged it to ${verb.to}.` });
+      });
+      return;
+    }
+
+    case "select": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = findElement(verb.target, options.liveElements);
+      if (!el || !selectOption(el, verb.value)) {
+        (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({
+          verb: "select",
+          target: verb.target,
+          ok: false,
+          observation: el ? `Could not find an option matching "${verb.value}".` : "Could not find that element on the page.",
+        });
+        return;
+      }
+      highlightElement(el);
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "select", target: verb.target, ok: true, observation: `Selected "${verb.value}".` });
+      });
+      return;
+    }
+
+    case "key": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = verb.target ? findElement(verb.target, options.liveElements) : (document.activeElement as HTMLElement | null);
+      if (!el) {
+        if (verb.target) (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({ verb: "key", target: verb.target, ok: false, observation: "Could not find that element on the page." });
+        return;
+      }
+      pressKey(el, verb.key);
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "key", target: verb.target, ok: true, observation: `Pressed ${verb.key}.` });
+      });
+      return;
+    }
+
     // Several click/fill/read/call_tool steps in one round trip instead of
     // one each — server.ts's resolveVerb already validated every action's
     // target/name against real state before this ever arrived. Runs in
@@ -301,7 +356,8 @@ async function executeBatchActions(
   const steps: string[] = [];
   for (const action of actions) {
     const result = await executeOneBatchAction(action, route, options);
-    steps.push(`${action.verb} ${"target" in action ? action.target : action.name}: ${result.observation}`);
+    const label = ("target" in action && action.target) || ("name" in action && action.name) || "(focused element)";
+    steps.push(`${action.verb} ${label}: ${result.observation}`);
     if (!result.ok) return { ok: false, observation: steps.join(" | ") };
   }
   return { ok: true, observation: steps.join(" | ") };
@@ -356,6 +412,38 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
     case "call_tool": {
       const result = await executeWebMcpTool(action.name, action.args);
       return { ok: result.ok, observation: result.observation };
+    }
+    case "drag": {
+      const from = await findElementWithRetry(action.target, options.liveElements);
+      const to = from ? await findElementWithRetry(action.to, options.liveElements) : null;
+      if (!from || !to) {
+        (options.onMiss ?? logMiss)({ attempted: from ? action.to : action.target, route });
+        return { ok: false, observation: from ? "Could not find the drop destination on the page." : "Could not find that element on the page." };
+      }
+      highlightElement(from);
+      dragElement(from, to);
+      await waitForDomSettle();
+      return { ok: true, observation: `Dragged it to ${action.to}.` };
+    }
+    case "select": {
+      const el = await findElementWithRetry(action.target, options.liveElements);
+      if (!el || !selectOption(el, action.value)) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: el ? `Could not find an option matching "${action.value}".` : "Could not find that element on the page." };
+      }
+      highlightElement(el);
+      await waitForDomSettle();
+      return { ok: true, observation: `Selected "${action.value}".` };
+    }
+    case "key": {
+      const el = action.target ? await findElementWithRetry(action.target, options.liveElements) : (document.activeElement as HTMLElement | null);
+      if (!el) {
+        if (action.target) (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "Could not find that element on the page." };
+      }
+      pressKey(el, action.key);
+      await waitForDomSettle();
+      return { ok: true, observation: `Pressed ${action.key}.` };
     }
   }
 }

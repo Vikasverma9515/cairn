@@ -269,10 +269,21 @@ export async function resolveVerb(
   const isKnownTarget = (target: string) => pageElements.some((e) => e.id === target) || (input.liveElements ?? []).some((e) => e.id === target);
   const isKnownTool = (name: string) => (input.webMcpTools ?? []).some((t) => t.name === name);
 
-  if (parsedVerb.data.verb === "click" || parsedVerb.data.verb === "fill" || parsedVerb.data.verb === "read") {
+  if (parsedVerb.data.verb === "click" || parsedVerb.data.verb === "fill" || parsedVerb.data.verb === "read" || parsedVerb.data.verb === "select") {
     if (!isKnownTarget(parsedVerb.data.target)) {
       return { verb: "explain", text: "I don't see that on this page right now." };
     }
+  }
+  if (parsedVerb.data.verb === "drag") {
+    if (!isKnownTarget(parsedVerb.data.target) || !isKnownTarget(parsedVerb.data.to)) {
+      return { verb: "explain", text: "I don't see everything I'd need for that on this page right now." };
+    }
+  }
+  // key's target is optional (omitted means "whatever's currently
+  // focused") — only check it against real state when the model actually
+  // named one, same "never invented" invariant as every other target.
+  if (parsedVerb.data.verb === "key" && parsedVerb.data.target && !isKnownTarget(parsedVerb.data.target)) {
+    return { verb: "explain", text: "I don't see that on this page right now." };
   }
   if (parsedVerb.data.verb === "call_tool") {
     if (!isKnownTool(parsedVerb.data.name)) {
@@ -284,9 +295,12 @@ export async function resolveVerb(
     // partially execute a batch whose later step names something the
     // model invented; refuse the whole turn instead of guessing which
     // steps were "safe enough" to run.
-    const allKnown = parsedVerb.data.actions.every((action) =>
-      action.verb === "call_tool" ? isKnownTool(action.name) : isKnownTarget(action.target),
-    );
+    const allKnown = parsedVerb.data.actions.every((action) => {
+      if (action.verb === "call_tool") return isKnownTool(action.name);
+      if (action.verb === "drag") return isKnownTarget(action.target) && isKnownTarget(action.to);
+      if (action.verb === "key") return !action.target || isKnownTarget(action.target);
+      return isKnownTarget(action.target);
+    });
     if (!allKnown) {
       return { verb: "explain", text: "I don't see everything I'd need for that on this page right now." };
     }
@@ -808,8 +822,10 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
       verb: { type: "string", enum: [...VERBS] },
       text: nullableString("Shown to the user. Required for explain. null (or omitted) if not applicable."),
       target: nullableString(
-        "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read. For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. Not used for batch — each of its own actions carries its own target instead. null (or omitted) if not applicable.",
+        "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read/select, and for drag (the thing being dragged). For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. For key, the element to press the key on — omit to press it on whatever's currently focused. Not used for batch — each of its own actions carries its own target instead. null (or omitted) if not applicable.",
       ),
+      to: nullableString("Required for drag — the id (from currentPageElements or liveElements) of where to drop it. null (or omitted) if not applicable."),
+      key: nullableString('Required for key — one real key name: Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, or ArrowRight. null (or omitted) if not applicable.'),
       route: nullableString("A route from the manifest. Required for navigate. null (or omitted) if not applicable."),
       continueAfter: {
         type: ["boolean", "null"],
@@ -823,7 +839,7 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
             : "for any element from currentPageElements or liveElements whose own description/label says it performs a real action — no actions are separately registered in this deployment, but that path still works.") +
           " null (or omitted) if not applicable.",
       ),
-      value: nullableString('Required for fill — the exact text to type into "target". null (or omitted) if not applicable.'),
+      value: nullableString('Required for fill — the exact text to type into "target". Required for select — the option\'s visible text, never its raw internal value. null (or omitted) if not applicable.'),
       name: nullableString("Required for call_tool — a tool name from this turn's webMcpTools list, exactly as given. null (or omitted) if not applicable."),
       args: {
         type: ["object", "null"],
@@ -856,14 +872,16 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
       actions: {
         type: ["array", "null"],
         description:
-          "Required for batch, 2-5 items. Several click/fill/read/call_tool steps executed in order in ONE round trip, instead of one round trip each — use this when you already know several steps are needed and don't need to see one step's real result before choosing the next (e.g. filling three known fields, or clicking through a sequence you're already sure about). If a later step genuinely depends on what an earlier one turns up, use a single step instead and decide the next one once you see its real result. text (if any) is spoken once for the whole batch, not per step. null (or omitted) if not applicable.",
+          "Required for batch, 2-5 items. Several click/fill/read/call_tool/drag/select/key steps executed in order in ONE round trip, instead of one round trip each — use this when you already know several steps are needed and don't need to see one step's real result before choosing the next (e.g. filling three known fields, or clicking through a sequence you're already sure about). If a later step genuinely depends on what an earlier one turns up, use a single step instead and decide the next one once you see its real result. text (if any) is spoken once for the whole batch, not per step. null (or omitted) if not applicable.",
         items: {
           type: "object",
           properties: {
-            verb: { type: "string", enum: ["click", "fill", "read", "call_tool"] },
-            target: nullableString("An id from currentPageElements or liveElements. Required for click/fill/read. null (or omitted) if not applicable."),
-            value: nullableString('Required for fill — the exact text to type into "target". null (or omitted) if not applicable.'),
+            verb: { type: "string", enum: ["click", "fill", "read", "call_tool", "drag", "select", "key"] },
+            target: nullableString("An id from currentPageElements or liveElements. Required for click/fill/read/select/drag (the thing being dragged). For key, omit to press it on whatever's currently focused. null (or omitted) if not applicable."),
+            value: nullableString('Required for fill — the exact text to type into "target". Required for select — the option\'s visible text. null (or omitted) if not applicable.'),
             name: nullableString("Required for call_tool — a tool name from this turn's webMcpTools list. null (or omitted) if not applicable."),
+            to: nullableString("Required for drag — the id of where to drop it. null (or omitted) if not applicable."),
+            key: nullableString("Required for key — one real key name (Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight). null (or omitted) if not applicable."),
             args: {
               type: ["object", "null"],
               description: "For call_tool — the arguments object, matching that tool's own inputSchema. null (or omitted) if the tool takes none.",
@@ -1002,21 +1020,33 @@ response; once you do, answer with one of the verbs above instead):
   listed in "webMcpTools" — "name" (exactly as given) and "args" (matching
   that tool's own schema). This is the most reliable way to do something
   when a real tool for it exists — prefer it over do/click when it does.
-All four require a real id/name from currentPageElements, liveElements, or
+- drag: drag a real element onto another one — "target" (what's being
+  dragged) and "to" (where it's dropped), both real ids. Use this for
+  anything click/fill can't reach: connecting two nodes on a canvas/
+  workflow editor, reordering a list, moving a card between columns on a
+  kanban board.
+- select: choose a real dropdown/listbox option — "target" (the dropdown)
+  and "value" (the option's exact VISIBLE text, never an internal value
+  you're guessing at).
+- key: press one real key — Escape, Enter, Tab, ArrowUp, ArrowDown,
+  ArrowLeft, or ArrowRight, in "key". "target" is optional — omit it to
+  press the key on whatever's currently focused (e.g. right after a fill),
+  or name an element to focus it first.
+All seven require a real id/name from currentPageElements, liveElements, or
 webMcpTools — never invent one. You'll be shown the real result of each
 step and asked again what to do next; after a small number of steps,
 answer with a terminal verb even if incomplete, explaining what you found.
 
-- batch: 2-5 of the four steps above (click/fill/read/call_tool, each in
-  its own shape — no separate "text"), run in order, in "actions" — use
-  this INSTEAD of separate single steps when you already know every step
-  you need and none of them depends on seeing an earlier one's real result
-  first (e.g. filling three fields you can already see, or a known
-  sequence of clicks). If a later step needs to react to what an earlier
-  one turns up, or depends on something an earlier step's click would
-  newly reveal, use single steps instead — a batch only sees the page as
-  it is right now, not as an earlier step in the same batch leaves it. One
-  step failing stops the rest of that batch.
+- batch: 2-5 of the seven steps above (click/fill/read/call_tool/drag/
+  select/key, each in its own shape — no separate "text"), run in order, in
+  "actions" — use this INSTEAD of separate single steps when you already
+  know every step you need and none of them depends on seeing an earlier
+  one's real result first (e.g. filling three fields you can already see,
+  or a known sequence of clicks). If a later step needs to react to what an
+  earlier one turns up, or depends on something an earlier step's click
+  would newly reveal, use single steps instead — a batch only sees the page
+  as it is right now, not as an earlier step in the same batch leaves it.
+  One step failing stops the rest of that batch.
 
 Every "text" field (in explain, or per-step in tour, or the optional text on
 any other verb) is read aloud AND shown on screen, so it must sound like a

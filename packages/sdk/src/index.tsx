@@ -1676,6 +1676,12 @@ function summarizeVerbForHistory(raw: unknown): string {
       return `(read ${String(v.target)})`;
     case "call_tool":
       return `(called ${String(v.name)})`;
+    case "drag":
+      return `(dragged ${String(v.target)} to ${String(v.to)})`;
+    case "select":
+      return `(selected "${String(v.value)}" in ${String(v.target)})`;
+    case "key":
+      return `(pressed ${String(v.key)}${v.target ? ` on ${String(v.target)}` : ""})`;
     case "batch":
       return Array.isArray(v.actions) ? `(${v.actions.length} steps: ${v.actions.map((a: { verb?: string }) => a.verb).join(", ")})` : "(batch)";
     default:

@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch"] as const;
+export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch", "drag", "select", "key"] as const;
 export type Verb = (typeof VERBS)[number];
 
 /**
@@ -15,7 +15,13 @@ export type Verb = (typeof VERBS)[number];
  * turn with a terminal verb — this is what lets one question turn into
  * "check something, then decide, then act" instead of one guess. batch is
  * also continuing — see BatchActionSchema below — it just carries several
- * of those steps in one round trip instead of one.
+ * of those steps in one round trip instead of one. drag/select/key are the
+ * same shape as click/fill — real, continuing, element-ladder-verified
+ * steps — just a richer action vocabulary: drag connects/reorders things
+ * (canvas nodes, kanban cards, sortable lists) that click/fill can't reach,
+ * select chooses a real dropdown/listbox option by its visible text, and
+ * key sends one real keypress (Escape/Enter/Tab/arrows) to a target or the
+ * currently focused element.
  *
  * `navigate` is the one real exception to "verb type alone decides" — see
  * `isTerminalVerb` below, which is what every real caller should use
@@ -244,6 +250,10 @@ const COMPANION_FIELDS = {
   steps: optionalUnknownArray(),
   actions: optionalUnknownArray(),
   continueAfter: optionalBoolean(),
+  /** drag's destination target — a real element id from the same manifest/liveElements lookup as `target`, never a raw coordinate. */
+  to: optionalString(),
+  /** key's keypress — a real key name (Escape, Enter, Tab, ArrowDown, ...), never a raw keycode. */
+  key: optionalString(),
 };
 
 // Same companion-field reasoning as COMPANION_FIELDS above, scoped to just
@@ -258,6 +268,8 @@ const BATCH_ACTION_COMPANION_FIELDS = {
   value: optionalString(),
   name: optionalString(),
   args: optionalRecord(),
+  to: optionalString(),
+  key: optionalString(),
 };
 
 /**
@@ -287,6 +299,30 @@ export const BatchActionSchema = z.discriminatedUnion("verb", [
       verb: z.literal("call_tool"),
       name: z.string().min(1),
       args: optionalRecord(),
+    })
+    .strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("drag"),
+      target: z.string().min(1),
+      to: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("select"),
+      target: z.string().min(1),
+      value: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("key"),
+      target: optionalString(),
+      key: z.string().min(1),
     })
     .strict(),
 ]);
@@ -410,6 +446,35 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       /** A tool name from this turn's webMcpTools list — never invented. */
       name: z.string().min(1),
       args: optionalRecord(),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("drag"),
+      /** The element being dragged — a real id, same lookup as click's target. */
+      target: z.string().min(1),
+      /** The drop destination — a real id, resolved the same way as `target`. */
+      to: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("select"),
+      target: z.string().min(1),
+      /** The option's visible text, never its raw underlying value. */
+      value: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("key"),
+      /** The element to press the key on; omitted means the currently focused element. */
+      target: optionalString(),
+      /** A real key name — Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight. */
+      key: z.string().min(1),
     })
     .strict(),
   z
