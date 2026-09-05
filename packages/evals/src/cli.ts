@@ -13,6 +13,7 @@ import { judgeScenario, passAtK, type Verdict } from "./judge";
 import { openStore, previousTrialGroup, recordRun } from "./store";
 import { scenarios } from "./scenarios";
 import type { Transport } from "./scenario";
+import { runBargeInProbe } from "./barge-in-probes";
 
 function currentCommit(): string {
   try {
@@ -109,8 +110,27 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n${totalPassedAtK}/${totalGroups} scenario groups passed pass^${k} — commit ${commit}, stored at ${dbPath}`);
+
+  // Real, end-to-end barge-in probes (see barge-in-probes.ts) — distinct
+  // from the scenario suite above: these assert on live WS-frame timing
+  // DURING a turn (does a real, sustained "stop" utterance actually
+  // trigger a real barge_in; does a real noise burst NOT), which
+  // Scenario.verify's final-state check can't express at all. Not
+  // LLM-judged — a mechanical, objectively-checkable protocol assertion,
+  // same reasoning matchesExpectation/computeVoiceLatencies already use.
+  const baseUrl = process.env.CAIRN_EVALS_BASE_URL ?? "http://localhost:3000";
+  console.log(`\nBarge-in probes [voice] ...`);
+  const probeResults = await Promise.all([
+    runBargeInProbe("interrupt", "barge-in-interrupt", { deepgramApiKey, baseUrl, path: "/invoices" }),
+    runBargeInProbe("noise", "barge-in-noise", { deepgramApiKey, baseUrl, path: "/invoices" }),
+  ]);
+  for (const result of probeResults) {
+    console.log(`  ${result.passed ? "pass" : "FAIL"}: ${result.probeId} — ${result.reasoning}`);
+  }
+  const probesPassed = probeResults.every((r) => r.passed);
+
   db.close();
-  if (totalPassedAtK < totalGroups) process.exit(1);
+  if (totalPassedAtK < totalGroups || !probesPassed) process.exit(1);
 }
 
 main().catch((err) => {

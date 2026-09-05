@@ -4992,6 +4992,120 @@ model/bundle-weight tradeoff `vad.ts` already declined once.
 
 ---
 
+### Automate voice-agent testing, grounded in how production companies actually do it — real end-to-end barge-in probes, wired into CI
+
+Direct follow-up instruction: research how real companies test voice
+agents in a sandbox (they don't do it manually) and automate the same
+for Cairn. Research (Cekura, Hamming, Coval, Bluejay, Speechmatics'
+five-layer framework — see prior entry's Sources) converges on: real
+synthetic-caller audio through the real STT/TTS pipeline (not text
+injected as a shortcut), deliberate noise/interruption injection mid-
+call, mechanical pass/fail scoring, and running the same suite in CI on
+every relevant change so a production failure becomes a permanent
+regression test. Checked what Cairn already had first: `fake-mic.ts` +
+`synthesize.ts` already do the "real synthetic caller" part correctly
+(real Deepgram-synthesized audio through the real `getUserMedia`/STT/WS
+pipeline, already caught one live regression this way) — the two real
+gaps were (1) it only ever ran manually (`npm run evals`, never in CI)
+and (2) nothing exercised the barge-in path with real audio timing —
+`vad.test.ts` only unit-tests `createBargeInGate` with hand-built PCM
+arrays, never through the actual browser AudioContext pipeline a live
+interruption goes through.
+
+**Built:**
+- `fake-mic.ts`: `installFakeMic` unchanged in signature, but its
+  internal AudioContext/MediaStreamDestination graph is now shared and
+  kept alive for the page's whole lifetime (previously implicit/
+  per-call). Two new exports, `injectMicSpeech(page, audioBase64)` and
+  `injectMicNoise(page, durationMs)`, play a SECOND source into that
+  same live graph at a time the Node-side test driver chooses — mixing
+  in, not replacing, exactly like a second real sound hitting one real
+  mic mid-call. `injectMicNoise` generates real broadband noise
+  procedurally in the page (`Math.random()` samples) rather than via
+  TTS, since Deepgram's Speak API can only produce speech — the same
+  acoustic shape (ZCR near its ceiling) `vad.ts`'s own gate is built to
+  reject.
+- `runner.ts`: extracted `installVoiceFrameCapture` (the real WS-frame
+  capture + Next.js HMR-noise filtering, previously inlined in
+  `runScenario`) and exported it, plus exported `openWidget`/
+  `runVoiceTurn`, so the new barge-in probes reuse the exact same
+  live-hardened logic instead of risking drift from a second
+  implementation.
+- `barge-in-probes.ts` (new): `runBargeInProbe(kind, probeId, options)`
+  drives one real end-to-end probe — opens the real widget, asks a
+  real long-answer-inducing question ("give me a full overview..."),
+  waits for a REAL observed `speaking_start` WS frame (never a fixed
+  guessed delay, since LLM/TTS latency varies too much to predict),
+  then injects either a real synthesized "Stop, stop, wait." utterance
+  (`kind: "interrupt"`) or a real noise burst (`kind: "noise"`). Scores
+  itself mechanically (not LLM-judged — an objective protocol check)
+  via the exported, pure `evaluateBargeInProbe`: for `"interrupt"`, did
+  the client actually send a real `{type:"barge_in"}` WS frame within
+  1500ms of injection; for `"noise"`, did it correctly NOT send one.
+  This is genuinely new coverage — it's the first test in the repo that
+  drives a real "stop" utterance through the real
+  AudioContext/ScriptProcessorNode/`createBargeInGate`/`triggerBargeIn`/
+  WebSocket chain end to end, rather than unit-testing pieces of it in
+  isolation.
+- `cli.ts`: runs both probes (interrupt + noise) after the scenario
+  suite, prints pass/fail with real reasoning, and folds their result
+  into the process exit code alongside the scenario suite's own
+  pass^k — a probe failure now fails the whole `npm run evals` run.
+- `.github/workflows/voice-evals.yml` (new, separate from `ci.yml` on
+  purpose — this hits real paid APIs and costs real wall-clock time,
+  `ci.yml`'s own `test` job must never depend on it): triggers on
+  push/PR, gated with a `paths:` filter to only the files that could
+  plausibly affect the realtime voice path (`realtime-server.ts`,
+  `vad.ts`, `index.tsx`, `web-component.ts`, `server.ts`,
+  `tts-stream.ts`, `key-rotator.ts`, `packages/evals/src/**`,
+  `examples/demo-app/**`) — never fires on an unrelated PR. Builds the
+  SDK, starts the real demo-app + realtime relay in the background
+  (`examples/demo-app`'s own `npm run dev`, unmodified), polls both
+  real ports with `curl` before proceeding (dumping the server's own
+  log on a timeout for real debuggability), then runs `npm run evals`
+  with `CAIRN_EVALS_K=1` (not the local-dev default of 3 — a deliberate
+  cost/latency tradeoff for routine CI, k=3 stays the right choice for
+  a deliberate pre-release check run locally). Fork PRs are skipped
+  cleanly (no repo secrets reach a fork's checkout) rather than failing
+  every real call with an auth error and reporting a false regression.
+
+**Tests:** `barge-in-probes.test.ts` (new) — 8 tests for the pure
+`evaluateBargeInProbe` logic: passes/fails on a timely/late/missing
+barge_in for the interrupt case, passes/fails on an absent/present
+false-positive barge_in for the noise case, ignores a stale barge_in
+sent before injection, and correctly treats a short answer finishing
+naturally (no activity surviving past the grace window) as NOT a noise
+false-positive. Full repo `npx vitest run`: 523/523 passing (515 +
+8 new, zero regressions). Full `npm run typecheck` clean across all 6
+workspaces, including the new `packages/evals` additions. The workflow
+YAML itself was validated with a real YAML parser (not just eyeballed)
+before committing.
+
+**Live-verified:** not possible in this sandbox — `runBargeInProbe`
+needs a real running demo-app plus real `DEEPGRAM_API_KEY`/
+`ANTHROPIC_API_KEY`, neither available here. The pure scoring logic
+(`evaluateBargeInProbe`) is fully covered by real unit tests instead;
+the end-to-end probe driver itself (`runBargeInProbe`) is exercised
+only by the type checker until it runs for real, either locally
+(`npm run evals` with real keys + a running demo-app) or the first time
+`voice-evals.yml` actually fires in GitHub Actions.
+
+**Pending, and this needs the user's own action, not more code:** the
+new workflow reads `secrets.ANTHROPIC_API_KEY`, `secrets.GROQ_API_KEYS`,
+and `secrets.DEEPGRAM_API_KEY` — these need to be added as real GitHub
+Actions repository secrets (Settings → Secrets and variables → Actions)
+before `voice-evals.yml` can run at all; without them every real API
+call fails immediately and the job reports every scenario/probe as
+failed, which would misread as a code regression rather than "missing
+CI configuration." Once added, the very first real run is also the
+first real end-to-end verification this feature has ever had — worth
+watching closely rather than assumed correct from the type-checked code
+alone.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

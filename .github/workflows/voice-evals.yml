@@ -1,0 +1,90 @@
+name: Voice Evals
+
+# Runs the real, end-to-end voice eval suite (packages/evals — the
+# scenario suite + the barge-in probes in barge-in-probes.ts) against a
+# real running demo-app + realtime relay, with real Deepgram/Groq/
+# Anthropic calls. Deliberately NOT part of ci.yml's own `test` job:
+# this hits real paid APIs and takes real wall-clock time (the scenario
+# suite alone runs each case k=3 times), so it's scoped with `paths:` to
+# fire only when a change could plausibly affect the realtime voice path
+# — never on an unrelated PR. This is what closes the gap named in
+# DEVELOPMENT.md's own "Remove the confirm-or-reverse barge-in grace
+# window" and "Gate barge-in on sustained speech" entries: the harness
+# that already caught one live voice regression once existed only as a
+# manual `npm run evals` step nobody was guaranteed to run before merging
+# a change to exactly this code.
+on:
+  push:
+    branches: [main]
+    paths: &voice-paths
+      - "packages/sdk/src/realtime-server.ts"
+      - "packages/sdk/src/vad.ts"
+      - "packages/sdk/src/index.tsx"
+      - "packages/sdk/src/web-component.ts"
+      - "packages/sdk/src/server.ts"
+      - "packages/sdk/src/tts-stream.ts"
+      - "packages/sdk/src/key-rotator.ts"
+      - "packages/evals/src/**"
+      - "examples/demo-app/**"
+      - ".github/workflows/voice-evals.yml"
+  pull_request:
+    paths: *voice-paths
+
+jobs:
+  voice-evals:
+    runs-on: ubuntu-latest
+    # A fork PR never has access to this repo's secrets (GitHub's own
+    # security model) — running anyway would just fail every real call
+    # with an auth error and report a false regression. Skip cleanly
+    # instead; a maintainer can still run `npm run evals` locally, or
+    # re-run this job after merging from a trusted branch.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build -w @cairnvibe/sdk
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Start demo-app (Next.js + realtime relay)
+        working-directory: examples/demo-app
+        run: npm run dev > /tmp/demo-app.log 2>&1 &
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          CAIRN_RUNTIME_PROVIDER: groq
+
+      - name: Wait for demo-app (:3000) and the realtime relay (:3010)
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000 >/dev/null && curl -sf http://localhost:3010 >/dev/null; then
+              echo "both up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "demo-app/realtime relay never came up within 60s — demo-app.log:"
+          cat /tmp/demo-app.log || true
+          exit 1
+
+      - name: Run the eval suite (scenarios + barge-in probes)
+        working-directory: packages/evals
+        run: npm run evals
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CAIRN_EVALS_BASE_URL: http://localhost:3000
+          CAIRN_EVALS_HEADED: "0"
+          # k=1 in CI — pass^k's real reliability signal (k=3 default) is
+          # for a deliberate local check before a release, not every PR;
+          # k=3 here would triple this job's real API cost/latency for
+          # marginal extra confidence on routine changes.
+          CAIRN_EVALS_K: "1"

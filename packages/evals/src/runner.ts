@@ -83,27 +83,8 @@ export async function runScenario(scenario: Scenario, transport: "typed" | "voic
     });
 
     if (transport === "voice") {
-      page.on("websocket", (ws) => {
-        // Real bug, found live: the page also opens Next.js's own dev-mode
-        // HMR socket — without filtering, that noise (ping/client-success/
-        // sync frames every couple seconds) drowned out the one socket
-        // that actually matters, and the run reported zero real voice
-        // activity even though the realtime connection worked fine.
-        // Excluding known framework noise (rather than matching one
-        // hardcoded port) keeps this working across whatever port a given
-        // playground app's realtimeUrl actually points at.
-        if (ws.url().includes("webpack-hmr") || ws.url().includes("/_next/")) return;
-        const record = (direction: "sent" | "received") => (frame: { payload: string | Buffer }) => {
-          lastActivityAt = Date.now();
-          if (typeof frame.payload !== "string") return; // raw mic/audio binary frames — not stored individually, see file doc comment
-          try {
-            voiceFrames.push({ direction, data: JSON.parse(frame.payload), at: Date.now() });
-          } catch {
-            // a non-JSON text frame — shouldn't happen per the realtime protocol, skip rather than crash the run
-          }
-        };
-        ws.on("framesent", record("sent"));
-        ws.on("framereceived", record("received"));
+      installVoiceFrameCapture(page, voiceFrames, () => {
+        lastActivityAt = Date.now();
       });
 
       const audio = await synthesizeSpeech(scenario.goal, { apiKey: options.deepgramApiKey });
@@ -209,7 +190,37 @@ export async function runScenarioRepeated(
   return results;
 }
 
-async function openWidget(page: Page): Promise<void> {
+/** Records every real realtime WS control frame (both directions) into
+ * `voiceFrames`, filtering out framework noise (Next.js's own dev-mode HMR
+ * socket) and raw binary mic/audio frames (not stored individually — see
+ * VoiceFrame's own doc comment). Exported so both runScenario (above) and
+ * the barge-in probes (barge-in-probes.ts) share the exact same real,
+ * live-hardened capture logic rather than each reimplementing it —
+ * duplicating this risked exactly the kind of drift that already caused
+ * one real bug here (unfiltered HMR noise silently reporting zero real
+ * voice activity). `onFrame` fires on every real frame — the caller
+ * decides what "activity" means for its own idle-clock/polling logic. */
+export function installVoiceFrameCapture(page: Page, voiceFrames: VoiceFrame[], onFrame?: () => void): void {
+  page.on("websocket", (ws) => {
+    if (ws.url().includes("webpack-hmr") || ws.url().includes("/_next/")) return;
+    const record = (direction: "sent" | "received") => (frame: { payload: string | Buffer }) => {
+      onFrame?.();
+      if (typeof frame.payload !== "string") return; // raw mic/audio binary frames — not stored individually, see file doc comment
+      try {
+        voiceFrames.push({ direction, data: JSON.parse(frame.payload), at: Date.now() });
+      } catch {
+        // a non-JSON text frame — shouldn't happen per the realtime protocol, skip rather than crash the run
+      }
+    };
+    ws.on("framesent", record("sent"));
+    ws.on("framereceived", record("received"));
+  });
+}
+
+/** Exported for the barge-in probes (barge-in-probes.ts), which drive the
+ * same real widget but need their own custom turn-taking instead of
+ * runScenario's fixed single-turn flow. */
+export async function openWidget(page: Page): Promise<void> {
   const toggle = page.locator('[aria-label="Open Cairn help"]');
   if (await toggle.count()) await toggle.click();
 }
@@ -330,8 +341,10 @@ export function extractAgentText(responseBody: unknown): string | null {
 }
 
 /** Returns the timestamp mic playback effectively starts — used as the
- * mic-to-transcript latency's zero point. */
-async function runVoiceTurn(page: Page): Promise<number> {
+ * mic-to-transcript latency's zero point. Exported for the barge-in
+ * probes, which reuse this exact same "click start, let the connection
+ * settle" sequence before driving their own custom mid-call injection. */
+export async function runVoiceTurn(page: Page): Promise<number> {
   const startButton = page.locator('[aria-label="Start realtime conversation"]');
   await startButton.click();
   // The fake mic (fake-mic.ts) starts playing the instant the page's own
