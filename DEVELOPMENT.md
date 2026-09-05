@@ -5326,6 +5326,74 @@ Direct follow-up on the previous entry's own explicitly-deferred item: `navigate
 
 ---
 
+### The real root cause of "status says Listening but nothing happens" — a silently-dead Deepgram STT connection with no reconnect and no client-visible error
+
+Direct, repeated live report, across multiple sessions this week: the mic
+shows "Listening…," the user speaks, and nothing is ever transcribed —
+looking identical to a browser-side mic/audio problem (which earlier
+entries this session already investigated and fixed real instances of:
+`AudioContext` auto-suspend, a dead `MediaStreamTrack`). This time the real
+cause was one layer deeper and entirely server-side.
+
+**The mechanism**: `realtime-server.ts` opened exactly one Deepgram STT
+WebSocket per call and never listened for it closing —
+`dg.on("open"/"message"/"error", ...)` all existed, but there was no
+`dg.on("close", ...)` at all. Deepgram's own real-time STT connections do
+close mid-session for real reasons (an idle timeout, a network blip,
+Deepgram's own connection lifetime limit) — when that happened, `dgOpen`
+(a flag meant to track exactly this) never got reset to `false`, and every
+subsequent mic frame kept hitting `if (dgOpen) dg.send(buf)` against an
+already-CLOSED socket, with no callback to catch the failure and nothing
+downstream ever notified. The client never received an "error" message,
+never saw its status change, and the mic UI kept confidently showing
+"Listening…" — a dead pipe with zero visible symptoms until the whole call
+was ended and restarted.
+
+**Built**: `dg` is now reassignable behind a small `connectDeepgramStt()`
+function instead of one fire-and-forget `WebSocket` — a real `close`
+handler resets `dgOpen`, and (unless the whole realtime connection has
+itself already ended) automatically reconnects with a fresh handshake, up
+to `MAX_DG_RECONNECT_ATTEMPTS = 3` attempts, before finally giving up and
+sending the client a real, honest error ("Speech recognition connection
+was lost and couldn't be restored — try starting the call again.") instead
+of staying silently broken forever. The binary-audio send site also now
+checks `dg.readyState === WebSocket.OPEN`, not just the `dgOpen` flag, as
+defensive belt-and-suspenders against a frame arriving in the same tick as
+an unprocessed close event.
+
+**Tests**: none added — `handleConnection` (where this lives) has never
+been unit-tested in this codebase; every existing `realtime-server.test.ts`
+test exercises the exported `handleDeepgramMessage` directly with fake
+deps, deliberately bypassing the real WebSocket wiring this fix touches
+(confirmed by grep — zero existing tests reference `handleConnection`).
+Extracting genuinely testable pieces (e.g. a bare reconnect-attempt-
+counting function) was considered and skipped as needless abstraction —
+the real complexity here is the WebSocket lifecycle itself, which needs a
+live Deepgram connection (or a real mock WebSocket server) to exercise
+meaningfully, matching this file's own established, honest limitation
+elsewhere (e.g. the earlier connection-tracking fix this session, also
+untested for the same reason). Full repo `npx vitest run`: 529/529 passing,
+zero regressions (nothing here changed any exported function's behavior).
+Full `npm run typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified**: not possible in this sandbox — reproducing a genuine
+Deepgram-side connection drop on demand isn't something this environment
+can trigger reliably. This needs the user's own next live session,
+specifically a **longer** one (this failure mode is time/network-dependent,
+not something a short exchange would hit) to confirm in practice.
+
+**Pending**: if the mic still goes silently unresponsive after this fix,
+the new `console.log`/`console.error` lines this entry adds ("Deepgram STT
+connection closed," "reconnecting to Deepgram STT," "gave up
+reconnecting") will say definitively whether this exact mechanism fired (and
+was recovered, or exhausted its retries) — check the server's own terminal
+output during the next live-reported instance rather than guessing again.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
