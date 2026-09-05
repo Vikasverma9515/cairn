@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { driveAgentLoop, summarizeVerbForHistory } from "./agent-loop";
+import { driveAgentLoop, looksMultiStep, summarizeVerbForHistory } from "./agent-loop";
 import type { AgentEvent, CriticVerdict, HistoryTurn, VerbResponse } from "@cairnvibe/core";
+
+describe("looksMultiStep", () => {
+  it("flags real compound-goal sequencing language", () => {
+    expect(looksMultiStep("check the price and then buy it")).toBe(true);
+    expect(looksMultiStep("Find the invoice, then archive it.")).toBe(true);
+    expect(looksMultiStep("Once you find it, open the detail view.")).toBe(true);
+    expect(looksMultiStep("First check the price, then decide.")).toBe(true);
+  });
+
+  it("is conservative on a plain, single-step question — a false negative just falls back to the existing lazy gate, never a wrong answer", () => {
+    expect(looksMultiStep("what does this button do")).toBe(false);
+    expect(looksMultiStep("archive Acme Co.")).toBe(false);
+    expect(looksMultiStep("show me clients and invoices")).toBe(false);
+  });
+
+  it("is case-insensitive", () => {
+    expect(looksMultiStep("CHECK THE PRICE AND THEN BUY IT")).toBe(true);
+  });
+});
 
 function verdict(kind: CriticVerdict["verdict"], reasoning = "test"): CriticVerdict {
   return { verdict: kind, reasoning };
@@ -133,6 +152,51 @@ describe("driveAgentLoop", () => {
       { verb: "click", terminal: false },
       { verb: "explain", terminal: true },
     ]);
+  });
+
+  // Real, live-reported gap this closes: "buy earbuds" resolved to a plain
+  // navigate, which used to end the turn the instant it arrived at the
+  // shop — the user had to manually ask "did you find anything" for every
+  // further step. See isTerminalVerb in @cairnvibe/core.
+  it("a navigate marked continueAfter is NOT terminal — the loop executes it as a real step and asks again, instead of ending the turn the instant it arrives", async () => {
+    let call = 0;
+    const seen: { verb: string; terminal: boolean }[] = [];
+    const result = await driveAgentLoop([], {
+      getNextStep: async (loopHistory) => {
+        call++;
+        if (call === 1) return { verb: "navigate", route: "/shop", continueAfter: true };
+        // Second call — the real navigation's own observation should
+        // already be folded into history, same as any other continuing step.
+        expect(loopHistory.at(-1)?.text).toContain("Result: Navigated to /shop.");
+        return { verb: "explain", text: "I searched the shop and found earbuds." };
+      },
+      onStep: (event) => {
+        seen.push({ verb: event.verb.verb, terminal: event.terminal });
+        return false;
+      },
+      executeStep: async () => "Navigated to /shop.",
+    });
+    expect(seen).toEqual([
+      { verb: "navigate", terminal: false },
+      { verb: "explain", terminal: true },
+    ]);
+    expect(call).toBe(2);
+    expect(result.outcome).toBe("terminal");
+    if (result.outcome === "terminal") expect(result.finalVerb).toEqual({ verb: "explain", text: "I searched the shop and found earbuds." });
+  });
+
+  it("a plain navigate (no continueAfter) stays terminal — the common 'take me to X' case pays zero extra latency, unchanged", async () => {
+    let executeStepCalls = 0;
+    const finalVerb: VerbResponse = { verb: "navigate", route: "/invoices" };
+    const result = await driveAgentLoop([], {
+      getNextStep: async () => finalVerb,
+      executeStep: async () => {
+        executeStepCalls++;
+        return "unused";
+      },
+    });
+    expect(result).toEqual({ outcome: "terminal", finalVerb, workingHistory: [] });
+    expect(executeStepCalls).toBe(0);
   });
 
   it("working history is capped at MAX_HISTORY_TURNS entries, oldest dropped first", async () => {
@@ -366,5 +430,12 @@ describe("summarizeVerbForHistory", () => {
     expect(
       summarizeVerbForHistory({ verb: "batch", actions: [{ verb: "click", target: "a" }, { verb: "read", target: "b" }] }),
     ).toBe("(2 steps: click, read)");
+  });
+
+  it("describes drag/select/key the same real way as click/fill/read — Pillar 1's richer action vocabulary", () => {
+    expect(summarizeVerbForHistory({ verb: "drag", target: "node-a", to: "node-b" })).toBe("(dragged node-a to node-b)");
+    expect(summarizeVerbForHistory({ verb: "select", target: "status-dropdown", value: "Overdue" })).toBe('(selected "Overdue" in status-dropdown)');
+    expect(summarizeVerbForHistory({ verb: "key", target: "search-box", key: "Enter" })).toBe("(pressed Enter on search-box)");
+    expect(summarizeVerbForHistory({ verb: "key", key: "Escape" })).toBe("(pressed Escape)");
   });
 });

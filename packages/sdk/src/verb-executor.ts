@@ -6,18 +6,18 @@
 // enforces the same schema independently — never trust the client alone.
 
 import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { findElement, findElementWithRetry, fillElement, highlightElement, logMiss, readElement, waitForDomSettle, type MissContext } from "./element-ladder";
+import { dragElement, findElement, findElementWithRetry, fillElement, highlightElement, logMiss, pressKey, readElement, selectOption, waitForDomSettle, type MissContext } from "./element-ladder";
 import { executeWebMcpTool } from "./webmcp-client";
 
-/** The real result of one agent-loop step (click/fill/read/call_tool, or a
- * batch of several) — fed back to the model as its next turn's
- * "observation" so it can decide what to do next instead of acting blind.
- * The loop that drives this lives on the caller's side, not here:
+/** The real result of one agent-loop step (click/fill/read/call_tool/
+ * navigate, or a batch of several) — fed back to the model as its next
+ * turn's "observation" so it can decide what to do next instead of acting
+ * blind. The loop that drives this lives on the caller's side, not here:
  * index.tsx's runTypedAgentLoop for the HTTP path, realtime-server.ts's
  * finalizeTurn for the realtime one — this module only ever executes one
  * step (or one batch of steps) at a time. */
 export interface ToolStepResult {
-  verb: "click" | "fill" | "read" | "call_tool" | "batch";
+  verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate" | "drag" | "select" | "key";
   target?: string;
   ok: boolean;
   observation: string;
@@ -25,17 +25,29 @@ export interface ToolStepResult {
 
 /**
  * Promise wrapper around executeVerbResponse for a continuing verb
- * (click/fill/read/call_tool) — resolves once the real action has actually
- * finished (synchronously for click/fill/read, after a real await for
- * call_tool) with its real observation, instead of the fire-and-forget
- * callback shape every other verb uses. This is what a loop driver awaits
- * before deciding whether to call the model again.
+ * (click/fill/read/call_tool, or now a navigate marked `continueAfter` —
+ * see isTerminalVerb in @cairnvibe/core) — resolves once the real action
+ * has actually finished (synchronously for click/fill/read, after a real
+ * await for call_tool/navigate) with its real observation, instead of the
+ * fire-and-forget callback shape every other verb uses. This is what a
+ * loop driver awaits before deciding whether to call the model again.
+ * `onNavigate` is only needed for that new navigate-as-continuing-step
+ * case — every existing caller that never passes it keeps working
+ * unchanged (a continueAfter navigate with no onNavigate here would just
+ * never actually move the page; real callers always pass one, same as
+ * handleVerb's own options already do for the terminal case).
  */
-export function executeToolStep(raw: unknown, route: string, liveElements?: Map<string, HTMLElement>): Promise<ToolStepResult | null> {
+export function executeToolStep(
+  raw: unknown,
+  route: string,
+  liveElements?: Map<string, HTMLElement>,
+  onNavigate?: (route: string) => void,
+  onConfirmTool?: (tool: { name: string; description: string }) => Promise<boolean>,
+): Promise<ToolStepResult | null> {
   return new Promise((resolve) => {
     // executeVerbResponse only ever reaches onToolStep for a genuinely
     // continuing verb — callers are only expected to call this after
-    // already confirming (via TERMINAL_VERBS) that the parsed verb is one,
+    // already confirming (via isTerminalVerb) that the parsed verb is one,
     // so this should always fire; a real timeout (not an immediate
     // microtask — call_tool's own real network round trip needs the time)
     // is the safety net for the case where it somehow doesn't, so a loop
@@ -44,6 +56,8 @@ export function executeToolStep(raw: unknown, route: string, liveElements?: Map<
     executeVerbResponse(raw, route, {
       onExplain: () => {},
       liveElements,
+      onNavigate,
+      onConfirmTool,
       onToolStep: (result) => {
         clearTimeout(timer);
         resolve(result);
@@ -75,6 +89,15 @@ export interface VerbExecutorOptions {
    * saw. Absent entirely for a caller that hasn't wired up live scanning.
    */
   liveElements?: Map<string, HTMLElement>;
+  /**
+   * Architecture Pillar 6 (the safety layer) — real confirmation for a
+   * WebMCP tool whose own registration declared `riskTier: "confirm"`
+   * (webmcp-client.ts's own doc comment covers the enforcement point).
+   * Absent means every "confirm"-tier tool call is declined by default —
+   * the safe fallback for a host app that hasn't wired up a real
+   * confirmation UI, never an implicit yes.
+   */
+  onConfirmTool?: (tool: { name: string; description: string }) => Promise<boolean>;
 }
 
 const FALLBACK_TEXT = "I'm not sure — I couldn't understand that response. Try rephrasing your question.";
@@ -111,10 +134,34 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       return;
     }
 
-    case "navigate":
+    case "navigate": {
+      // Real, live-reported gap this closes: navigate used to ALWAYS end
+      // the turn the instant it fired, even for a compound goal like "buy
+      // earbuds" that needs navigate, then search, then a real report
+      // back — see isTerminalVerb's own doc comment in @cairnvibe/core.
+      // `options.onToolStep` is only ever set by executeToolStep's own
+      // continuing-step wrapper — handleVerb's options never provide it —
+      // so this branch can only run when the caller already confirmed
+      // (via isTerminalVerb) that this navigate was genuinely marked
+      // continueAfter; the defensive `verb.continueAfter` check here is
+      // belt-and-suspenders, not the real gate.
+      if (verb.continueAfter && options.onToolStep) {
+        if (verb.text) options.onExplain(verb.text);
+        options.onNavigate?.(verb.route);
+        // A client-side route change is itself an async re-render (a new
+        // page's whole DOM mounting) — same real race waitForDomSettle
+        // already closes for fill/click, arguably more likely here. The
+        // NEXT resolveVerb call needs the settled new page's context, not
+        // whatever was on screen the instant router.push was called.
+        void waitForDomSettle(300, 200, 2000).then(() => {
+          options.onToolStep?.({ verb: "navigate", target: verb.route, ok: true, observation: `Navigated to ${verb.route}.` });
+        });
+        return;
+      }
       options.onNavigate?.(verb.route);
       if (verb.text) options.onExplain(verb.text);
       return;
+    }
 
     case "do": {
       const allowed = options.registeredActions ?? [];
@@ -238,8 +285,63 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
 
     case "call_tool": {
       if (verb.text) options.onExplain(verb.text);
-      void executeWebMcpTool(verb.name, verb.args).then((result) => {
+      void executeWebMcpTool(verb.name, verb.args, options.onConfirmTool).then((result) => {
         options.onToolStep?.({ verb: "call_tool", target: verb.name, ok: result.ok, observation: result.observation });
+      });
+      return;
+    }
+
+    case "drag": {
+      if (verb.text) options.onExplain(verb.text);
+      const from = findElement(verb.target, options.liveElements);
+      const to = from ? findElement(verb.to, options.liveElements) : null;
+      if (!from || !to) {
+        (options.onMiss ?? logMiss)({ attempted: from ? verb.to : verb.target, route });
+        options.onToolStep?.({ verb: "drag", target: verb.target, ok: false, observation: from ? "Could not find the drop destination on the page." : "Could not find that element on the page." });
+        return;
+      }
+      highlightElement(from);
+      dragElement(from, to);
+      // Same real re-render race as click/fill — a drop can trigger an
+      // async re-render (a canvas connection line, a reordered list) that
+      // hasn't settled the instant the pointer sequence finishes.
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "drag", target: verb.target, ok: true, observation: `Dragged it to ${verb.to}.` });
+      });
+      return;
+    }
+
+    case "select": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = findElement(verb.target, options.liveElements);
+      if (!el || !selectOption(el, verb.value)) {
+        (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({
+          verb: "select",
+          target: verb.target,
+          ok: false,
+          observation: el ? `Could not find an option matching "${verb.value}".` : "Could not find that element on the page.",
+        });
+        return;
+      }
+      highlightElement(el);
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "select", target: verb.target, ok: true, observation: `Selected "${verb.value}".` });
+      });
+      return;
+    }
+
+    case "key": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = verb.target ? findElement(verb.target, options.liveElements) : (document.activeElement as HTMLElement | null);
+      if (!el) {
+        if (verb.target) (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({ verb: "key", target: verb.target, ok: false, observation: "Could not find that element on the page." });
+        return;
+      }
+      pressKey(el, verb.key);
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "key", target: verb.target, ok: true, observation: `Pressed ${verb.key}.` });
       });
       return;
     }
@@ -270,7 +372,8 @@ async function executeBatchActions(
   const steps: string[] = [];
   for (const action of actions) {
     const result = await executeOneBatchAction(action, route, options);
-    steps.push(`${action.verb} ${"target" in action ? action.target : action.name}: ${result.observation}`);
+    const label = ("target" in action && action.target) || ("name" in action && action.name) || "(focused element)";
+    steps.push(`${action.verb} ${label}: ${result.observation}`);
     if (!result.ok) return { ok: false, observation: steps.join(" | ") };
   }
   return { ok: true, observation: steps.join(" | ") };
@@ -323,8 +426,40 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       return { ok: true, observation: readElement(el) };
     }
     case "call_tool": {
-      const result = await executeWebMcpTool(action.name, action.args);
+      const result = await executeWebMcpTool(action.name, action.args, options.onConfirmTool);
       return { ok: result.ok, observation: result.observation };
+    }
+    case "drag": {
+      const from = await findElementWithRetry(action.target, options.liveElements);
+      const to = from ? await findElementWithRetry(action.to, options.liveElements) : null;
+      if (!from || !to) {
+        (options.onMiss ?? logMiss)({ attempted: from ? action.to : action.target, route });
+        return { ok: false, observation: from ? "Could not find the drop destination on the page." : "Could not find that element on the page." };
+      }
+      highlightElement(from);
+      dragElement(from, to);
+      await waitForDomSettle();
+      return { ok: true, observation: `Dragged it to ${action.to}.` };
+    }
+    case "select": {
+      const el = await findElementWithRetry(action.target, options.liveElements);
+      if (!el || !selectOption(el, action.value)) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: el ? `Could not find an option matching "${action.value}".` : "Could not find that element on the page." };
+      }
+      highlightElement(el);
+      await waitForDomSettle();
+      return { ok: true, observation: `Selected "${action.value}".` };
+    }
+    case "key": {
+      const el = action.target ? await findElementWithRetry(action.target, options.liveElements) : (document.activeElement as HTMLElement | null);
+      if (!el) {
+        if (action.target) (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "Could not find that element on the page." };
+      }
+      pressKey(el, action.key);
+      await waitForDomSettle();
+      return { ok: true, observation: `Pressed ${action.key}.` };
     }
   }
 }

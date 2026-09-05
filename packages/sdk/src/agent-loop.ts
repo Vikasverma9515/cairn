@@ -19,10 +19,36 @@
 // built-ins) — imported as raw source by index.tsx's browser bundle AND
 // compiled to dist/ for realtime-server.ts's Node build.
 
-import { TERMINAL_VERBS, type AgentEvent, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
+import { isTerminalVerb, type AgentEvent, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
 
 /** 4 exchanges — matches the cap both original drivers independently used. */
 export const MAX_HISTORY_TURNS = 8;
+
+/**
+ * Architecture Pillar 4 — a cheap, LOCAL signal for "this goal probably
+ * needs more than one real step," checked BEFORE the first step even
+ * runs, so a caller can start the Planner call in PARALLEL with the
+ * first getNextStep instead of only after that first step already came
+ * back non-terminal (the "lazy gate" the plan singles out for
+ * replacement — realtime-server.ts's own onStep used to build planPromise
+ * only once `!terminal && iteration === 0` was already true, one full
+ * model round trip later than it needed to be). Deliberately
+ * conservative, on purpose: a false negative here just falls back to
+ * that same lazy-after-step-1 behavior — unchanged, zero regression —
+ * while a false positive costs one Planner call that would have started
+ * a moment later anyway, never a wrong answer. Genuine UI-pattern-aware
+ * classification (Pillar 2, not built yet) can replace this heuristic
+ * later without changing what calls it. Lives here (not server.ts) so
+ * BOTH transports can use the exact same check: this file is plain,
+ * dependency-free TypeScript imported as raw source by index.tsx's
+ * browser bundle AND compiled for realtime-server.ts's Node build — a
+ * server-only file (server.ts imports the Anthropic/Groq SDKs) can never
+ * be imported from the client widget.
+ */
+const MULTI_STEP_SIGNAL = /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b)\b/;
+export function looksMultiStep(question: string): boolean {
+  return MULTI_STEP_SIGNAL.test(question.toLowerCase());
+}
 
 export function summarizeVerbForHistory(verb: VerbResponse): string {
   if ("text" in verb && verb.text) return verb.text;
@@ -44,6 +70,12 @@ export function summarizeVerbForHistory(verb: VerbResponse): string {
       return `(read ${verb.target})`;
     case "call_tool":
       return `(called ${verb.name})`;
+    case "drag":
+      return `(dragged ${verb.target} to ${verb.to})`;
+    case "select":
+      return `(selected "${verb.value}" in ${verb.target})`;
+    case "key":
+      return `(pressed ${verb.key}${verb.target ? ` on ${verb.target}` : ""})`;
     case "batch":
       return `(${verb.actions.length} steps: ${verb.actions.map((a) => a.verb).join(", ")})`;
     default:
@@ -55,9 +87,11 @@ export interface AgentLoopStepEvent {
   verb: VerbResponse;
   /** 0-based. */
   iteration: number;
-  /** True if this verb is a TERMINAL_VERBS member — will end the loop
-   * right after this hook returns. Lets a caller act differently for a
-   * continuing vs. final step without re-deriving TERMINAL_VERBS itself. */
+  /** True if isTerminalVerb(verb) says this ends the loop right after
+   * this hook returns (TERMINAL_VERBS membership, except a navigate
+   * marked continueAfter — see isTerminalVerb's own doc comment). Lets a
+   * caller act differently for a continuing vs. final step without
+   * re-deriving that check itself. */
   terminal: boolean;
 }
 
@@ -151,7 +185,7 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
     const verb = await deps.getNextStep(loopHistory, i);
     if (verb === null) return { outcome: "unparseable", workingHistory: loopHistory };
 
-    const terminal = TERMINAL_VERBS.has(verb.verb);
+    const terminal = isTerminalVerb(verb);
     if (deps.onStep) {
       const abort = await deps.onStep({ verb, iteration: i, terminal });
       if (abort) return { outcome: "aborted", workingHistory: loopHistory };

@@ -17,6 +17,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { ManifestSchema } from "@cairnvibe/core";
 import { createRealtimeServer } from "./realtime-server";
+import { createSqliteMemoryStore } from "./memory-sqlite";
+import { createSqliteSkillStore } from "./skill-store";
 import type { CapabilityTier } from "./server";
 
 function parseCapability(raw: string | undefined): CapabilityTier {
@@ -125,7 +127,28 @@ function main(): void {
   const capability = parseCapability(process.env.CAIRN_CAPABILITY);
   const persona = process.env.CAIRN_PERSONA || undefined;
 
-  const server = createRealtimeServer({ manifest, provider, deepgramApiKey, registeredActions, capability, persona });
+  // Phase 5 / Architecture Pillar 5 — real cross-session memory, opt-in
+  // via a real file path. Closes the gap DEVELOPMENT.md's own Pillar 5
+  // entry flagged: MemoryStore was wired into createCopilotHandler and
+  // ConnectionDeps from the start, but never actually reachable from
+  // this CLI — a real deployment had no zero-code way to turn it on for
+  // the realtime relay. Absent env var means exactly today's behavior:
+  // no memory, zero overhead.
+  const memoryDbPath = process.env.CAIRN_MEMORY_DB_PATH;
+  const memory = memoryDbPath ? createSqliteMemoryStore(path.resolve(process.cwd(), memoryDbPath)) : undefined;
+
+  // Architecture Pillar 3 (Skill half) — same real, previously-missing
+  // wiring for self-authored Skills. Deliberately a SEPARATE file/scope
+  // from memory (see skill-store.ts's own doc comment: Skills are
+  // per-deployment, memory is per-user) — sharing the same underlying
+  // sqlite file is still fine if a deployment points both env vars at
+  // the same path, since each store creates its own distinctly-named
+  // tables.
+  const skillsDbPath = process.env.CAIRN_SKILLS_DB_PATH;
+  const skills = skillsDbPath ? createSqliteSkillStore(path.resolve(process.cwd(), skillsDbPath)) : undefined;
+  const skillsScopeId = process.env.CAIRN_SKILLS_SCOPE_ID || undefined;
+
+  const server = createRealtimeServer({ manifest, provider, deepgramApiKey, registeredActions, capability, persona, memory, skills, skillsScopeId });
   server.listen(port, () => {
     console.error(`cairn-realtime: listening on ws://localhost:${port} (provider: ${provider})`);
     if (withCommand) spawnCompanion(withCommand);

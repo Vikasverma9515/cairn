@@ -175,6 +175,88 @@ export function readElement(el: HTMLElement): string {
   return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed || "(empty)";
 }
 
+/**
+ * Chooses a real `<option>` by its visible text — never a raw internal
+ * `value` the model could never actually see. Native `<select>` gets the
+ * direct path (set `.value` to the matching option's own value, then fire
+ * the same input/change pair fillElement uses so React notices). A custom
+ * listbox/combobox (role="listbox"/"option" — Radix, Headless UI, etc.)
+ * has no real `<option>` to set, so the fallback clicks the matching
+ * option-shaped descendant instead, the same "do the real user gesture"
+ * principle the do/click cases already follow.
+ */
+export function selectOption(el: HTMLElement, visibleText: string): boolean {
+  if (el.tagName === "SELECT") {
+    const select = el as HTMLSelectElement;
+    const match = Array.from(select.options).find((o) => normalize(o.textContent ?? "") === normalize(visibleText)) ?? Array.from(select.options).find((o) => normalize(o.textContent ?? "").includes(normalize(visibleText)));
+    if (!match) return false;
+    select.value = match.value;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  const candidates = el.querySelectorAll<HTMLElement>('[role="option"], option, li, [role="menuitem"]');
+  const match = Array.from(candidates).find((c) => normalize(c.textContent ?? "") === normalize(visibleText)) ?? Array.from(candidates).find((c) => normalize(c.textContent ?? "").includes(normalize(visibleText)));
+  if (!match) return false;
+  match.click();
+  return true;
+}
+
+/**
+ * A real multi-point pointer-event sequence — pointerdown on `from`'s
+ * center, several pointermove steps toward `to`'s center, pointerup on
+ * `to` — the same technique a real mouse drag produces, for canvas/kanban/
+ * sortable-list libraries (react-dnd, dnd-kit, n8n's own node canvas) that
+ * listen for pointer events rather than a single synthetic "drop". Mouse
+ * events are fired alongside (same coordinates) for the older libraries
+ * that still only listen for those. jsdom's getBoundingClientRect returns
+ * all-zero rects with no real layout engine — fine here, since what matters
+ * for a test is that the sequence fires with consistent coordinates, not
+ * that they reflect real pixels.
+ */
+export function dragElement(from: HTMLElement, to: HTMLElement, steps = 5): void {
+  const fromRect = from.getBoundingClientRect();
+  const toRect = to.getBoundingClientRect();
+  const fromX = fromRect.left + fromRect.width / 2;
+  const fromY = fromRect.top + fromRect.height / 2;
+  const toX = toRect.left + toRect.width / 2;
+  const toY = toRect.top + toRect.height / 2;
+
+  const fire = (target: HTMLElement, type: string, x: number, y: number) => {
+    const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, view: typeof window !== "undefined" ? window : undefined };
+    if (typeof PointerEvent !== "undefined") target.dispatchEvent(new PointerEvent(type.replace("mouse", "pointer"), opts));
+    target.dispatchEvent(new MouseEvent(type, opts));
+  };
+
+  fire(from, "mousedown", fromX, fromY);
+  for (let i = 1; i <= steps; i++) {
+    const x = fromX + ((toX - fromX) * i) / steps;
+    const y = fromY + ((toY - fromY) * i) / steps;
+    fire(i === steps ? to : from, "mousemove", x, y);
+  }
+  fire(to, "mouseup", toX, toY);
+}
+
+const KEYS_WITH_PRINTABLE_CHAR = new Set(["Enter", "Tab"]);
+
+/**
+ * Presses one real key on a target element — focuses it first (a real
+ * keypress always lands on whatever's focused; a component that reacts to
+ * Escape/Enter/arrows almost always keys off document-level or its own
+ * focus-scoped listener, so focus has to be real before the event fires).
+ * Fires keydown/keyup (and keypress only for the handful of keys that
+ * still expect one — Enter/Tab — matching a real browser's own behavior,
+ * which no longer fires keypress for pure navigation keys like arrows).
+ */
+export function pressKey(el: HTMLElement, key: string): void {
+  if (typeof el.focus === "function") el.focus();
+  const opts = { bubbles: true, cancelable: true, key };
+  el.dispatchEvent(new KeyboardEvent("keydown", opts));
+  if (KEYS_WITH_PRINTABLE_CHAR.has(key)) el.dispatchEvent(new KeyboardEvent("keypress", opts));
+  el.dispatchEvent(new KeyboardEvent("keyup", opts));
+}
+
 export interface MissContext {
   attempted: string;
   route: string;

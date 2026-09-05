@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
+import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, WebMcpToolSchema, isTerminalVerb, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -137,6 +137,60 @@ describe("safeParseVerbResponse", () => {
     expect(safeParseVerbResponse({ verb: "call_tool", name: "search-products", args: { query: "laptops" } })).toEqual(
       { verb: "call_tool", name: "search-products", args: { query: "laptops" } },
     );
+  });
+
+  it("accepts the richer action vocabulary: drag, select, key", () => {
+    expect(safeParseVerbResponse({ verb: "drag", target: "node-a", to: "node-b" })).toEqual({
+      verb: "drag",
+      target: "node-a",
+      to: "node-b",
+    });
+    expect(safeParseVerbResponse({ verb: "select", target: "status-dropdown", value: "Overdue" })).toEqual({
+      verb: "select",
+      target: "status-dropdown",
+      value: "Overdue",
+    });
+    expect(safeParseVerbResponse({ verb: "key", target: "search-input", key: "Enter" })).toEqual({
+      verb: "key",
+      target: "search-input",
+      key: "Enter",
+    });
+    // key's target is genuinely optional — omitted means "whatever's focused".
+    expect(safeParseVerbResponse({ verb: "key", key: "Escape" })).toEqual({ verb: "key", key: "Escape" });
+  });
+
+  it("drag/select require both real ids; key requires a real key name", () => {
+    expect(safeParseVerbResponse({ verb: "drag", target: "node-a" })).toBeNull();
+    expect(safeParseVerbResponse({ verb: "select", target: "status-dropdown" })).toBeNull();
+    expect(safeParseVerbResponse({ verb: "key" })).toBeNull();
+  });
+
+  it("drag/select/key are continuing steps, not terminal — same as click/fill/read/call_tool", () => {
+    expect(TERMINAL_VERBS.has("drag")).toBe(false);
+    expect(TERMINAL_VERBS.has("select")).toBe(false);
+    expect(TERMINAL_VERBS.has("key")).toBe(false);
+    expect(isTerminalVerb({ verb: "drag", target: "a", to: "b" })).toBe(false);
+    expect(isTerminalVerb({ verb: "select", target: "a", value: "b" })).toBe(false);
+    expect(isTerminalVerb({ verb: "key", key: "Enter" })).toBe(false);
+  });
+
+  it("batch accepts drag/select/key steps alongside click/fill/read/call_tool", () => {
+    const parsed = safeParseVerbResponse({
+      verb: "batch",
+      actions: [
+        { verb: "drag", target: "node-a", to: "node-b" },
+        { verb: "select", target: "status-dropdown", value: "Overdue" },
+        { verb: "key", key: "Tab" },
+      ],
+    });
+    expect(parsed).toEqual({
+      verb: "batch",
+      actions: [
+        { verb: "drag", target: "node-a", to: "node-b" },
+        { verb: "select", target: "status-dropdown", value: "Overdue" },
+        { verb: "key", key: "Tab" },
+      ],
+    });
   });
 
   it("accepts a batch of 2-5 steps, rejects fewer than 2 or more than 5", () => {
@@ -370,6 +424,64 @@ describe("safeParseVerbResponse", () => {
     expect(safeParseVerbResponse({ verb: "explain" })).toBeNull(); // missing text
     expect(safeParseVerbResponse({ verb: "highlight" })).toBeNull(); // missing target
   });
+
+  // Real, live-reported gap this closes: navigate was ALWAYS terminal, so a
+  // genuinely compound goal that starts with navigation ("buy earbuds" —
+  // navigate to the shop, THEN search, THEN report back) ended the turn
+  // the instant it navigated, leaving the rest of the goal for the user to
+  // manually re-prompt one step at a time. See isTerminalVerb below.
+  it("accepts navigate's optional continueAfter flag, true or false", () => {
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/shop", continueAfter: true })).toEqual({
+      verb: "navigate",
+      route: "/shop",
+      continueAfter: true,
+    });
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/shop", continueAfter: false })).toEqual({
+      verb: "navigate",
+      route: "/shop",
+      continueAfter: false,
+    });
+  });
+
+  it("accepts navigate with continueAfter omitted or explicit null — the common, single-step case", () => {
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices" })).toEqual({ verb: "navigate", route: "/invoices" });
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices", continueAfter: null })).toEqual({
+      verb: "navigate",
+      route: "/invoices",
+    });
+  });
+
+  it("tolerates continueAfter: null as a companion field on every other verb — the same flat-wire-schema shape every other optional field already gets", () => {
+    expect(safeParseVerbResponse({ verb: "explain", text: "hi", continueAfter: null })).toEqual({ verb: "explain", text: "hi" });
+    expect(safeParseVerbResponse({ verb: "click", target: "archive-btn", continueAfter: null })).toEqual({ verb: "click", target: "archive-btn" });
+  });
+});
+
+describe("isTerminalVerb", () => {
+  it("matches TERMINAL_VERBS for every verb that isn't navigate", () => {
+    expect(isTerminalVerb({ verb: "explain", text: "hi" })).toBe(true);
+    expect(isTerminalVerb({ verb: "highlight", target: "x" })).toBe(true);
+    expect(isTerminalVerb({ verb: "open", target: "x" })).toBe(true);
+    expect(isTerminalVerb({ verb: "do", action: "archiveInvoice" })).toBe(true);
+    expect(isTerminalVerb({ verb: "tour", steps: [{ text: "a" }, { text: "b" }] })).toBe(true);
+    expect(isTerminalVerb({ verb: "click", target: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "fill", target: "x", value: "y" })).toBe(false);
+    expect(isTerminalVerb({ verb: "read", target: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "call_tool", name: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "batch", actions: [{ verb: "read", target: "a" }, { verb: "click", target: "b" }] })).toBe(false);
+  });
+
+  it("a plain navigate (no continueAfter) stays terminal — the common, single-step 'take me to X' case, unchanged", () => {
+    expect(isTerminalVerb({ verb: "navigate", route: "/invoices" })).toBe(true);
+  });
+
+  it("navigate with continueAfter: false stays terminal — an explicit false is the same as omitting it", () => {
+    expect(isTerminalVerb({ verb: "navigate", route: "/invoices", continueAfter: false })).toBe(true);
+  });
+
+  it("real fix this verifies: navigate with continueAfter: true is NOT terminal — the agent loop keeps going instead of ending the turn the instant it arrives", () => {
+    expect(isTerminalVerb({ verb: "navigate", route: "/shop", continueAfter: true })).toBe(false);
+  });
 });
 
 describe("CopilotRequestSchema", () => {
@@ -441,5 +553,23 @@ describe("AgentEventSchema (Phase 3 step 5 — the Talker's event stream)", () =
   it("rejects an 'act' event carrying an invalid verb — the discriminated union still enforces the real verb schema, not just its own shape", () => {
     const result = AgentEventSchema.safeParse({ type: "act", verb: { verb: "explode" }, at: Date.now() });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("WebMcpToolSchema — Architecture Pillar 6's per-tool risk tier", () => {
+  it("accepts a tool with no riskTier at all — the default, today's exact behavior for every tool registered before this field existed", () => {
+    const parsed = WebMcpToolSchema.safeParse({ name: "search-products", description: "Search the catalog" });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.riskTier).toBeUndefined();
+  });
+
+  it("accepts a real 'safe' or 'confirm' riskTier", () => {
+    expect(WebMcpToolSchema.safeParse({ name: "x", description: "x", riskTier: "safe" }).success).toBe(true);
+    expect(WebMcpToolSchema.safeParse({ name: "x", description: "x", riskTier: "confirm" }).success).toBe(true);
+  });
+
+  it("rejects an invented risk tier — never a value the model or a page could smuggle in as its own new tier", () => {
+    const parsed = WebMcpToolSchema.safeParse({ name: "x", description: "x", riskTier: "dangerous" });
+    expect(parsed.success).toBe(false);
   });
 });

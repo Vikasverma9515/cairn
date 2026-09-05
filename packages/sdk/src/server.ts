@@ -5,11 +5,18 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
+import { z } from "zod";
 import {
+  classifyUiPattern,
   CopilotRequestSchema,
   CriticVerdictSchema,
+  deriveStructureSignals,
+  isTerminalVerb,
   PlannerOutputSchema,
-  TERMINAL_VERBS,
+  renderPlaybookHint,
+  slugifySkillId,
+  TaskSchema,
+  UI_PATTERNS,
   VERBS,
   VerbResponseSchema,
   type CriticVerdict,
@@ -18,13 +25,17 @@ import {
   type Manifest,
   type Plan,
   type PlannerOutput,
+  type Skill,
+  type SkillSummary,
   type Task,
+  type UiPatternId,
   type VerbResponse,
   type WebMcpTool,
 } from "@cairnvibe/core";
-import { MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
-import { formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
+import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import { KeyRotator } from "./key-rotator";
+import type { SkillStore } from "./skill-store";
 
 const VERB_TOOL_NAME = "respond_with_verb";
 const PLAN_TOOL_NAME = "create_plan";
@@ -91,6 +102,18 @@ export interface CreateCopilotHandlerOptions {
    * re-seeded on top of itself.
    */
   memory?: MemoryStore;
+  /**
+   * Architecture Pillar 3 (Skill half) — real, per-deployment Skill
+   * storage (packages/sdk/src/skill-store.ts). A DIFFERENT scope axis
+   * than `memory` above — see skill-store.ts's own doc comment. Optional;
+   * omitting it keeps every request exactly as it was before this
+   * existed. Consumed by `createPlanHandler` (retrieval — a matching
+   * Skill's full instructions get surfaced to the Planner) and
+   * `createSkillSaveHandler` (the Formulator's own save side).
+   */
+  skills?: SkillStore;
+  /** The deployment-wide scope Skills are stored/looked up under when `skills` is configured. Defaults to "default" when omitted. */
+  skillsScopeId?: string;
 }
 
 export interface CopilotHandlerResult {
@@ -164,13 +187,25 @@ export function createCopilotHandlerWithLLM(
       if (factsSummary) effectiveHistory = [{ role: "assistant", text: factsSummary }, ...effectiveHistory];
     }
 
+    // Architecture Pillar 5 — the Archive tier, checked on EVERY request
+    // (not just a fresh session — unlike Core facts above, an archived
+    // fact is never always-injected, only surfaced when THIS question
+    // actually relates to it, which can happen at any point in an
+    // ongoing conversation, not only at its start).
+    if (options.memory && input.scopeId) {
+      const archivedMatch = options.memory.recallArchivedFacts(input.scopeId, input.question);
+      const archivedSummary = formatArchivedFacts(archivedMatch);
+      if (archivedSummary) effectiveHistory = [...effectiveHistory, { role: "assistant", text: archivedSummary }];
+    }
+
     const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, { ...input, history: effectiveHistory });
 
     // Recorded only for a TERMINAL verb — matching the realtime relay's
     // own discipline exactly: a continuing step (click/fill/read/
-    // call_tool/batch) is an internal implementation detail of one
-    // logical exchange, never its own remembered "turn".
-    if (options.memory && input.scopeId && TERMINAL_VERBS.has(verb.verb)) {
+    // call_tool/batch, or now a navigate marked continueAfter — see
+    // isTerminalVerb's own doc comment) is an internal implementation
+    // detail of one logical exchange, never its own remembered "turn".
+    if (options.memory && input.scopeId && isTerminalVerb(verb)) {
       options.memory.recordTurn(input.scopeId, "user", input.question);
       options.memory.recordTurn(input.scopeId, "assistant", summarizeVerbForHistory(verb));
     }
@@ -202,6 +237,13 @@ export async function resolveVerb(
 ): Promise<VerbResponse> {
   let candidate: unknown;
   try {
+    // Architecture Pillar 2 — classified from the SAME liveElements this
+    // request already carries for element resolution, no new client
+    // wiring or payload field needed. Real, checkable evidence (which
+    // labels/roles matched), never a bare guess — see ui-patterns.ts's own
+    // doc comment. Absent entirely when nothing matched (a page that's
+    // none of the known patterns), rather than forcing a hint that isn't real.
+    const patternMatches = input.liveElements?.length ? classifyUiPattern(deriveStructureSignals(input.liveElements)) : [];
     // Element-level detail for the current page only, attached here rather
     // than baked into the (static, cached) system prompt — see
     // buildSystemPrompt's comment for why. This payload is already
@@ -212,6 +254,7 @@ export async function resolveVerb(
       ...input,
       currentPageElements: buildPageElements(manifest, input.route),
       currentPageDataShapes: buildPageDataShapes(manifest, input.route),
+      ...(patternMatches.length ? { suggestedApproach: renderPlaybookHint(patternMatches[0].pattern) } : {}),
     });
     candidate = await llm.respond(systemPrompt, userMessage);
   } catch (err) {
@@ -268,10 +311,21 @@ export async function resolveVerb(
   const isKnownTarget = (target: string) => pageElements.some((e) => e.id === target) || (input.liveElements ?? []).some((e) => e.id === target);
   const isKnownTool = (name: string) => (input.webMcpTools ?? []).some((t) => t.name === name);
 
-  if (parsedVerb.data.verb === "click" || parsedVerb.data.verb === "fill" || parsedVerb.data.verb === "read") {
+  if (parsedVerb.data.verb === "click" || parsedVerb.data.verb === "fill" || parsedVerb.data.verb === "read" || parsedVerb.data.verb === "select") {
     if (!isKnownTarget(parsedVerb.data.target)) {
       return { verb: "explain", text: "I don't see that on this page right now." };
     }
+  }
+  if (parsedVerb.data.verb === "drag") {
+    if (!isKnownTarget(parsedVerb.data.target) || !isKnownTarget(parsedVerb.data.to)) {
+      return { verb: "explain", text: "I don't see everything I'd need for that on this page right now." };
+    }
+  }
+  // key's target is optional (omitted means "whatever's currently
+  // focused") — only check it against real state when the model actually
+  // named one, same "never invented" invariant as every other target.
+  if (parsedVerb.data.verb === "key" && parsedVerb.data.target && !isKnownTarget(parsedVerb.data.target)) {
+    return { verb: "explain", text: "I don't see that on this page right now." };
   }
   if (parsedVerb.data.verb === "call_tool") {
     if (!isKnownTool(parsedVerb.data.name)) {
@@ -283,9 +337,12 @@ export async function resolveVerb(
     // partially execute a batch whose later step names something the
     // model invented; refuse the whole turn instead of guessing which
     // steps were "safe enough" to run.
-    const allKnown = parsedVerb.data.actions.every((action) =>
-      action.verb === "call_tool" ? isKnownTool(action.name) : isKnownTarget(action.target),
-    );
+    const allKnown = parsedVerb.data.actions.every((action) => {
+      if (action.verb === "call_tool") return isKnownTool(action.name);
+      if (action.verb === "drag") return isKnownTarget(action.target) && isKnownTarget(action.to);
+      if (action.verb === "key") return !action.target || isKnownTarget(action.target);
+      return isKnownTarget(action.target);
+    });
     if (!allKnown) {
       return { verb: "explain", text: "I don't see everything I'd need for that on this page right now." };
     }
@@ -325,7 +382,7 @@ export async function resolveVerb(
  * on this function's call site in realtime-server.ts). The Critic (step
  * 3) is what makes a Plan's tasks/doneContracts actually drive behavior.
  */
-export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest, actionsText?: string): Promise<Plan> {
+export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manifest?: Manifest, actionsText?: string, skills?: { summariesText?: string; suggestedInstructions?: string }): Promise<Plan> {
   let candidate: unknown;
   try {
     // manifest/actionsText are appended, optional, and default to absent —
@@ -339,10 +396,18 @@ export async function resolvePlan(llm: VerbLLM, goal: string, version = 1, manif
     // buildSystemPrompt/buildVerbToolSchema use for registered actions —
     // pass renderRegisteredActions(...)'s own output, not a hand-rolled
     // string, so the Planner and Executor never describe the same
-    // capability two different ways.
+    // capability two different ways. skills (Architecture Pillar 3) is
+    // the same additive shape: `summariesText` (renderSkillSummaries'
+    // output — every this-deployment Skill's name+description, cheap to
+    // always include) and `suggestedInstructions` (matchSkillByGoal's own
+    // match, full instructions, only when one genuinely matched this
+    // goal) — both optional, both absent by default for a caller with no
+    // SkillStore configured.
     const payload: Record<string, unknown> = { goal };
     if (manifest) payload.pages = buildPlannerPageDirectory(manifest);
     if (actionsText) payload.actions = actionsText;
+    if (skills?.summariesText) payload.skills = skills.summariesText;
+    if (skills?.suggestedInstructions) payload.suggestedSkill = skills.suggestedInstructions;
     const userMessage = JSON.stringify(payload);
     candidate = await llm.respond(buildPlannerSystemPrompt(), userMessage);
   } catch (err) {
@@ -367,8 +432,13 @@ function assemblePlan(output: PlannerOutput, version: number): Plan {
 /** The real, single-task plan used when the Planner call itself fails —
  * "do the whole goal as one task" is always a valid (if unstructured)
  * plan, so a Planner hiccup degrades the redesign back to today's
- * behavior instead of blocking the turn. */
-function fallbackPlan(goal: string, version: number): Plan {
+ * behavior instead of blocking the turn. Exported so every caller that
+ * needs "a plan, even a trivial one, right now" (e.g. a Critic call that
+ * fires before a real Planner result has come back) builds the exact
+ * same shape instead of hand-rolling a duplicate literal — realtime-
+ * server.ts's own finalizeTurn and index.tsx's runTypedAgentLoop both do
+ * this, for the same reason. */
+export function fallbackPlan(goal: string, version: number): Plan {
   return {
     version,
     goal,
@@ -455,6 +525,204 @@ export function createVerbLLM(options: CreateCopilotHandlerOptions = {}): VerbLL
  * for the Planner's own tool instead — see resolvePlan. */
 export function createPlanLLM(options: CreateCopilotHandlerOptions = {}): VerbLLM {
   return createToolLLM(options, buildPlanToolSchema(), PLAN_TOOL_NAME, PLAN_TOOL_DESCRIPTION);
+}
+
+/**
+ * Architecture Pillar 3 (Skill half) — the Formulator. Runs once a task
+ * genuinely completes (not per-step — cheap on purpose, matching the plan
+ * file's own framing), compiling whatever real, Critic-verified
+ * `learnedFact`s were collected along the way (CriticVerdictSchema's own
+ * doc comment is the enforcement point for "never user data") into one
+ * Skill. Deliberately DETERMINISTIC, not a fourth kind of real LLM call —
+ * every fact it compiles already passed through the Critic's own
+ * verification, so there's nothing left to "figure out" that would
+ * justify the added cost/latency/failure surface of another model round
+ * trip; see DEVELOPMENT.md's own entry for the real cost reasoning
+ * (this session already hit genuine Groq quota exhaustion more than once
+ * from cumulative call volume). Returns null when nothing was learned —
+ * the common case, not an error; a caller should simply not save anything.
+ */
+export function compileSkill(goal: string, learnedFacts: string[], pattern?: UiPatternId): Skill | null {
+  if (learnedFacts.length === 0) return null;
+  const name = goal.length > 80 ? `${goal.slice(0, 79)}…` : goal;
+  const firstFact = learnedFacts[0];
+  return {
+    id: slugifySkillId(name),
+    name,
+    description: firstFact.length > 120 ? `${firstFact.slice(0, 119)}…` : firstFact,
+    instructions: learnedFacts.join(" "),
+    pattern,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+const SIGNIFICANT_WORD_MIN_LENGTH = 4;
+// Real, common phrasing variance between a Skill's own name (usually a
+// gerund, "Connecting nodes...") and a later goal restating the same idea
+// ("connect the node...") means exact word equality misses obvious
+// matches ("connecting" vs "connect", "nodes" vs "node"). A crude 4-
+// character-prefix "stem" — not a real stemming library, deliberately —
+// catches this common case without a new dependency, at the cost of
+// occasional false-positive stems on short unrelated words; the min
+// significant-word length above already screens out the shortest, most
+// collision-prone words.
+const STEM_LENGTH = 4;
+
+function significantWordStems(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= SIGNIFICANT_WORD_MIN_LENGTH)
+      .map((w) => w.slice(0, STEM_LENGTH)),
+  );
+}
+
+/**
+ * Architecture Pillar 3 (Skill half) — the retrieval side. A cheap,
+ * deterministic keyword-overlap match against a NEW goal (never another
+ * real LLM call, same reasoning as compileSkill above) — real progressive
+ * disclosure: every Skill's summary is cheap enough to always list (see
+ * SkillStore's own doc comment), but only the ONE Skill whose own name
+ * shares real, significant words with the current goal gets its full
+ * instructions loaded. A caller still needs its own SkillStore.getSkill
+ * call to fetch those full instructions for whatever this returns — this
+ * function only ever sees cheap summaries, never a full Skill.
+ */
+export function matchSkillByGoal(summaries: SkillSummary[], goal: string): SkillSummary | null {
+  const goalStems = significantWordStems(goal);
+  if (goalStems.size === 0) return null;
+
+  let best: SkillSummary | null = null;
+  let bestScore = 0;
+  for (const summary of summaries) {
+    const score = Array.from(significantWordStems(summary.name)).filter((stem) => goalStems.has(stem)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = summary;
+    }
+  }
+  return best;
+}
+
+/** Same rendering discipline as renderRegisteredActions — "id (description)" per Skill, for the Planner's own userMessage. */
+export function renderSkillSummaries(summaries: SkillSummary[]): string {
+  return summaries.map((s) => `${s.name} (${s.description})`).join("; ");
+}
+
+const PlanRequestSchema = z
+  .object({
+    goal: z.string().min(1),
+    version: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+const CriticRequestSchema = z
+  .object({
+    task: TaskSchema,
+    goal: z.string().min(1),
+    verb: VerbResponseSchema,
+    observation: z.string().nullable().optional(),
+  })
+  .strict();
+
+export type PlanHandler = (body: unknown) => Promise<{ status: number; body: Plan | { error: string } }>;
+export type CriticHandler = (body: unknown) => Promise<{ status: number; body: CriticVerdict | { error: string } }>;
+
+/**
+ * Architecture Pillar 4 — the typed/HTTP transport's own real Planner
+ * endpoint, closing the gap the plan file names directly: "the typed/
+ * HTTP path (index.tsx's runTypedAgentLoop) has zero Planner/Critic
+ * wiring at all... today explicitly realtime-only by deferral, not by
+ * decision." A thin HTTP wrapper around the exact same resolvePlan the
+ * realtime relay already calls in-process — the LLM call itself only
+ * ever needs to happen server-side (it holds the real API key), so a
+ * client-side caller (index.tsx) reaches it over a real request instead
+ * of importing resolvePlan directly, same reasoning as createCopilotHandler
+ * itself.
+ */
+export function createPlanHandler(manifest: Manifest, options: CreateCopilotHandlerOptions = {}): PlanHandler {
+  return createPlanHandlerWithLLM(manifest, createPlanLLM(options), options);
+}
+
+/** Same as createPlanHandler, but with the LLM injected — used by tests to fake it, same pattern as createCopilotHandlerWithLLM. */
+export function createPlanHandlerWithLLM(
+  manifest: Manifest,
+  planLLM: VerbLLM,
+  options: { registeredActions?: string[]; actionDescriptions?: Record<string, string>; skills?: SkillStore; skillsScopeId?: string } = {},
+): PlanHandler {
+  const actionsText = renderRegisteredActions(options.registeredActions ?? [], options.actionDescriptions ?? {});
+  const skillsScopeId = options.skillsScopeId ?? "default";
+  return async function handlePlanRequest(body: unknown) {
+    const parsed = PlanRequestSchema.safeParse(body);
+    if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
+
+    // Architecture Pillar 3 (Skill half) — the typed transport's own
+    // retrieval side, same shape realtime-server.ts's finalizeTurn
+    // already computes in-process. Absent `options.skills` (the
+    // overwhelming majority of deployments today) means zero overhead —
+    // this whole block is skipped entirely.
+    const skillSummaries = options.skills ? options.skills.listSkillSummaries(skillsScopeId) : [];
+    const matchedSkillSummary = skillSummaries.length ? matchSkillByGoal(skillSummaries, parsed.data.goal) : null;
+    const skillsPayload = skillSummaries.length
+      ? {
+          summariesText: renderSkillSummaries(skillSummaries) || undefined,
+          suggestedInstructions: matchedSkillSummary ? (options.skills!.getSkill(skillsScopeId, matchedSkillSummary.id)?.instructions ?? undefined) : undefined,
+        }
+      : undefined;
+
+    const plan = await resolvePlan(planLLM, parsed.data.goal, parsed.data.version ?? 1, manifest, actionsText || undefined, skillsPayload);
+    return { status: 200, body: plan };
+  };
+}
+
+/** Architecture Pillar 4's Critic counterpart to createPlanHandler — see
+ * its own doc comment. A thin HTTP wrapper around the same resolveCritic
+ * the realtime relay already calls in-process. */
+export function createCriticHandler(options: CreateCopilotHandlerOptions = {}): CriticHandler {
+  return createCriticHandlerWithLLM(createCriticLLM(options));
+}
+
+/** Same as createCriticHandler, but with the LLM injected — used by tests to fake it. */
+export function createCriticHandlerWithLLM(criticLLM: VerbLLM): CriticHandler {
+  return async function handleCriticRequest(body: unknown) {
+    const parsed = CriticRequestSchema.safeParse(body);
+    if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
+    const verdict = await resolveCritic(criticLLM, parsed.data.task, parsed.data.goal, parsed.data.verb, parsed.data.observation);
+    return { status: 200, body: verdict };
+  };
+}
+
+const SkillSaveRequestSchema = z
+  .object({
+    goal: z.string().min(1),
+    learnedFacts: z.array(z.string().min(1)),
+    pattern: z.enum(UI_PATTERNS).optional(),
+  })
+  .strict();
+
+export type SkillSaveHandler = (body: unknown) => Promise<{ status: number; body: { saved: boolean } | { error: string } }>;
+
+/**
+ * Architecture Pillar 3 (Skill half) — the typed transport's own save
+ * side (the Formulator's HTTP counterpart to realtime-server.ts's own
+ * in-process `compileSkill`+`saveSkill` call at the end of `finalizeTurn`).
+ * No LLM involved — `compileSkill` is deterministic (see its own doc
+ * comment for why) — so this needs no `-WithLLM` variant; it's real
+ * client-callable storage access, nothing more. The caller (index.tsx's
+ * runTypedAgentLoop) accumulates `learnedFacts` from its own Critic calls
+ * across one whole turn and posts here exactly once, after the turn
+ * concludes — never per-step, matching the Formulator's own "cheap on
+ * purpose" framing.
+ */
+export function createSkillSaveHandler(skills: SkillStore, skillsScopeId = "default"): SkillSaveHandler {
+  return async function handleSkillSaveRequest(body: unknown) {
+    const parsed = SkillSaveRequestSchema.safeParse(body);
+    if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
+    const skill = compileSkill(parsed.data.goal, parsed.data.learnedFacts, parsed.data.pattern);
+    if (skill) skills.saveSkill(skillsScopeId, skill);
+    return { status: 200, body: { saved: skill !== null } };
+  };
 }
 
 /**
@@ -807,9 +1075,16 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
       verb: { type: "string", enum: [...VERBS] },
       text: nullableString("Shown to the user. Required for explain. null (or omitted) if not applicable."),
       target: nullableString(
-        "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read. For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. Not used for batch — each of its own actions carries its own target instead. null (or omitted) if not applicable.",
+        "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read/select, and for drag (the thing being dragged). For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. For key, the element to press the key on — omit to press it on whatever's currently focused. Not used for batch — each of its own actions carries its own target instead. null (or omitted) if not applicable.",
       ),
+      to: nullableString("Required for drag — the id (from currentPageElements or liveElements) of where to drop it. null (or omitted) if not applicable."),
+      key: nullableString('Required for key — one real key name: Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, or ArrowRight. null (or omitted) if not applicable.'),
       route: nullableString("A route from the manifest. Required for navigate. null (or omitted) if not applicable."),
+      continueAfter: {
+        type: ["boolean", "null"],
+        description:
+          'Only for navigate. Set to true when the user\'s real goal needs MORE than just arriving at the new page — e.g. "buy earbuds" means navigate there, then search, then report back what you found, not just navigate. When true, you\'ll be asked again once you\'ve arrived, with that page\'s own real elements, so you can decide the next real step (or say you\'re done). Leave false/null for a plain "take me to X" request, where arriving IS the whole answer — setting this needlessly costs an extra real turn for no reason.',
+      },
       action: nullableString(
         "Required for do. A short label for what's being done, e.g. \"archive-invoice\" " +
           (registeredActions.length
@@ -817,7 +1092,7 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
             : "for any element from currentPageElements or liveElements whose own description/label says it performs a real action — no actions are separately registered in this deployment, but that path still works.") +
           " null (or omitted) if not applicable.",
       ),
-      value: nullableString('Required for fill — the exact text to type into "target". null (or omitted) if not applicable.'),
+      value: nullableString('Required for fill — the exact text to type into "target". Required for select — the option\'s visible text, never its raw internal value. null (or omitted) if not applicable.'),
       name: nullableString("Required for call_tool — a tool name from this turn's webMcpTools list, exactly as given. null (or omitted) if not applicable."),
       args: {
         type: ["object", "null"],
@@ -850,14 +1125,16 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
       actions: {
         type: ["array", "null"],
         description:
-          "Required for batch, 2-5 items. Several click/fill/read/call_tool steps executed in order in ONE round trip, instead of one round trip each — use this when you already know several steps are needed and don't need to see one step's real result before choosing the next (e.g. filling three known fields, or clicking through a sequence you're already sure about). If a later step genuinely depends on what an earlier one turns up, use a single step instead and decide the next one once you see its real result. text (if any) is spoken once for the whole batch, not per step. null (or omitted) if not applicable.",
+          "Required for batch, 2-5 items. Several click/fill/read/call_tool/drag/select/key steps executed in order in ONE round trip, instead of one round trip each — use this when you already know several steps are needed and don't need to see one step's real result before choosing the next (e.g. filling three known fields, or clicking through a sequence you're already sure about). If a later step genuinely depends on what an earlier one turns up, use a single step instead and decide the next one once you see its real result. text (if any) is spoken once for the whole batch, not per step. null (or omitted) if not applicable.",
         items: {
           type: "object",
           properties: {
-            verb: { type: "string", enum: ["click", "fill", "read", "call_tool"] },
-            target: nullableString("An id from currentPageElements or liveElements. Required for click/fill/read. null (or omitted) if not applicable."),
-            value: nullableString('Required for fill — the exact text to type into "target". null (or omitted) if not applicable.'),
+            verb: { type: "string", enum: ["click", "fill", "read", "call_tool", "drag", "select", "key"] },
+            target: nullableString("An id from currentPageElements or liveElements. Required for click/fill/read/select/drag (the thing being dragged). For key, omit to press it on whatever's currently focused. null (or omitted) if not applicable."),
+            value: nullableString('Required for fill — the exact text to type into "target". Required for select — the option\'s visible text. null (or omitted) if not applicable.'),
             name: nullableString("Required for call_tool — a tool name from this turn's webMcpTools list. null (or omitted) if not applicable."),
+            to: nullableString("Required for drag — the id of where to drop it. null (or omitted) if not applicable."),
+            key: nullableString("Required for key — one real key name (Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight). null (or omitted) if not applicable."),
             args: {
               type: ["object", "null"],
               description: "For call_tool — the arguments object, matching that tool's own inputSchema. null (or omitted) if the tool takes none.",
@@ -923,6 +1200,15 @@ directory below plus three things attached to each request:
   or making up a value. "none" means this page's real data shape wasn't
   traced — don't treat that as "this page has no data," just don't invent
   field names or values for it.
+- "suggestedApproach": present only when this page's real, live-scanned
+  elements matched a known UI pattern (a data table, a kanban board, a
+  node/workflow canvas, a search/filter list, a multi-step wizard) — a
+  short, general hint for how that KIND of page is usually best operated
+  (e.g. "check whether this canvas connects nodes via a dropdown or a
+  drag gesture before choosing"). A starting point, never a script — still
+  verify everything against the real liveElements/currentPageElements
+  exactly as you always would; absent entirely when nothing matched, which
+  is not itself a signal of anything.
 Never invent a page, route, id, action, or tool name that isn't listed in
 one of these five places (the route directory, currentPageElements,
 liveElements, webMcpTools, or currentPageDataShapes). If a question is about a page other than
@@ -940,6 +1226,11 @@ Always call ${VERB_TOOL_NAME} exactly once with one of these verbs:
   panel — this one actually clicks the element after highlighting it, so
   only use it when the element is meant to reveal something on click.
 - navigate: send the user to a route that appears in the manifest, in "route".
+  Set "continueAfter" to true only when the real goal needs more than just
+  arriving there (e.g. "buy earbuds" — navigate, then search, then report
+  back) — you'll be asked again once you've arrived, with that page's own
+  real elements, to decide the next step. Leave it false/null for a plain
+  "take me to X" request, where arriving is the whole answer.
 - tour: 2-6 ordered "steps", each with its own "text" and (usually) a
   "target". Use this whenever explaining the answer means touching more
   than one element — e.g. "what can I do on this page" or "give me a tour" —
@@ -991,21 +1282,33 @@ response; once you do, answer with one of the verbs above instead):
   listed in "webMcpTools" — "name" (exactly as given) and "args" (matching
   that tool's own schema). This is the most reliable way to do something
   when a real tool for it exists — prefer it over do/click when it does.
-All four require a real id/name from currentPageElements, liveElements, or
+- drag: drag a real element onto another one — "target" (what's being
+  dragged) and "to" (where it's dropped), both real ids. Use this for
+  anything click/fill can't reach: connecting two nodes on a canvas/
+  workflow editor, reordering a list, moving a card between columns on a
+  kanban board.
+- select: choose a real dropdown/listbox option — "target" (the dropdown)
+  and "value" (the option's exact VISIBLE text, never an internal value
+  you're guessing at).
+- key: press one real key — Escape, Enter, Tab, ArrowUp, ArrowDown,
+  ArrowLeft, or ArrowRight, in "key". "target" is optional — omit it to
+  press the key on whatever's currently focused (e.g. right after a fill),
+  or name an element to focus it first.
+All seven require a real id/name from currentPageElements, liveElements, or
 webMcpTools — never invent one. You'll be shown the real result of each
 step and asked again what to do next; after a small number of steps,
 answer with a terminal verb even if incomplete, explaining what you found.
 
-- batch: 2-5 of the four steps above (click/fill/read/call_tool, each in
-  its own shape — no separate "text"), run in order, in "actions" — use
-  this INSTEAD of separate single steps when you already know every step
-  you need and none of them depends on seeing an earlier one's real result
-  first (e.g. filling three fields you can already see, or a known
-  sequence of clicks). If a later step needs to react to what an earlier
-  one turns up, or depends on something an earlier step's click would
-  newly reveal, use single steps instead — a batch only sees the page as
-  it is right now, not as an earlier step in the same batch leaves it. One
-  step failing stops the rest of that batch.
+- batch: 2-5 of the seven steps above (click/fill/read/call_tool/drag/
+  select/key, each in its own shape — no separate "text"), run in order, in
+  "actions" — use this INSTEAD of separate single steps when you already
+  know every step you need and none of them depends on seeing an earlier
+  one's real result first (e.g. filling three fields you can already see,
+  or a known sequence of clicks). If a later step needs to react to what an
+  earlier one turns up, or depends on something an earlier step's click
+  would newly reveal, use single steps instead — a batch only sees the page
+  as it is right now, not as an earlier step in the same batch leaves it.
+  One step failing stops the rest of that batch.
 
 Every "text" field (in explain, or per-step in tour, or the optional text on
 any other verb) is read aloud AND shown on screen, so it must sound like a
@@ -1113,6 +1416,8 @@ The user message may include "pages" — a real directory of this app's actual r
 
 It may also include "actions" — real, deployment-specific actions this app actually supports, by id, with a description in parens where one exists (e.g. "archiveInvoice (Archives the invoice; cannot be undone.)"). When a task is best achieved through one of these, say so concretely in the task's description (e.g. "use the archiveInvoice action") instead of only describing it as clicking around — the execution layer will still decide exactly how, but a task that already knows a real action exists is more likely to use it. Never invent an action id that isn't listed.
 
+It may also include "skills" — real, previously-learned notes this exact deployment has already confirmed about its own platform (name and a one-line description each, e.g. "Connecting nodes on the workflow canvas (The canvas connects nodes via a dropdown, not a drag gesture.)"), and "suggestedSkill" — the FULL learned instructions for the one skill that most closely matches THIS goal, when one does. Treat both as a real, verified starting point for how this specific platform behaves — still a hint, never a script: the execution layer still verifies every real step against the actual page regardless of what a skill suggests.
+
 Break the goal into as FEW tasks as genuinely make sense — most goals need only 1-3 tasks; only split further when steps are genuinely independent or need to happen in a specific real order. Each task needs:
 - id: a short, stable id, e.g. "t1", "t2".
 - description: what this task achieves, concrete enough to act on.
@@ -1150,6 +1455,11 @@ function buildCriticToolSchema(): Record<string, unknown> {
       verdict: { type: "string", enum: ["continue", "task_complete", "replan", "give_up"] },
       expected: { type: "string", description: "Only for replan — what SHOULD have happened, per the task's doneContract." },
       actual: { type: "string", description: "Only for replan — what actually happened instead, per the real observation." },
+      learnedFact: {
+        type: "string",
+        description:
+          "Only for task_complete, and only if this step revealed a genuinely NEW, confirmed-true fact about how THIS PLATFORM behaves (e.g. \"the canvas connects nodes via a dropdown, not a drag gesture\" or \"the search box needs about 300ms before results update\") — never a fact about any one user's own data or content. Omit entirely on every other verdict, or when nothing new was learned (the common case).",
+      },
       reasoning: { type: "string", description: "2-3 sentences, specific to what actually happened in THIS step, not generic." },
     },
     required: ["verdict", "reasoning"],
@@ -1167,6 +1477,8 @@ Score the verdict:
 - "continue": real progress happened but the doneContract isn't satisfied yet — more steps are needed on this same task.
 - "replan": the real observation contradicts what the task expected (a click didn't register, the wrong element was targeted, an error occurred) — the current approach isn't working and needs a different plan. Fill in "expected" (what the doneContract implied should happen) and "actual" (what really happened instead).
 - "give_up": repeated real attempts have failed and continuing wouldn't help — be honest about being stuck rather than looping forever.
+
+When you say "task_complete", also consider "learnedFact": did this step's real outcome reveal a genuinely NEW, confirmed-true fact about how THIS PLATFORM behaves — something worth remembering for a similar goal later (e.g. "the canvas connects nodes via a dropdown, not a drag gesture")? Only ever a structural fact about the platform itself, NEVER anything about this user's own data or content (never a person's name, an amount, a specific record). Leave it out entirely if nothing new was learned — that's the common case, not a gap to fill.
 
 Never trust the action's own claim of success — judge only the real observation. reasoning: 2-3 sentences, specific to what actually happened in this step, not generic.`;
 }

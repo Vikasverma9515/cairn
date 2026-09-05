@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch"] as const;
+export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch", "drag", "select", "key"] as const;
 export type Verb = (typeof VERBS)[number];
 
 /**
@@ -15,7 +15,20 @@ export type Verb = (typeof VERBS)[number];
  * turn with a terminal verb — this is what lets one question turn into
  * "check something, then decide, then act" instead of one guess. batch is
  * also continuing — see BatchActionSchema below — it just carries several
- * of those steps in one round trip instead of one.
+ * of those steps in one round trip instead of one. drag/select/key are the
+ * same shape as click/fill — real, continuing, element-ladder-verified
+ * steps — just a richer action vocabulary: drag connects/reorders things
+ * (canvas nodes, kanban cards, sortable lists) that click/fill can't reach,
+ * select chooses a real dropdown/listbox option by its visible text, and
+ * key sends one real keypress (Escape/Enter/Tab/arrows) to a target or the
+ * currently focused element.
+ *
+ * `navigate` is the one real exception to "verb type alone decides" — see
+ * `isTerminalVerb` below, which is what every real caller should use
+ * instead of checking this Set directly for a `VerbResponse` it already
+ * has in hand. This Set stays the plain type-level classification (still
+ * correct and sufficient everywhere the model's chosen verb TYPE, not its
+ * full response, is all that's available — e.g. CapabilityTier checks).
  */
 export const TERMINAL_VERBS = new Set<Verb>(["explain", "highlight", "open", "navigate", "do", "tour"]);
 
@@ -236,6 +249,11 @@ const COMPANION_FIELDS = {
   args: optionalRecord(),
   steps: optionalUnknownArray(),
   actions: optionalUnknownArray(),
+  continueAfter: optionalBoolean(),
+  /** drag's destination target — a real element id from the same manifest/liveElements lookup as `target`, never a raw coordinate. */
+  to: optionalString(),
+  /** key's keypress — a real key name (Escape, Enter, Tab, ArrowDown, ...), never a raw keycode. */
+  key: optionalString(),
 };
 
 // Same companion-field reasoning as COMPANION_FIELDS above, scoped to just
@@ -250,6 +268,8 @@ const BATCH_ACTION_COMPANION_FIELDS = {
   value: optionalString(),
   name: optionalString(),
   args: optionalRecord(),
+  to: optionalString(),
+  key: optionalString(),
 };
 
 /**
@@ -281,6 +301,30 @@ export const BatchActionSchema = z.discriminatedUnion("verb", [
       args: optionalRecord(),
     })
     .strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("drag"),
+      target: z.string().min(1),
+      to: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("select"),
+      target: z.string().min(1),
+      value: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...BATCH_ACTION_COMPANION_FIELDS,
+      verb: z.literal("key"),
+      target: optionalString(),
+      key: z.string().min(1),
+    })
+    .strict(),
 ]);
 export type BatchAction = z.infer<typeof BatchActionSchema>;
 
@@ -305,6 +349,16 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       ...COMPANION_FIELDS,
       verb: z.literal("navigate"),
       route: z.string().min(1),
+      // Real, live-reported gap this closes: navigate was ALWAYS terminal,
+      // so a genuinely compound goal that starts with navigation ("buy
+      // earbuds" — navigate to the shop, THEN search, THEN report back)
+      // ended the turn the instant it navigated, leaving the rest of the
+      // goal for the user to manually re-prompt one step at a time. Set to
+      // true only when the model itself judges the stated goal needs more
+      // than just arriving at the new page — see isTerminalVerb below,
+      // which is what actually acts on this (inherited from
+      // COMPANION_FIELDS as an optional boolean, same shape every other
+      // per-verb field already uses).
     })
     .strict(),
   z
@@ -397,6 +451,35 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
   z
     .object({
       ...COMPANION_FIELDS,
+      verb: z.literal("drag"),
+      /** The element being dragged — a real id, same lookup as click's target. */
+      target: z.string().min(1),
+      /** The drop destination — a real id, resolved the same way as `target`. */
+      to: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("select"),
+      target: z.string().min(1),
+      /** The option's visible text, never its raw underlying value. */
+      value: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("key"),
+      /** The element to press the key on; omitted means the currently focused element. */
+      target: optionalString(),
+      /** A real key name — Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight. */
+      key: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
       verb: z.literal("batch"),
       /**
        * 2-5 steps, executed in order, each a real target/tool the same as
@@ -414,6 +497,20 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
 ]);
 export type VerbResponse = z.infer<typeof VerbResponseSchema>;
 export type TourStep = Extract<VerbResponse, { verb: "tour" }>["steps"][number];
+
+/**
+ * The real "does this end the turn" check for an actual, resolved
+ * VerbResponse — TERMINAL_VERBS alone for every verb except `navigate`,
+ * which the model can now mark `continueAfter: true` when the stated goal
+ * needs more than just arriving at the new page. Every caller that has a
+ * real VerbResponse in hand (not just a bare verb name) should use this,
+ * not TERMINAL_VERBS.has(verb.verb) directly — agent-loop.ts's shared
+ * driveAgentLoop and index.tsx's realtime WS handler both do.
+ */
+export function isTerminalVerb(verb: VerbResponse): boolean {
+  if (verb.verb === "navigate" && verb.continueAfter) return false;
+  return TERMINAL_VERBS.has(verb.verb);
+}
 
 export const HistoryTurnSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -450,11 +547,30 @@ export type LiveElement = z.infer<typeof LiveElementSchema>;
  * analysis. Absent entirely on the overwhelming majority of sites, which
  * don't have WebMCP yet; call_tool simply never appears as an option then.
  */
+export const WEB_MCP_RISK_TIERS = ["safe", "confirm"] as const;
+export type WebMcpRiskTier = (typeof WEB_MCP_RISK_TIERS)[number];
+
 export const WebMcpToolSchema = z.object({
   name: z.string().max(200),
   description: z.string().max(500),
   /** The tool's own JSON Schema for its arguments, passed through as-is. */
   inputSchema: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Architecture Pillar 6 (the safety layer) — declared by whoever
+   * REGISTERED the tool (the page's own developer, via WebMCP's real
+   * registration call), never something the model can set or claim for
+   * itself — the same "never trust the model, verify against real
+   * registered state" invariant this whole schema already holds for
+   * `name`/`inputSchema`. `"confirm"` means a real-world effect (a
+   * payment, a delete, anything hard to undo) that must be surfaced to
+   * the END USER for a real yes before it executes — see
+   * verb-executor.ts's own `onConfirmTool` handling. Absent/`"safe"`
+   * (the default) means read-only or low-stakes — today's exact
+   * behavior for every tool registered before this field existed, so
+   * this is purely additive, never a breaking change to an existing
+   * WebMCP integration.
+   */
+  riskTier: z.enum(WEB_MCP_RISK_TIERS).optional(),
 });
 export type WebMcpTool = z.infer<typeof WebMcpToolSchema>;
 
@@ -524,3 +640,6 @@ export type AgentEvent = z.infer<typeof AgentEventSchema>;
 // Planner/Progress types (Phase 3 — see plan.ts's own doc comment for why
 // this is a plain re-export, not inlined here: avoids a circular import).
 export * from "./plan";
+export * from "./ui-patterns";
+export * from "./playbooks";
+export * from "./skills";

@@ -16,8 +16,8 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { TERMINAL_VERBS, safeParseVerbResponse, type HistoryTurn as HistoryEntry, type TourStep } from "@cairnvibe/core";
-import { driveAgentLoop } from "./agent-loop";
+import { classifyUiPattern, deriveStructureSignals, isTerminalVerb, safeParseVerbResponse, type CriticVerdict, type HistoryTurn as HistoryEntry, type Plan, type ProgressLedger, type Task, type TourStep, type VerbResponse } from "@cairnvibe/core";
+import { driveAgentLoop, looksMultiStep } from "./agent-loop";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
 import { createLiveElementRegistry } from "./runtime-scan";
@@ -45,6 +45,45 @@ export interface CopilotProps {
   /** If set, the widget speaks each explain/highlight answer aloud (Deepgram TTS via `@cairnvibe/sdk/speak-server`). */
   speakEndpoint?: string;
   /**
+   * Phase 5 step 4 — whatever opaque id the CUSTOMER's own app already
+   * has for this end user (their own login id, or any other stable
+   * string they choose) — this SDK invents no identity of its own, same
+   * discipline as the realtime relay's own "context" message scopeId.
+   * Sent on every typed-transport request when set; the server only ever
+   * seeds/records real cross-session memory when BOTH this and a
+   * `memory` store are configured (`createCopilotHandler`'s own
+   * `memory` option) — omitting this keeps every request exactly as
+   * memory-less as before this existed, regardless of server config.
+   */
+  scopeId?: string;
+  /**
+   * Architecture Pillar 4 — if set (alongside `criticEndpoint`), the typed/
+   * HTTP loop gets the same real Planner the realtime relay already has:
+   * a task breakdown for a compound goal, and a genuinely separate Critic
+   * pass over each continuing step's real result (packages/sdk/src/
+   * server.ts's `createPlanHandler`/`createCriticHandler`). Omitting
+   * either endpoint keeps the typed loop exactly as it was — click/fill/
+   * read/call_tool executed and folded into history, ended by a terminal
+   * verb or the iteration cap — with zero Planner/Critic overhead, same
+   * opt-in discipline as speakEndpoint/transcribeEndpoint.
+   */
+  planEndpoint?: string;
+  /** See `planEndpoint` — both must be set for the typed loop's Planner/Critic wiring to activate. */
+  criticEndpoint?: string;
+  /**
+   * Architecture Pillar 3 (Skill half) — if set (alongside `planEndpoint`/
+   * `criticEndpoint`), the typed loop saves whatever real, Critic-
+   * verified facts a turn collects (`packages/sdk/src/server.ts`'s
+   * `createSkillSaveHandler`) once the turn concludes — the same
+   * Formulator mechanism the realtime relay already has. Retrieval (a
+   * matching Skill's full instructions surfacing to the Planner) needs no
+   * separate client wiring — it's already part of what `planEndpoint`'s
+   * own server-side handler does once a `SkillStore` is configured there.
+   * Omitting this keeps the typed loop exactly as it was — no Skills are
+   * ever saved, zero overhead.
+   */
+  skillsSaveEndpoint?: string;
+  /**
    * If set, shows a "start conversation" control that opens a live
    * WebSocket to a `@cairnvibe/sdk/realtime-server` relay (run via
    * `cairn-realtime`) for a real-time voice conversation: streaming
@@ -65,6 +104,10 @@ export function Copilot({
   reportMissesEndpoint,
   transcribeEndpoint,
   speakEndpoint,
+  scopeId,
+  planEndpoint,
+  criticEndpoint,
+  skillsSaveEndpoint,
   realtimeUrl,
   persona = "Cairn",
 }: CopilotProps) {
@@ -592,6 +635,93 @@ export function Copilot({
   }
 
   /**
+   * Architecture Pillar 6 (the safety layer) — the real, working default
+   * confirmation UI: a native browser confirm dialog, naming the tool's
+   * OWN real name/description (never inventing wording), for a WebMCP
+   * tool whose registration declared `riskTier: "confirm"` (a payment, a
+   * delete, anything hard to undo). `window.confirm` blocks the calling
+   * microtask until the user actually answers — exactly the real,
+   * synchronous "get a genuine yes before this runs" behavior needed
+   * here, and simple enough to need no new UI component for this to be a
+   * real, functioning default rather than just plumbing with nothing on
+   * the other end. A host app wanting a nicer in-widget modal can still
+   * build one — this function is the only thing that would need
+   * replacing to do that.
+   */
+  function confirmToolCall(tool: { name: string; description: string }): Promise<boolean> {
+    if (typeof window === "undefined" || typeof window.confirm !== "function") return Promise.resolve(false);
+    const message = tool.description ? `${tool.name}: ${tool.description}\n\nAllow this action?` : `Allow "${tool.name}"?`;
+    return Promise.resolve(window.confirm(message));
+  }
+
+  /**
+   * Architecture Pillar 4 — the typed transport's own Planner call,
+   * mirroring resolvePlan's real network shape but reached over HTTP
+   * (planEndpoint's server-side handler — createPlanHandler in server.ts
+   * — is the only place that can hold the real LLM API key). Never
+   * throws: any network/parse failure degrades to the exact same single-
+   * task fallback plan resolvePlan itself falls back to on an LLM error,
+   * so a Planner hiccup never blocks the turn.
+   */
+  async function fetchPlan(goal: string, version = 1): Promise<Plan> {
+    try {
+      const res = await fetch(planEndpoint!, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ goal, version }),
+      });
+      const data = await res.json();
+      if (data && typeof data === "object" && Array.isArray((data as Plan).tasks) && (data as Plan).tasks.length > 0) return data as Plan;
+    } catch {
+      // Falls through to the same fallback plan shape below.
+    }
+    return { version, goal, facts: [], tasks: [{ id: "t1", description: goal, doneContract: "The stated goal has been achieved.", status: "in_progress" }] };
+  }
+
+  /** Same real-network shape as fetchPlan, for criticEndpoint's
+   * createCriticHandler — degrades to a safe "continue" verdict on any
+   * failure, same resilience discipline as resolveCritic itself. */
+  async function fetchCriticVerdict(task: Task, goal: string, verb: VerbResponse, observation: string | null | undefined): Promise<CriticVerdict> {
+    try {
+      const res = await fetch(criticEndpoint!, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, goal, verb, observation: observation ?? null }),
+      });
+      const data = await res.json();
+      if (data && typeof (data as CriticVerdict).verdict === "string") return data as CriticVerdict;
+    } catch {
+      // Falls through to the safe default below.
+    }
+    return { verdict: "continue", reasoning: "Critic call failed — defaulting to continue rather than blocking the turn." };
+  }
+
+  /**
+   * Architecture Pillar 3 (Skill half) — the typed transport's own
+   * Formulator save, mirroring realtime-server.ts's own post-turn
+   * `compileSkill`+`saveSkill` call. Fire-and-forget (never awaited by
+   * the caller, never allowed to affect what the user sees) since saving
+   * a Skill is bookkeeping for a FUTURE turn, not part of answering this
+   * one — matches the Formulator's own "cheap, runs once per turn, never
+   * blocks anything" framing. Classifies the current live page for a
+   * best-effort pattern tag the same way resolveVerb's own per-request
+   * classification does server-side.
+   */
+  function saveSkillIfLearned(goal: string, learnedFacts: string[]): void {
+    if (!skillsSaveEndpoint || learnedFacts.length === 0) return;
+    const matches = classifyUiPattern(deriveStructureSignals(liveRegistryRef.current.getSnapshot().elements));
+    void fetch(skillsSaveEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goal, learnedFacts, pattern: matches[0]?.pattern }),
+    }).catch(() => {
+      // A Skill that fails to save just means the next similar goal
+      // starts from scratch again, same as if nothing had been learned
+      // this turn — never worth surfacing as a user-visible error.
+    });
+  }
+
+  /**
    * Drives the agent loop over the stateless HTTP path: ask the server,
    * and if it comes back with a continuing step (click/fill/read/
    * call_tool — TERMINAL_VERBS in @cairnvibe/core says which verbs end a
@@ -614,6 +744,29 @@ export function Copilot({
     const webMcpTools = await discoverWebMcpTools();
     let lastRawResponse: unknown = null;
 
+    // Architecture Pillar 4 — real Planner/Critic wiring for the typed
+    // transport, opt-in via planEndpoint/criticEndpoint (see their own
+    // doc comments on CopilotProps) — closes the gap the plan file names
+    // directly ("the typed/HTTP path has zero Planner/Critic wiring at
+    // all... today explicitly realtime-only by deferral, not by
+    // decision"). Mirrors realtime-server.ts's finalizeTurn: an eager
+    // Planner kickoff when looksMultiStep(q) already flags a probable
+    // compound goal, a lazy fallback kickoff on the first continuing step
+    // otherwise, and a genuinely separate Critic pass over each
+    // continuing step's real result. Neither endpoint set (the default)
+    // means plannerEnabled is false and this whole block is a no-op —
+    // the typed loop behaves exactly as it always has.
+    let planPromise: Promise<Plan> | null = null;
+    let plan: Plan | null = null;
+    let progress: ProgressLedger | null = null;
+    const STALL_THRESHOLD = 3; // same bounded budget realtime's own Critic wiring uses
+    const plannerEnabled = Boolean(planEndpoint && criticEndpoint);
+    if (plannerEnabled && looksMultiStep(q)) planPromise = fetchPlan(q);
+    // Architecture Pillar 3 (Skill half) — every real, Critic-verified
+    // learnedFact from this turn's steps; saved once the turn concludes,
+    // below (saveSkillIfLearned). Empty is the common case, not a gap.
+    const learnedFacts: string[] = [];
+
     const result = await driveAgentLoop(historyRef.current, {
       async getNextStep(loopHistory) {
         const liveScan = liveRegistryRef.current.getSnapshot();
@@ -622,12 +775,18 @@ export function Copilot({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            route: pathname,
+            // pathnameRef, not the closed-over `pathname` — a navigate
+            // step (now possibly continuing, see isTerminalVerb) can
+            // change the real route mid-loop; this whole async function's
+            // own `pathname` closure was captured once, at the render
+            // that started this turn, and never updates again on its own.
+            route: pathnameRef.current,
             question: q,
             visible: collectVisible(),
             history: loopHistory,
             liveElements: liveScan.elements,
             webMcpTools,
+            scopeId,
           }),
         });
         const data = await res.json().catch(() => null);
@@ -645,6 +804,10 @@ export function Copilot({
           setAnswer(summarizeVerbForHistory(verb));
           setLoopWorking(true);
         }
+        // The lazy fallback — only fires when looksMultiStep missed
+        // (planPromise is still null): a real Plan is still guaranteed
+        // before the Critic needs one, just one round trip later.
+        if (!terminal && plannerEnabled && !planPromise) planPromise = fetchPlan(q);
         return false;
       },
       // Same real, live-found fix as the realtime WS "verb" handler's own
@@ -652,10 +815,64 @@ export function Copilot({
       // frozen liveMapRef, so a step that reveals new DOM (a click that
       // opens a modal) doesn't leave the NEXT step unable to find
       // anything in it.
-      executeStep: (verb) => executeToolStep(verb, pathname, liveRegistryRef.current.getSnapshot().byId).then((r) => r?.observation),
+      executeStep: (verb) => executeToolStep(verb, pathnameRef.current, liveRegistryRef.current.getSnapshot().byId, (route) => router.push(route), confirmToolCall).then((r) => r?.observation),
+      runCritic: plannerEnabled
+        ? async ({ verb, observation }) => {
+            // Real state, not the Executor's self-report — see
+            // resolveCritic's own doc comment (server.ts) for why this is
+            // a genuinely separate pass, same precedent realtime already
+            // established.
+            if (!plan) {
+              plan = planPromise ? await planPromise : await fetchPlan(q);
+              progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
+            }
+            const currentProgress = progress!;
+            const currentTask = plan.tasks[currentProgress.currentTaskIndex];
+            const verdict = await fetchCriticVerdict(currentTask, q, verb, observation);
+            if (verdict.learnedFact) learnedFacts.push(verdict.learnedFact);
+
+            if (verdict.verdict === "task_complete") {
+              currentTask.status = "done";
+              if (currentProgress.currentTaskIndex < plan.tasks.length - 1) {
+                // More tasks remain — advance and keep looping instead of
+                // ending the turn here.
+                currentProgress.currentTaskIndex++;
+                plan.tasks[currentProgress.currentTaskIndex].status = "in_progress";
+                currentProgress.stallCount = 0;
+                return { ...verdict, verdict: "continue" };
+              }
+              // The last task is genuinely done — end the loop right here
+              // instead of asking the model again and hoping it notices.
+              return verdict;
+            }
+
+            if (verdict.verdict === "replan") {
+              plan = await fetchPlan(q, plan.version + 1);
+              progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
+              return { ...verdict, verdict: "continue" };
+            }
+
+            if (verdict.verdict === "give_up") return verdict;
+
+            // "continue" — a harness-enforced fail-safe on top of the
+            // Critic's own judgment, same Magentic-One-shaped two-tier
+            // tolerance realtime already uses.
+            currentProgress.stallCount++;
+            if (currentProgress.stallCount >= STALL_THRESHOLD) {
+              return {
+                verdict: "give_up",
+                reasoning: `Stuck after ${currentProgress.stallCount} steps with no confirmed progress on "${currentTask.description}" — ${verdict.reasoning}`,
+              };
+            }
+            return verdict;
+          }
+        : undefined,
     });
 
-    if (result.outcome === "terminal" || result.outcome === "unparseable") {
+    // Architecture Pillar 3 (Skill half) — the Formulator, once per turn.
+    saveSkillIfLearned(q, learnedFacts);
+
+    if (result.outcome === "terminal" || result.outcome === "unparseable" || result.outcome === "critic-complete") {
       // A realtime call can start WHILE this whole typed loop (potentially
       // several real fetches deep) was still in flight — applying this
       // reply now would overwrite the live call's own answer with a
@@ -665,10 +882,18 @@ export function Copilot({
       // typedPlaybackSuspendedRef's own doc comment) — this is the
       // matching guard for the TEXT half, which would otherwise still
       // leak through even with the audio silenced.
+      // The Critic independently confirmed the last task's doneContract
+      // is satisfied even though the model's own verb never got there —
+      // real fix for the diagnosed bug (a batch succeeded and the model
+      // kept looping instead of recognizing it). No raw server response
+      // exists for this synthesized verb (it never came from `endpoint`
+      // at all), so it's built directly from the verdict's own reasoning
+      // — same shape realtime-server.ts synthesizes for the same outcome.
+      const raw: unknown = result.outcome === "critic-complete" ? { verb: "explain", text: result.verdict.reasoning } : lastRawResponse;
       if (typedPlaybackSuspendedRef.current) {
         rtLog("dropping stale typed reply's text — a realtime call started while it was still in flight");
       } else {
-        handleVerb(lastRawResponse);
+        handleVerb(raw);
       }
       // Unlike the realtime relay (one persistent connection, memory
       // lives server-side), each of these POSTs is stateless — the
@@ -685,18 +910,24 @@ export function Copilot({
       historyRef.current = [
         ...result.workingHistory,
         { role: "user", text: q } satisfies HistoryEntry,
-        { role: "assistant", text: summarizeVerbForHistory(lastRawResponse) } satisfies HistoryEntry,
+        { role: "assistant", text: summarizeVerbForHistory(raw) } satisfies HistoryEntry,
       ].slice(-MAX_HISTORY_TURNS);
       return;
     }
 
-    // "gave-up" — the iteration cap was hit with no terminal verb.
+    // "gave-up" (iteration cap hit with no terminal verb) OR "critic-give-up"
+    // (the Critic/stall fail-safe decided continuing wouldn't help — its
+    // own reasoning is a genuinely better message than the generic
+    // fallback, same as realtime-server.ts's own finalizeTurn).
+    const giveUpText =
+      result.outcome === "critic-give-up" ? result.verdict.reasoning : "I wasn't able to finish that — try asking again or breaking it into smaller steps.";
+    const gaveUpSummary = result.outcome === "critic-give-up" ? giveUpText : "(gave up after too many steps)";
     setLoopWorking(false);
-    setAnswer("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
+    setAnswer(giveUpText);
     historyRef.current = [
       ...result.workingHistory,
       { role: "user", text: q } satisfies HistoryEntry,
-      { role: "assistant", text: "(gave up after too many steps)" } satisfies HistoryEntry,
+      { role: "assistant", text: gaveUpSummary } satisfies HistoryEntry,
     ].slice(-MAX_HISTORY_TURNS);
   }
 
@@ -1294,7 +1525,7 @@ export function Copilot({
           if (isStaleRtMessage(msg)) return; // belongs to a turn a later "final" already superseded
           rtLog("verb received", { verb: msg.verb?.verb, generation: msg.generation });
           const parsedStep = safeParseVerbResponse(msg.verb);
-          if (parsedStep && !TERMINAL_VERBS.has(parsedStep.verb)) {
+          if (parsedStep && !isTerminalVerb(parsedStep)) {
             // A continuing agent-loop step (click/fill/read/call_tool) —
             // the turn isn't over: execute it for real and report the
             // result back so the server can decide the next step, instead
@@ -1321,7 +1552,7 @@ export function Copilot({
             // find that element on the page" — confirmed live, repeated
             // 5+ times in a row without ever recovering.
             const freshLiveMap = liveRegistryRef.current.getSnapshot().byId;
-            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap).then((result) => {
+            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap, (route) => router.push(route), confirmToolCall).then((result) => {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "tool_result", observation: result?.observation ?? "no result" }));
               }
@@ -1671,6 +1902,12 @@ function summarizeVerbForHistory(raw: unknown): string {
       return `(read ${String(v.target)})`;
     case "call_tool":
       return `(called ${String(v.name)})`;
+    case "drag":
+      return `(dragged ${String(v.target)} to ${String(v.to)})`;
+    case "select":
+      return `(selected "${String(v.value)}" in ${String(v.target)})`;
+    case "key":
+      return `(pressed ${String(v.key)}${v.target ? ` on ${String(v.target)}` : ""})`;
     case "batch":
       return Array.isArray(v.actions) ? `(${v.actions.length} steps: ${v.actions.map((a: { verb?: string }) => a.verb).join(", ")})` : "(batch)";
     default:

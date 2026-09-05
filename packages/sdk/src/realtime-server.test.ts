@@ -1,9 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
-import type { HistoryTurn, Manifest } from "@cairnvibe/core";
+import type { HistoryTurn, Manifest, Skill } from "@cairnvibe/core";
 import type { VerbLLM } from "./server";
 import { formatRememberedFacts, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
 import type { MemoryTurnRecord } from "./memory-sqlite";
+import type { SkillStore } from "./skill-store";
+
+function fakeSkillStore(): { store: SkillStore; saved: { scopeId: string; skill: Skill }[] } {
+  const saved: { scopeId: string; skill: Skill }[] = [];
+  const bySkope = new Map<string, Map<string, Skill>>();
+  const store: SkillStore = {
+    saveSkill(scopeId, skill) {
+      saved.push({ scopeId, skill });
+      if (!bySkope.has(scopeId)) bySkope.set(scopeId, new Map());
+      bySkope.get(scopeId)!.set(skill.id, skill);
+    },
+    listSkillSummaries(scopeId) {
+      return Array.from(bySkope.get(scopeId)?.values() ?? []).map((s) => ({ id: s.id, name: s.name, description: s.description, pattern: s.pattern }));
+    },
+    getSkill(scopeId, id) {
+      return bySkope.get(scopeId)?.get(id) ?? null;
+    },
+  };
+  return { store, saved };
+}
 
 const manifest: Manifest = {
   version: "1",
@@ -43,6 +63,9 @@ function fakeMemoryStore() {
     recallFacts: vi.fn().mockReturnValue({}),
     recordTurn: vi.fn(),
     recentTurns: vi.fn().mockReturnValue([]),
+    searchTurns: vi.fn().mockReturnValue([]),
+    archiveFact: vi.fn(),
+    recallArchivedFacts: vi.fn().mockReturnValue({}),
   };
 }
 
@@ -211,6 +234,50 @@ describe("handleDeepgramMessage", () => {
     expect(respond).toHaveBeenCalledTimes(2); // resolveVerb called again after the in-process "tool result", same as any other continuing step
     const verbMessages = sent.filter((m: any) => m.type === "verb");
     expect(verbMessages.every((m: any) => !(m.verb.verb === "call_tool" && m.verb.name === "remember_fact"))).toBe(true);
+  });
+
+  it("Architecture Pillar 5: a real Archive-tier match is surfaced to the model as part of this turn's own working history", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "ok" });
+    const deps = fakeDeps(respond);
+    const memory = fakeMemoryStore();
+    memory.recallArchivedFacts.mockReturnValue({ flakySelector: "the old checkout button was unreliable" });
+    deps.memory = memory;
+    const history: HistoryTurn[] = [];
+
+    await handleDeepgramMessage(
+      resultsMessage("was there ever a flaky selector issue?", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      history,
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(memory.recallArchivedFacts).toHaveBeenCalledWith("user-1", "was there ever a flaky selector issue?");
+    // The real point of the ephemeral placement — never leaks into the
+    // connection's own persistent history array once the turn is done.
+    expect(history.some((h) => h.text.includes("archived memory"))).toBe(false);
+    expect(history).toEqual([
+      { role: "user", text: "was there ever a flaky selector issue?" },
+      { role: "assistant", text: "ok" },
+    ]);
+  });
+
+  it("Architecture Pillar 5: no Archive match, or no scopeId yet, means no extra context and no crash", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "ok" });
+    const deps = fakeDeps(respond);
+    deps.memory = fakeMemoryStore(); // recallArchivedFacts defaults to {}
+
+    await expect(
+      handleDeepgramMessage(resultsMessage("hi", { isFinal: true, speechFinal: true }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
+    ).resolves.not.toThrow();
   });
 
   it("Phase 5 step 2: remember_fact is offered to the model only when memory AND a scopeId are both present", async () => {
@@ -717,6 +784,91 @@ describe("handleDeepgramMessage", () => {
     expect(speakStreamed).toHaveBeenNthCalledWith(2, "Here's what I found.");
   });
 
+  it("Architecture Pillar 4: a transcript that looksMultiStep starts the Planner call immediately, in parallel with the FIRST step — not gated on that step already coming back non-terminal", async () => {
+    const { client } = fakeClient();
+    let verbCalls = 0;
+    let resolveFirstVerb: (v: unknown) => void = () => {};
+    const firstVerbGate = new Promise((resolve) => {
+      resolveFirstVerb = resolve;
+    });
+    const respond = vi.fn().mockImplementation(async () => {
+      verbCalls++;
+      if (verbCalls === 1) return firstVerbGate; // deliberately never resolves until the test says so
+      return { verb: "explain", text: "done" };
+    });
+    const deps = fakeDeps(respond);
+    let planCalled = false;
+    deps.planLLM = {
+      respond: async () => {
+        planCalled = true;
+        return { goal: "check the price and then buy it", facts: [], tasks: [{ id: "t1", description: "check then buy", doneContract: "bought" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    const turnPromise = handleDeepgramMessage(
+      resultsMessage("check the price and then buy it", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    // Give real microtasks a chance to run WITHOUT ever resolving the
+    // first verb call — proves the Planner started even though the first
+    // step is still genuinely pending, not merely "started fast".
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(planCalled).toBe(true);
+
+    resolveFirstVerb({ verb: "read", target: "archive-btn" });
+    await turnPromise;
+  });
+
+  it("Architecture Pillar 4: a transcript that does NOT looksMultiStep still gets a Planner call, just via the lazy fallback once the first step reveals it's non-terminal", async () => {
+    const { client } = fakeClient();
+    let verbCalls = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      verbCalls++;
+      if (verbCalls === 1) return { verb: "read", target: "archive-btn" };
+      return { verb: "explain", text: "done" };
+    });
+    const deps = fakeDeps(respond);
+    let planCalls = 0;
+    deps.planLLM = {
+      respond: async () => {
+        planCalls++;
+        return { goal: "what does this button say", facts: [], tasks: [{ id: "t1", description: "check the button", doneContract: "checked" }] };
+      },
+    };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("some value");
+
+    await handleDeepgramMessage(
+      resultsMessage("what does this button say", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(planCalls).toBe(1); // still exactly one real Planner call — just started one step later
+  });
+
   it("Phase 4 step 3: the real Planner call carries the connection's real manifest — page directory and data-shape names, not just the bare transcript", async () => {
     const { client } = fakeClient();
     let call = 0;
@@ -881,6 +1033,140 @@ describe("handleDeepgramMessage", () => {
     ]);
     const verbMessages = sent.filter((m: any) => m.type === "verb");
     expect(verbMessages).toHaveLength(1); // only the batch itself was ever sent — no synthetic second verb message
+  });
+
+  it("Architecture Pillar 3 (Skill half): a task_complete verdict carrying a real learnedFact gets compiled and saved as a real Skill once the turn concludes", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "click", target: "archive-btn" });
+    const deps = fakeDeps(respond);
+    deps.planLLM = { respond: async () => ({ goal: "archive the invoice", facts: [], tasks: [{ id: "t1", description: "Archive the invoice", doneContract: "The invoice shows status Archived" }] }) };
+    deps.criticLLM = {
+      respond: async () => ({
+        verdict: "task_complete",
+        reasoning: "The invoice now shows status Archived.",
+        learnedFact: "Archiving a row requires clicking its own real Archive button, not a bulk action.",
+      }),
+    };
+    const { store: skills, saved } = fakeSkillStore();
+    deps.skills = skills;
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("Archived");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].scopeId).toBe("default");
+    expect(saved[0].skill.instructions).toContain("requires clicking its own real Archive button");
+    expect(saved[0].skill.name).toBe("archive the invoice");
+  });
+
+  it("Architecture Pillar 3 (Skill half): no learnedFact reported means nothing gets saved — the common case, not a gap", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "click", target: "archive-btn" });
+    const deps = fakeDeps(respond);
+    deps.planLLM = { respond: async () => ({ goal: "archive the invoice", facts: [], tasks: [{ id: "t1", description: "Archive the invoice", doneContract: "The invoice shows status Archived" }] }) };
+    deps.criticLLM = { respond: async () => ({ verdict: "task_complete", reasoning: "Done." }) };
+    const { store: skills, saved } = fakeSkillStore();
+    deps.skills = skills;
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("Archived");
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    expect(saved).toHaveLength(0);
+  });
+
+  it("Architecture Pillar 3 (Skill half): no SkillStore configured means zero overhead — no crash, nothing saved, unchanged behavior", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "click", target: "archive-btn" });
+    const deps = fakeDeps(respond); // deps.skills left unset
+    deps.planLLM = { respond: async () => ({ goal: "archive the invoice", facts: [], tasks: [{ id: "t1", description: "Archive the invoice", doneContract: "The invoice shows status Archived" }] }) };
+    deps.criticLLM = { respond: async () => ({ verdict: "task_complete", reasoning: "Done.", learnedFact: "Some fact." }) };
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("Archived");
+
+    await expect(
+      handleDeepgramMessage(
+        resultsMessage("archive the invoice", { isFinal: true, speechFinal: true }),
+        client,
+        deps,
+        getContextWithArchiveBtn,
+        speakStreamed,
+        history,
+        turnState,
+        () => 0,
+        waitForToolResult,
+      ),
+    ).resolves.not.toThrow();
+  });
+
+  it("Architecture Pillar 3 (Skill half): a previously-learned Skill matching the new goal surfaces its full instructions to the Planner", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Connected." });
+    const deps = fakeDeps(respond);
+    let seenPlannerUserMessage = "";
+    deps.planLLM = {
+      respond: async (_systemPrompt, userMessage) => {
+        seenPlannerUserMessage = userMessage;
+        return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+      },
+    };
+    const { store: skills } = fakeSkillStore();
+    skills.saveSkill("default", {
+      id: "connect-nodes",
+      name: "Connect the trigger to the email action",
+      description: "The canvas connects nodes via a dropdown, not a drag gesture.",
+      instructions: "The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.",
+      pattern: "canvas",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    deps.skills = skills;
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const waitForToolResult = vi.fn().mockResolvedValue("v");
+
+    await handleDeepgramMessage(
+      resultsMessage("connect the webhook node to the slack action and then run it", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      speakStreamed,
+      history,
+      turnState,
+      () => 0,
+      waitForToolResult,
+    );
+
+    const parsed = JSON.parse(seenPlannerUserMessage);
+    expect(parsed.skills).toContain("Connect the trigger to the email action");
+    expect(parsed.suggestedSkill).toContain("connects to");
   });
 
   it("Phase 3 step 3: a give_up Critic verdict ends the turn early with its own real reasoning, distinct from the generic iteration-cap message", async () => {

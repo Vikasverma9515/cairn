@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findElementWithRetry, waitForDomSettle } from "./element-ladder";
+import { dragElement, findElementWithRetry, pressKey, selectOption, waitForDomSettle } from "./element-ladder";
 
 describe("findElementWithRetry (Phase 3 step 4 — bounded, LLM-free Executor retry)", () => {
   it("real positive case: a transient miss (element not yet in the snapshot) recovers on the retry once it becomes available — the exact 'stale re-render' shape this exists to handle", async () => {
@@ -182,5 +182,159 @@ describe("waitForDomSettle — real bug this closes: fill/click reported 'done' 
     await vi.advanceTimersByTimeAsync(102);
     await promise;
     expect(FakeMutationObserver.instances[0].disconnected).toBe(true);
+  });
+});
+
+describe("selectOption — Pillar 1's select verb", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function fakeSelect(optionPairs: { text: string; value: string }[]) {
+    return {
+      tagName: "SELECT",
+      value: "",
+      options: optionPairs.map((o) => ({ textContent: o.text, value: o.value })),
+      dispatchEvent: vi.fn(),
+    } as unknown as HTMLSelectElement;
+  }
+
+  it("native select: sets .value to the matching option's real value and fires input+change, matched by exact visible text", () => {
+    const select = fakeSelect([
+      { text: "Paid", value: "PAID" },
+      { text: "Overdue", value: "OVERDUE" },
+    ]);
+    expect(selectOption(select, "Overdue")).toBe(true);
+    expect(select.value).toBe("OVERDUE");
+    expect(select.dispatchEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("native select: falls back to a substring match when no option's text matches exactly", () => {
+    const select = fakeSelect([{ text: "Overdue (3 invoices)", value: "OVERDUE" }]);
+    expect(selectOption(select, "Overdue")).toBe(true);
+    expect(select.value).toBe("OVERDUE");
+  });
+
+  it("native select: reports failure instead of guessing when nothing matches", () => {
+    const select = fakeSelect([{ text: "Paid", value: "PAID" }]);
+    expect(selectOption(select, "Cancelled")).toBe(false);
+  });
+
+  it("custom listbox (role=option descendants): clicks the matching option instead of setting .value", () => {
+    const optionA = { textContent: "Small", click: vi.fn() };
+    const optionB = { textContent: "Large", click: vi.fn() };
+    const el = {
+      tagName: "DIV",
+      querySelectorAll: vi.fn(() => [optionA, optionB]),
+    } as unknown as HTMLElement;
+    expect(selectOption(el, "Large")).toBe(true);
+    expect(optionB.click).toHaveBeenCalledTimes(1);
+    expect(optionA.click).not.toHaveBeenCalled();
+  });
+
+  it("custom listbox: reports failure when no descendant's text matches", () => {
+    const el = {
+      tagName: "DIV",
+      querySelectorAll: vi.fn(() => []),
+    } as unknown as HTMLElement;
+    expect(selectOption(el, "Anything")).toBe(false);
+  });
+});
+
+describe("dragElement — Pillar 1's drag verb, the concrete fix for canvas/kanban/sortable-list platforms", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Hand-rolled stand-ins, same reasoning as FakeMutationObserver above —
+  // Node has no real MouseEvent/PointerEvent constructors at all (unlike
+  // Event, which Node does provide), so real browser code exercising them
+  // needs a fake to run under this repo's plain-Node test environment.
+  class FakeMouseEvent {
+    type: string;
+    clientX: number;
+    clientY: number;
+    constructor(type: string, opts: { clientX: number; clientY: number }) {
+      this.type = type;
+      this.clientX = opts.clientX;
+      this.clientY = opts.clientY;
+    }
+  }
+  class FakePointerEvent extends FakeMouseEvent {}
+
+  function fakeDraggable(rect: { left: number; top: number; width: number; height: number }) {
+    return {
+      getBoundingClientRect: () => rect,
+      dispatchEvent: vi.fn(),
+    } as unknown as HTMLElement;
+  }
+
+  it("fires a real mousedown -> mousemove(s) -> mouseup sequence from the source's center to the destination's center", () => {
+    vi.stubGlobal("MouseEvent", FakeMouseEvent);
+    const from = fakeDraggable({ left: 0, top: 0, width: 20, height: 20 }); // center (10, 10)
+    const to = fakeDraggable({ left: 100, top: 100, width: 20, height: 20 }); // center (110, 110)
+
+    dragElement(from, to, 2);
+
+    const fromEvents = (from.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as FakeMouseEvent);
+    const toEvents = (to.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as FakeMouseEvent);
+
+    expect(fromEvents[0].type).toBe("mousedown");
+    expect(fromEvents[0].clientX).toBe(10);
+    expect(fromEvents[0].clientY).toBe(10);
+    // Last mousemove and the mouseup both land on the real destination center.
+    expect(toEvents.some((e) => e.type === "mousemove" && e.clientX === 110 && e.clientY === 110)).toBe(true);
+    expect(toEvents.some((e) => e.type === "mouseup" && e.clientX === 110 && e.clientY === 110)).toBe(true);
+  });
+
+  it("also fires the pointer-event variant when PointerEvent exists — for canvas libraries (dnd-kit, n8n-style editors) that only listen for those", () => {
+    vi.stubGlobal("MouseEvent", FakeMouseEvent);
+    vi.stubGlobal("PointerEvent", FakePointerEvent);
+    const from = fakeDraggable({ left: 0, top: 0, width: 10, height: 10 });
+    const to = fakeDraggable({ left: 50, top: 50, width: 10, height: 10 });
+
+    dragElement(from, to, 1);
+
+    const fromEvents = (from.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as FakeMouseEvent);
+    expect(fromEvents.some((e) => e.type === "pointerdown")).toBe(true);
+    expect(fromEvents.some((e) => e.type === "mousedown")).toBe(true);
+  });
+
+  it("skips pointer events entirely when PointerEvent isn't available — never throws", () => {
+    vi.stubGlobal("MouseEvent", FakeMouseEvent);
+    const from = fakeDraggable({ left: 0, top: 0, width: 10, height: 10 });
+    const to = fakeDraggable({ left: 50, top: 50, width: 10, height: 10 });
+    expect(() => dragElement(from, to, 1)).not.toThrow();
+  });
+});
+
+describe("pressKey — Pillar 1's key verb", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  class FakeKeyboardEvent {
+    type: string;
+    key: string;
+    constructor(type: string, opts: { key: string }) {
+      this.type = type;
+      this.key = opts.key;
+    }
+  }
+
+  function fakeFocusable() {
+    return { focus: vi.fn(), dispatchEvent: vi.fn() } as unknown as HTMLElement;
+  }
+
+  it("focuses the target first, then fires a real keydown/keyup pair", () => {
+    vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
+    const el = fakeFocusable();
+    pressKey(el, "Escape");
+    expect(el.focus).toHaveBeenCalledTimes(1);
+    const events = (el.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as FakeKeyboardEvent);
+    expect(events.map((e) => e.type)).toEqual(["keydown", "keyup"]);
+    expect(events.every((e) => e.key === "Escape")).toBe(true);
+  });
+
+  it("Enter/Tab also fire a keypress in between, matching real browser behavior — pure navigation keys (arrows) don't get one", () => {
+    vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
+    const el = fakeFocusable();
+    pressKey(el, "Enter");
+    const types = (el.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as FakeKeyboardEvent).type);
+    expect(types).toEqual(["keydown", "keypress", "keyup"]);
   });
 });

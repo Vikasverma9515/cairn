@@ -1,13 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { VerbResponseSchema, type Manifest, type Task } from "@cairnvibe/core";
+import { VerbResponseSchema, type Manifest, type SkillSummary, type Task } from "@cairnvibe/core";
 import {
   AnthropicStreamingTextLLM,
   AnthropicVerbLLM,
   GroqStreamingTextLLM,
   GroqVerbLLM,
   buildVerbToolSchema,
+  compileSkill,
   createCopilotHandlerWithLLM,
+  createCriticHandlerWithLLM,
+  createPlanHandlerWithLLM,
+  createSkillSaveHandler,
+  matchSkillByGoal,
   renderRegisteredActions,
+  renderSkillSummaries,
   resolveCritic,
   resolvePlan,
   type GroqLikeClient,
@@ -94,6 +100,9 @@ function fakeMemoryStore() {
     recallFacts: vi.fn().mockReturnValue({}),
     recordTurn: vi.fn(),
     recentTurns: vi.fn().mockReturnValue([]),
+    searchTurns: vi.fn().mockReturnValue([]),
+    archiveFact: vi.fn(),
+    recallArchivedFacts: vi.fn().mockReturnValue({}),
   };
 }
 
@@ -175,6 +184,37 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(memory.recentTurns).not.toHaveBeenCalled();
     const seenHistory = JSON.parse(calls[0].userMessage).history;
     expect(seenHistory).toEqual([{ role: "user", text: "archive the first invoice" }, { role: "assistant", text: "done" }]);
+  });
+
+  // Architecture Pillar 5 — the Archive tier, checked on EVERY request.
+  it("Architecture Pillar 5: a real match in the Archive tier is surfaced to the model, distinct from Core facts", async () => {
+    const memory = fakeMemoryStore();
+    memory.recallArchivedFacts.mockReturnValue({ flakySelector: "the old checkout button was unreliable" });
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({
+      route: "/invoices",
+      question: "was there ever a flaky selector issue?",
+      visible: [],
+      scopeId: "end-user-1",
+      history: [{ role: "user", text: "hi" }], // non-empty — this is an ONGOING session, not a fresh one
+    });
+
+    expect(memory.recallArchivedFacts).toHaveBeenCalledWith("end-user-1", "was there ever a flaky selector issue?");
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory.at(-1)).toEqual({ role: "assistant", text: "Also found in older, archived memory (relevant to this question): flakySelector — the old checkout button was unreliable." });
+  });
+
+  it("Architecture Pillar 5: no Archive match means no extra history entry at all", async () => {
+    const memory = fakeMemoryStore(); // recallArchivedFacts defaults to {}
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({ route: "/invoices", question: "what is this page for?", visible: [], scopeId: "end-user-1", history: [{ role: "user", text: "hi" }] });
+
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory).toEqual([{ role: "user", text: "hi" }]);
   });
 
   it("Phase 5 step 4: a terminal verb is recorded to memory with the real question and real answer", async () => {
@@ -327,6 +367,44 @@ describe("createCopilotHandlerWithLLM", () => {
     expect((result.body as { verb: string }).verb).toBe("explain");
   });
 
+  it("drag: real target and destination ids both pass through; either being invented is refused", async () => {
+    const okHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "drag", target: "create-invoice", to: "start-call" }));
+    const okResult = await okHandler({ route: "/invoices", question: "drag that onto the call button", visible: [] });
+    expect(okResult.body).toEqual({ verb: "drag", target: "create-invoice", to: "start-call" });
+
+    const badFrom = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "drag", target: "made-up-id", to: "start-call" }));
+    const badFromResult = await badFrom({ route: "/invoices", question: "drag it", visible: [] });
+    expect((badFromResult.body as { verb: string }).verb).toBe("explain");
+
+    const badTo = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "drag", target: "create-invoice", to: "made-up-id" }));
+    const badToResult = await badTo({ route: "/invoices", question: "drag it", visible: [] });
+    expect((badToResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("select: a real target passes through; an unknown one is refused", async () => {
+    const okHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "select", target: "create-invoice", value: "Overdue" }));
+    const okResult = await okHandler({ route: "/invoices", question: "set the status", visible: [] });
+    expect(okResult.body).toEqual({ verb: "select", target: "create-invoice", value: "Overdue" });
+
+    const badHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "select", target: "made-up-id", value: "Overdue" }));
+    const badResult = await badHandler({ route: "/invoices", question: "set the status", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("key: a real target passes through, an omitted target (currently-focused element) is allowed, an unknown target is refused", async () => {
+    const withTarget = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "key", target: "create-invoice", key: "Escape" }));
+    const withTargetResult = await withTarget({ route: "/invoices", question: "press escape on it", visible: [] });
+    expect(withTargetResult.body).toEqual({ verb: "key", target: "create-invoice", key: "Escape" });
+
+    const noTarget = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "key", key: "Enter" }));
+    const noTargetResult = await noTarget({ route: "/invoices", question: "press enter", visible: [] });
+    expect(noTargetResult.body).toEqual({ verb: "key", key: "Enter" });
+
+    const badHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "key", target: "made-up-id", key: "Enter" }));
+    const badResult = await badHandler({ route: "/invoices", question: "press enter on it", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
   it("call_tool: a real WebMCP tool name from this exact request passes through", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,
@@ -401,6 +479,35 @@ describe("createCopilotHandlerWithLLM", () => {
       liveElements: [{ id: "live-3", role: "button", label: "tel-jBU07k_CX74V" }],
     });
     expect((result.body as { verb: string }).verb).toBe("batch");
+  });
+
+  it("batch: drag/select/key steps are validated the same real way as click/fill/read", async () => {
+    const okHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "drag", target: "create-invoice", to: "start-call" },
+          { verb: "select", target: "create-invoice", value: "Overdue" },
+          { verb: "key", key: "Enter" },
+        ],
+      }),
+    );
+    const okResult = await okHandler({ route: "/invoices", question: "do the sequence", visible: [] });
+    expect((okResult.body as { verb: string }).verb).toBe("batch");
+
+    const badHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "drag", target: "create-invoice", to: "made-up-id" },
+          { verb: "select", target: "create-invoice", value: "Overdue" },
+        ],
+      }),
+    );
+    const badResult = await badHandler({ route: "/invoices", question: "do the sequence", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
   });
 
   it("capability 'act' is the only tier that allows batch — explain and guide refuse it, same as fill/call_tool", async () => {
@@ -665,6 +772,60 @@ describe("createCopilotHandlerWithLLM", () => {
 
     expect(calls[0].systemPrompt).not.toContain('"Paid" | "Overdue" | "Archived"');
     expect(calls[0].systemPrompt).toContain("currentPageDataShapes"); // documented as a concept, just not populated here
+  });
+
+  // Architecture Pillar 2 — classified from the SAME liveElements this
+  // request already carries, no new client wiring needed.
+  it("real liveElements matching a known UI pattern add a suggestedApproach hint to the request payload", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({
+      route: "/invoices",
+      question: "what can I do here?",
+      visible: [],
+      liveElements: [
+        { id: "archive-1", role: "button", label: "Archive" },
+        { id: "archive-2", role: "button", label: "Archive" },
+      ],
+    });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.suggestedApproach).toContain("row");
+  });
+
+  it("liveElements matching no known pattern omit suggestedApproach entirely — never a forced, wrong hint", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({
+      route: "/invoices",
+      question: "what is this?",
+      visible: [],
+      liveElements: [{ id: "about", role: "a", label: "About us" }],
+    });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.suggestedApproach).toBeUndefined();
+  });
+
+  it("no liveElements at all (a page with none, or an older client) also omits suggestedApproach, never crashes", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what is this?", visible: [] });
+
+    const parsed = JSON.parse(calls[0].userMessage);
+    expect(parsed.suggestedApproach).toBeUndefined();
+  });
+
+  it("suggestedApproach is documented in the system prompt as a real, named field", async () => {
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+
+    await handler({ route: "/invoices", question: "what is this?", visible: [] });
+
+    expect(calls[0].systemPrompt).toContain("suggestedApproach");
   });
 
   // Phase 4 step 4 — registeredActions was the weakest-typed of Cairn's
@@ -1341,6 +1502,59 @@ describe("buildVerbToolSchema", () => {
     expect(schema.properties.steps.type).toEqual(["array", "null"]);
   });
 
+  // Real, live-reported gap this closes: navigate was ALWAYS terminal, so
+  // "buy earbuds" ended the turn the instant it navigated, never letting
+  // the loop search or report back. See isTerminalVerb in @cairnvibe/core.
+  it("declares a nullable continueAfter property, for navigate's own compound-goal escape hatch", () => {
+    const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown }> };
+    expect(schema.properties.continueAfter.type).toEqual(["boolean", "null"]);
+  });
+
+  it("declares nullable 'to' and 'key' properties, for drag's destination and key's keypress", () => {
+    const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown }> };
+    expect(schema.properties.to.type).toEqual(["string", "null"]);
+    expect(schema.properties.key.type).toEqual(["string", "null"]);
+  });
+
+  it("the batch actions enum includes drag/select/key alongside the original four, with 'to'/'key' properties declared", () => {
+    const schema = buildVerbToolSchema([]) as {
+      properties: { actions: { items: { properties: { verb: { enum: string[] }; to: { type: unknown }; key: { type: unknown } } } } };
+    };
+    expect(schema.properties.actions.items.properties.verb.enum).toEqual(["click", "fill", "read", "call_tool", "drag", "select", "key"]);
+    expect(schema.properties.actions.items.properties.to.type).toEqual(["string", "null"]);
+    expect(schema.properties.actions.items.properties.key.type).toEqual(["string", "null"]);
+  });
+
+  it("a flat drag/select/key response round-trips through VerbResponseSchema, same companion-null treatment as every other verb", () => {
+    const flatDrag = { verb: "drag", target: "node-a", to: "node-b", text: null, route: null, action: null, value: null, name: null, args: null, steps: null, key: null };
+    expect(VerbResponseSchema.safeParse(flatDrag)).toEqual({ success: true, data: { verb: "drag", target: "node-a", to: "node-b" } });
+
+    const flatSelect = { verb: "select", target: "status-dropdown", value: "Overdue", text: null, route: null, action: null, name: null, args: null, steps: null, to: null, key: null };
+    expect(VerbResponseSchema.safeParse(flatSelect)).toEqual({ success: true, data: { verb: "select", target: "status-dropdown", value: "Overdue" } });
+
+    const flatKey = { verb: "key", key: "Enter", target: null, text: null, route: null, action: null, value: null, name: null, args: null, steps: null, to: null };
+    expect(VerbResponseSchema.safeParse(flatKey)).toEqual({ success: true, data: { verb: "key", key: "Enter" } });
+  });
+
+  it("a flat navigate response with continueAfter: true round-trips through VerbResponseSchema", () => {
+    const flat = {
+      verb: "navigate",
+      route: "/shop",
+      continueAfter: true,
+      text: null,
+      target: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(VerbResponseSchema.safeParse(flat)).toEqual({
+      success: true,
+      data: { verb: "navigate", route: "/shop", continueAfter: true },
+    });
+  });
+
   it("a genuinely flat response — every wire property present, matching what Groq's structured tool calling actually sends — round-trips through VerbResponseSchema", () => {
     const flat = {
       verb: "click",
@@ -1466,5 +1680,375 @@ describe("resolveCritic", () => {
     const llm = new AnthropicVerbLLM(fakeClient, "claude-opus-5", { type: "object", properties: {} }, "submit_verdict", "Submit your verdict.");
     await resolveCritic(llm, task, "goal", { verb: "click", target: "x" }, "result");
     expect(seenTools[0].name).toBe("submit_verdict");
+  });
+});
+
+describe("createPlanHandler / createCriticHandler — Architecture Pillar 4's typed-transport HTTP endpoints", () => {
+  function fakeLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("createPlanHandler: a real request returns a real, fully-assembled Plan", async () => {
+    const llm = fakeLLM(async () => ({
+      goal: "Archive my old invoices",
+      facts: [],
+      tasks: [{ id: "t1", description: "Archive Acme Co.", doneContract: "Acme Co. shows status Archived" }],
+    }));
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const result = await handler({ goal: "Archive my old invoices" });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ version: 1, goal: "Archive my old invoices" });
+  });
+
+  it("createPlanHandler: passes through a real non-default version, for a genuine Planner revision", async () => {
+    const llm = fakeLLM(async () => ({ goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] }));
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const result = await handler({ goal: "x", version: 3 });
+    expect((result.body as { version: number }).version).toBe(3);
+  });
+
+  it("createPlanHandler: an invalid request body is refused with 400, never reaching the LLM", async () => {
+    const respond = vi.fn();
+    const handler = createPlanHandlerWithLLM(manifest, fakeLLM(respond));
+    const result = await handler({ notGoal: "x" });
+    expect(result.status).toBe(400);
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("createPlanHandler: an LLM failure still returns 200 with a real, usable fallback plan — never blocks the turn on a Planner hiccup", async () => {
+    const llm = fakeLLM(async () => {
+      throw new Error("network blip");
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const result = await handler({ goal: "Archive my old invoices" });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ goal: "Archive my old invoices", tasks: [{ id: "t1", description: "Archive my old invoices" }] });
+  });
+
+  function fakeSkillStore(): { store: any; saved: { scopeId: string; skill: any }[] } {
+    const saved: { scopeId: string; skill: any }[] = [];
+    const byScope = new Map<string, Map<string, any>>();
+    const store = {
+      saveSkill(scopeId: string, skill: any) {
+        saved.push({ scopeId, skill });
+        if (!byScope.has(scopeId)) byScope.set(scopeId, new Map());
+        byScope.get(scopeId)!.set(skill.id, skill);
+      },
+      listSkillSummaries(scopeId: string) {
+        return Array.from(byScope.get(scopeId)?.values() ?? []).map((s) => ({ id: s.id, name: s.name, description: s.description, pattern: s.pattern }));
+      },
+      getSkill(scopeId: string, id: string) {
+        return byScope.get(scopeId)?.get(id) ?? null;
+      },
+    };
+    return { store, saved };
+  }
+
+  it("createPlanHandler: Architecture Pillar 3 — a matching Skill's full instructions surface to the Planner's own userMessage", async () => {
+    const { store: skills } = fakeSkillStore();
+    skills.saveSkill("default", {
+      id: "connect-nodes",
+      name: "Connect the trigger to the email action",
+      description: "Uses a dropdown, not drag.",
+      instructions: "The canvas connects nodes via a dropdown labeled 'connects to'.",
+      pattern: "canvas",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    let seenUserMessage = "";
+    const llm = fakeLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm, { skills });
+
+    await handler({ goal: "connect the webhook node to the slack action" });
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.skills).toContain("Connect the trigger to the email action");
+    expect(parsed.suggestedSkill).toContain("connects to");
+  });
+
+  it("createPlanHandler: no skills configured means no skills/suggestedSkill fields at all — zero overhead", async () => {
+    let seenUserMessage = "";
+    const llm = fakeLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+
+    await handler({ goal: "x" });
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.skills).toBeUndefined();
+    expect(parsed.suggestedSkill).toBeUndefined();
+  });
+
+  it("createCriticHandler: a real request returns a real verdict", async () => {
+    const llm = fakeLLM(async () => ({ verdict: "task_complete", reasoning: "Acme Co. now shows status Archived." }));
+    const handler = createCriticHandlerWithLLM(llm);
+    const result = await handler({
+      task: { id: "t1", description: "Archive Acme Co.", doneContract: "Acme Co. shows status Archived", status: "in_progress" },
+      goal: "Archive Acme Co.",
+      verb: { verb: "click", target: "archive-btn" },
+      observation: "Acme Co. now shows status Archived.",
+    });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ verdict: "task_complete", reasoning: "Acme Co. now shows status Archived." });
+  });
+
+  it("createCriticHandler: an invalid request body (missing task) is refused with 400, never reaching the LLM", async () => {
+    const respond = vi.fn();
+    const handler = createCriticHandlerWithLLM(fakeLLM(respond));
+    const result = await handler({ goal: "x", verb: { verb: "click", target: "x" } });
+    expect(result.status).toBe(400);
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("createCriticHandler: an LLM failure still returns 200 with the same safe 'continue' verdict resolveCritic itself falls back to", async () => {
+    const llm = fakeLLM(async () => {
+      throw new Error("network blip");
+    });
+    const handler = createCriticHandlerWithLLM(llm);
+    const result = await handler({
+      task: { id: "t1", description: "x", doneContract: "x", status: "in_progress" },
+      goal: "x",
+      verb: { verb: "click", target: "x" },
+      observation: "x",
+    });
+    expect(result.status).toBe(200);
+    expect((result.body as { verdict: string }).verdict).toBe("continue");
+  });
+});
+
+describe("compileSkill — Architecture Pillar 3's Formulator", () => {
+  it("returns null when nothing was learned — the common case, not an error", () => {
+    expect(compileSkill("Archive Acme Co.", [])).toBeNull();
+  });
+
+  it("compiles a real Skill from the accumulated, Critic-verified learned facts", () => {
+    const skill = compileSkill(
+      "Connect the trigger to the email action",
+      ["The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.", "Adding a node requires picking its type from the button row first."],
+      "canvas",
+    );
+    expect(skill).not.toBeNull();
+    expect(skill!.name).toBe("Connect the trigger to the email action");
+    expect(skill!.description).toBe("The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.");
+    expect(skill!.instructions).toContain("dropdown labeled 'connects to'");
+    expect(skill!.instructions).toContain("picking its type from the button row");
+    expect(skill!.pattern).toBe("canvas");
+    expect(skill!.id).toBe("connect-the-trigger-to-the-email-action");
+  });
+
+  it("truncates a very long goal/fact for name/description rather than blowing up the Skill's own summary size", () => {
+    const longGoal = "a".repeat(200);
+    const longFact = "b".repeat(200);
+    const skill = compileSkill(longGoal, [longFact]);
+    expect(skill!.name.length).toBeLessThanOrEqual(80);
+    expect(skill!.description.length).toBeLessThanOrEqual(120);
+  });
+
+  it("a Skill compiled with no classified pattern leaves pattern undefined, not null", () => {
+    const skill = compileSkill("x", ["a real fact"]);
+    expect(skill!.pattern).toBeUndefined();
+  });
+});
+
+describe("matchSkillByGoal — Architecture Pillar 3's retrieval side", () => {
+  const summaries: SkillSummary[] = [
+    { id: "connect-nodes", name: "Connecting nodes on the workflow canvas", description: "Uses a dropdown, not drag.", pattern: "canvas" },
+    { id: "search-tips", name: "Searching the product catalog", description: "Results update after ~300ms.", pattern: "search-filter" },
+  ];
+
+  it("matches the Skill whose name shares real, significant words with the new goal", () => {
+    const match = matchSkillByGoal(summaries, "connect the webhook node to the slack action");
+    expect(match?.id).toBe("connect-nodes");
+  });
+
+  it("returns null when nothing shares any significant word with the goal — never a wrong guess", () => {
+    expect(matchSkillByGoal(summaries, "archive this invoice")).toBeNull();
+  });
+
+  it("returns null for an empty summaries list", () => {
+    expect(matchSkillByGoal([], "connect nodes")).toBeNull();
+  });
+
+  it("short/common words don't count as a match on their own", () => {
+    // "the" and "a" are far too common to mean anything — only real, significant (4+ letter) words count.
+    expect(matchSkillByGoal(summaries, "find the a on")).toBeNull();
+  });
+});
+
+describe("renderSkillSummaries", () => {
+  it("renders each summary as 'name (description)', same discipline as renderRegisteredActions", () => {
+    const rendered = renderSkillSummaries([{ id: "x", name: "Connecting nodes", description: "Uses a dropdown.", pattern: "canvas" }]);
+    expect(rendered).toBe("Connecting nodes (Uses a dropdown.)");
+  });
+
+  it("joins multiple summaries with '; '", () => {
+    const rendered = renderSkillSummaries([
+      { id: "a", name: "Skill A", description: "Does A." },
+      { id: "b", name: "Skill B", description: "Does B." },
+    ]);
+    expect(rendered).toBe("Skill A (Does A.); Skill B (Does B.)");
+  });
+
+  it("an empty list renders as an empty string", () => {
+    expect(renderSkillSummaries([])).toBe("");
+  });
+});
+
+describe("resolvePlan — Architecture Pillar 3's skills wiring", () => {
+  function fakePlanLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("when skills.summariesText/suggestedInstructions are passed, they land verbatim in the Planner's userMessage", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "connect the nodes", 1, undefined, undefined, {
+      summariesText: "Connecting nodes (Uses a dropdown.)",
+      suggestedInstructions: "The canvas connects nodes via a dropdown.",
+    });
+
+    const parsed = JSON.parse(seenUserMessage);
+    expect(parsed.skills).toBe("Connecting nodes (Uses a dropdown.)");
+    expect(parsed.suggestedSkill).toBe("The canvas connects nodes via a dropdown.");
+  });
+
+  it("omits skills/suggestedSkill entirely when absent — same additive discipline as pages/actions", async () => {
+    let seenUserMessage = "";
+    const llm = fakePlanLLM(async (_systemPrompt, userMessage) => {
+      seenUserMessage = userMessage;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x");
+
+    expect(JSON.parse(seenUserMessage)).toEqual({ goal: "x" });
+  });
+
+  it("the Planner's system prompt documents the optional skills/suggestedSkill fields", async () => {
+    let seenSystemPrompt = "";
+    const llm = fakePlanLLM(async (systemPrompt) => {
+      seenSystemPrompt = systemPrompt;
+      return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+
+    await resolvePlan(llm, "x");
+
+    expect(seenSystemPrompt).toContain('"skills"');
+    expect(seenSystemPrompt).toContain('"suggestedSkill"');
+  });
+});
+
+describe("resolveCritic — Architecture Pillar 3's learnedFact wiring", () => {
+  const task: Task = { id: "t1", description: "Connect the nodes", doneContract: "Nodes are connected", status: "in_progress" };
+
+  function fakeCriticLLM(respond: VerbLLM["respond"]): VerbLLM {
+    return { respond };
+  }
+
+  it("a task_complete verdict may carry a real learnedFact, passed through unchanged", async () => {
+    const llm = fakeCriticLLM(async () => ({
+      verdict: "task_complete",
+      reasoning: "The two nodes now show a connection.",
+      learnedFact: "The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.",
+    }));
+    const verdict = await resolveCritic(llm, task, "Connect the nodes", { verb: "select", target: "connects-to", value: "Send Email" }, "Connected.");
+    expect(verdict.learnedFact).toBe("The canvas connects nodes via a dropdown labeled 'connects to', not a drag gesture.");
+  });
+
+  it("the common case — no learnedFact — leaves it undefined, not an empty string", async () => {
+    const llm = fakeCriticLLM(async () => ({ verdict: "continue", reasoning: "Not there yet." }));
+    const verdict = await resolveCritic(llm, task, "Connect the nodes", { verb: "click", target: "x" }, "y");
+    expect(verdict.learnedFact).toBeUndefined();
+  });
+
+  it("the Critic's system prompt documents learnedFact and its own privacy constraint", async () => {
+    let seenSystemPrompt = "";
+    const llm: VerbLLM = {
+      respond: async (systemPrompt) => {
+        seenSystemPrompt = systemPrompt;
+        return { verdict: "continue", reasoning: "x" };
+      },
+    };
+    await resolveCritic(llm, task, "goal", { verb: "click", target: "x" }, "result");
+    expect(seenSystemPrompt).toContain("learnedFact");
+    expect(seenSystemPrompt.toLowerCase()).toContain("never");
+  });
+});
+
+describe("createSkillSaveHandler — Architecture Pillar 3's typed-transport Formulator save side", () => {
+  function fakeSkillStore(): { store: any; saved: { scopeId: string; skill: any }[] } {
+    const saved: { scopeId: string; skill: any }[] = [];
+    const store = {
+      saveSkill(scopeId: string, skill: any) {
+        saved.push({ scopeId, skill });
+      },
+      listSkillSummaries: () => [],
+      getSkill: () => null,
+    };
+    return { store, saved };
+  }
+
+  it("a real request with learnedFacts compiles and saves a real Skill", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({
+      goal: "connect the trigger to the email action",
+      learnedFacts: ["The canvas connects nodes via a dropdown, not a drag gesture."],
+      pattern: "canvas",
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ saved: true });
+    expect(saved).toHaveLength(1);
+    expect(saved[0].scopeId).toBe("default");
+    expect(saved[0].skill.instructions).toContain("dropdown, not a drag gesture");
+  });
+
+  it("respects a real, non-default skillsScopeId", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills, "my-deployment");
+
+    await handler({ goal: "x", learnedFacts: ["a real fact"] });
+
+    expect(saved[0].scopeId).toBe("my-deployment");
+  });
+
+  it("an empty learnedFacts array saves nothing — the common case, not an error", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({ goal: "x", learnedFacts: [] });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ saved: false });
+    expect(saved).toHaveLength(0);
+  });
+
+  it("an invalid request body is refused with 400, never reaching the store", async () => {
+    const { store: skills, saved } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({ goal: "x" }); // missing learnedFacts
+
+    expect(result.status).toBe(400);
+    expect(saved).toHaveLength(0);
+  });
+
+  it("rejects an invented pattern — never a value beyond the real UI_PATTERNS set", async () => {
+    const { store: skills } = fakeSkillStore();
+    const handler = createSkillSaveHandler(skills);
+
+    const result = await handler({ goal: "x", learnedFacts: ["a fact"], pattern: "made-up-pattern" });
+
+    expect(result.status).toBe(400);
   });
 });
