@@ -4648,6 +4648,67 @@ exercise the full realtime audio pipeline this environment can't test.
 
 ---
 
+## Live bug-fix pass: real diagnostic logging for "status says Listening… but nothing gets picked up"
+
+The connection-count logging (two entries up) already changed the
+picture once — this same session's next report showed a connection
+that stayed open (no "closed" line), confirming the Fast Refresh fix
+holds, with a genuinely different, narrower symptom underneath: the
+status label correctly reads "Listening…" but speech still isn't being
+picked up. `setRtStatus("rt-listening")` is what produces that label,
+and it's always set together with `rtStateRef.current` — the exact
+value `onaudioprocess`'s own send gate reads — so by the time the label
+is showing, the gate SHOULD already be open. Whether it actually is,
+and whether real mic packets are reaching the gate at all, wasn't
+something any existing log line could show.
+
+**Built:** two new, deliberately low-volume `rtLog` calls (not logged
+per-audio-frame, which fires continuously and would flood the
+console):
+- `maybeResumeListening()`: logs once, right at the moment it actually
+  transitions to "rt-listening" — confirms this function ran and
+  reached the real resume path, not one of its own early-return guards
+  (audio still arriving, a chunk still scheduled, mid-tour).
+- `onaudioprocess`'s send branch: a new
+  `micAudioSentSinceListeningRef`, reset to `false` every time
+  `maybeResumeListening()` fires, flipped to `true` and logged exactly
+  once the first time a real mic packet is actually sent afterward.
+
+Together these give a real, three-way diagnosis the NEXT time this
+symptom shows up, straight from the console: if "resumed listening"
+never logs, the app itself never reached rt-listening (a real app bug,
+somewhere upstream); if it logs but "mic audio actually being sent"
+never follows, the send gate itself is open but no real audio frames
+are reaching it (a deeper client bug); if both log, the gate is
+genuinely open and sending — meaning the actual problem is downstream
+of this app entirely (Deepgram's own STT, or a real hardware/OS
+microphone issue nothing here can see or fix). That's a fundamentally
+different, much narrower question than "why does it stop listening,"
+and one this environment's own lack of microphone access cannot answer
+without it.
+
+**Tests:** no new automated test — pure diagnostic logging, no behavior
+change to verify. Full regression suite re-run as the safety check:
+525/525 tests pass repo-wide (unchanged — no test file touched), zero
+regressions. Full `npm run typecheck` clean across all 6 workspaces.
+`npm run build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not applicable — this is logging, not a fix; nothing
+to verify beyond the type/test/build gates above. The real verification
+is whatever it reveals on the user's own next live test.
+
+**Pending:** the actual "listening but not picked up" symptom itself is
+still open — this closes the diagnostic gap, not the bug. Depending on
+what the new log lines show next time, the next step is either a real
+app-level fix (if "resumed listening" or the mic-send log never
+appears) or an honest acknowledgment that the remaining issue is
+outside this codebase's reach (a real hardware/OS/network condition, if
+both log lines fire normally and speech still isn't transcribed).
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

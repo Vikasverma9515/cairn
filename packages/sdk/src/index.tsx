@@ -241,6 +241,16 @@ export function Copilot({
   // finished arriving, so the mic can't start sending while the agent is
   // still audibly speaking.
   const rtAudioDoneArrivingRef = useRef(true);
+  // Diagnostic only, not a functional guard — flips to true the first time
+  // a real mic packet is actually sent after transitioning to
+  // "rt-listening", logged once (not per-packet, which would flood the
+  // console). Added specifically so a "status says Listening… but nothing
+  // I say gets picked up" report can be told apart, from the log alone,
+  // between "the send gate never opened" (this never logs) and "the gate
+  // opened and sent real audio, so the problem is somewhere else entirely
+  // — Deepgram's own STT, or a real hardware/OS mic issue this app can't
+  // see or fix" (this logs once, then goes quiet as expected).
+  const micAudioSentSinceListeningRef = useRef(false);
 
   // Safety net for a live realtime call outliving this component instance:
   // without this, unmounting (a parent removing the widget, a route change
@@ -1010,6 +1020,10 @@ export function Copilot({
         }
 
         if (rtStateRef.current !== "rt-listening") return; // don't send our own mic while the agent is thinking/speaking
+        if (!micAudioSentSinceListeningRef.current) {
+          micAudioSentSinceListeningRef.current = true;
+          rtLog("mic audio actually being sent (send gate is open)");
+        }
         const pcm = floatTo16BitPCM(downsampleTo16k(e.inputBuffer.getChannelData(0), audioCtx.sampleRate));
         ws.send(pcm);
       };
@@ -1047,6 +1061,8 @@ export function Copilot({
           rtTourAudioDoneRef.current = null;
           return;
         }
+        rtLog("resumed listening");
+        micAudioSentSinceListeningRef.current = false;
         setRtStatus("rt-listening");
         setCaption("");
         void sendFreshContext(); // refresh before the user starts talking again, not after
