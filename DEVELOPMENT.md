@@ -4577,6 +4577,77 @@ as every other realtime-specific fix tonight.
 
 ---
 
+## Live bug-fix pass: the actual, environmental root cause — Next.js dev mode was watching the app's own database file
+
+The user's own connection-tracking output (from two entries up — the
+logging built specifically for this) finally gave the real, unambiguous
+answer: `connection 1 opened — 1 active` → one or two real replies →
+`connection 1 closed — 0 active`, over and over, a fresh connection
+every time. That single fact reframes everything reported across this
+entire session: "it stops listening" (the connection itself died, not
+a state bug), and "every 'hello' gets a generic greeting" (each
+reconnect is a genuinely brand-new connection with zero history — of
+course it doesn't remember the prior turn, there wasn't one on this
+connection).
+
+The question became: why does the connection keep dying, unprompted,
+mid-conversation? `examples/demo-app/lib/db.ts` keeps its SQLite file at
+`data/cairn-demo.db` — inside the Next.js project directory. Every
+mutating action the demo app takes — a misses-store report, a board
+card move, a workflow edit, literally any write through any API route
+— touches that file, and via SQLite's WAL mode, its `-wal`/`-shm`/
+`-journal` siblings too. `next.config.js` had no watch exclusion for
+any of this. Next's dev-mode file watcher covers the whole project
+directory by default, and every one of those writes looked exactly
+like a source-code change — triggering Fast Refresh, sometimes
+escalating to a full reload (matching the "Fast Refresh had to perform
+a full reload" warnings seen live in this session's own terminal
+output, multiple times, going all the way back to earlier entries in
+this series). A full reload tears down everything on the page,
+including a live realtime WebSocket connection. This is a genuinely
+different KIND of bug from everything else in this series — not a
+client or server logic error at all, but a dev-server configuration gap
+letting the app's own normal operation look like a source edit.
+
+**Built:** `next.config.js` gains a `webpack` config (dev-mode only)
+setting `config.watchOptions.ignored` to exclude `data/**` and SQLite's
+own auxiliary file extensions (`.db`, `.db-journal`, `.db-wal`,
+`.db-shm`), alongside the standard `node_modules`/`.next` exclusions.
+Deliberately does NOT merge with whatever Next's own internal default
+already was — that tripped webpack's own config schema validator
+("ignored[0] should be a non-empty string") when attempted, since
+Next's internal shape isn't guaranteed to be plain strings; a clean,
+explicit array of glob strings sidesteps that entirely.
+
+**Tests:** none — this is dev-server/webpack configuration, not
+application code; no existing or plausible new automated test covers
+this class of change. Full regression suite run as the safety check
+instead: 525/525 tests pass repo-wide (unchanged — no test file
+touched), zero regressions. Full `npm run typecheck` clean across all 6
+workspaces.
+
+**Live-verified, directly, by this session's own tooling — not asked
+of the user.** Started the real demo app, confirmed a clean start with
+no config errors (an earlier attempt at this exact fix, merging with
+Next's own default ignore list, failed webpack's schema validation on
+startup — caught and fixed before ever reaching the user). Then fired
+five real, rapid writes directly at the live `/api/copilot/misses`
+route — the exact same code path every real miss-report in this entire
+session went through — and confirmed via the server's own log output
+that NOT ONE of them triggered a recompile or reload. Before this fix,
+based on the pattern traced through this session's own history, that
+same traffic is the leading suspect for every "Fast Refresh had to
+perform a full reload" this session ever saw.
+
+**Pending:** the user still needs to confirm this holds for a real,
+extended voice conversation with actual mic input — the DB-write
+reproduction above proves the mechanism and the fix, but doesn't
+exercise the full realtime audio pipeline this environment can't test.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -24,6 +24,38 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ["better-sqlite3", "ws"],
   },
+  // Real, live-found root cause of realtime connections repeatedly dying
+  // mid-conversation, traced from this session's own new connection-count
+  // logging: lib/db.ts's SQLite file lives at data/cairn-demo.db, INSIDE
+  // this project directory — every write the demo app makes to it (a
+  // misses-store report, a session event, a board card move, literally any
+  // mutating API route) touches that file and, via SQLite's own WAL mode,
+  // its -wal/-shm/-journal siblings too. Next's dev-mode file watcher
+  // covers the whole project directory by default with no exclusion for
+  // this — every one of those writes looked exactly like a source-code
+  // change, triggering a Fast Refresh (sometimes a full reload, matching
+  // the "Fast Refresh had to perform a full reload" warnings seen live in
+  // this session's own terminal output). A full reload tears down
+  // everything, including a live realtime WebSocket connection — this is
+  // the actual mechanism behind "it stops listening after a while" and
+  // "every 'hello' gets a generic greeting" (each reconnect is a genuinely
+  // fresh connection with no memory of what came before). Excluding the
+  // data directory (and SQLite's own auxiliary files, wherever they land)
+  // from the watcher is the fix — not a client-side workaround for a
+  // dev-server-level problem.
+  webpack: (config, { dev }) => {
+    if (dev) {
+      // A clean array of glob strings, not merged with whatever Next's own
+      // default already was (its own internal shape isn't guaranteed to be
+      // string-only — merging it in tripped webpack's own config schema
+      // validator: "ignored[0] should be a non-empty string").
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: ["**/node_modules/**", "**/.next/**", "**/data/**", "**/*.db", "**/*.db-journal", "**/*.db-wal", "**/*.db-shm"],
+      };
+    }
+    return config;
+  },
 };
 
 module.exports = nextConfig;
