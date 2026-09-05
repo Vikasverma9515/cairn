@@ -520,6 +520,38 @@ describe("executeVerbResponse", () => {
     }
   });
 
+  it("call_tool (agent loop): Architecture Pillar 6 — a 'confirm'-tier tool waits for onConfirmTool before executing", async () => {
+    const executeTool = vi.fn().mockResolvedValue("Archived.");
+    const tool = { name: "archive-invoice", description: "Archives the invoice; cannot be undone.", riskTier: "confirm" };
+    vi.stubGlobal("document", { modelContext: { getTools: async () => [tool], executeTool } });
+    try {
+      const opts = makeOptions();
+      const onConfirmTool = vi.fn().mockResolvedValue(true);
+      executeVerbResponse({ verb: "call_tool", name: "archive-invoice", args: {} }, "/invoices", { ...opts, onConfirmTool });
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(onConfirmTool).toHaveBeenCalledWith({ name: "archive-invoice", description: "Archives the invoice; cannot be undone." });
+      expect(executeTool).toHaveBeenCalledTimes(1);
+      expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "call_tool", target: "archive-invoice", ok: true, observation: "Archived." });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("call_tool (agent loop): no onConfirmTool wired up means a 'confirm'-tier tool is declined by default, never silently executed", async () => {
+    const executeTool = vi.fn();
+    const tool = { name: "archive-invoice", riskTier: "confirm" };
+    vi.stubGlobal("document", { modelContext: { getTools: async () => [tool], executeTool } });
+    try {
+      const opts = makeOptions();
+      executeVerbResponse({ verb: "call_tool", name: "archive-invoice", args: {} }, "/invoices", opts); // no onConfirmTool
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(opts.onToolStep.mock.calls[0][0].ok).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("call_tool (agent loop): refuses a tool name not in this page's current WebMCP list", async () => {
     vi.stubGlobal("document", { modelContext: { getTools: async () => [], executeTool: vi.fn() } });
     try {

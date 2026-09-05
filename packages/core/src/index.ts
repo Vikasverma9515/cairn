@@ -547,11 +547,30 @@ export type LiveElement = z.infer<typeof LiveElementSchema>;
  * analysis. Absent entirely on the overwhelming majority of sites, which
  * don't have WebMCP yet; call_tool simply never appears as an option then.
  */
+export const WEB_MCP_RISK_TIERS = ["safe", "confirm"] as const;
+export type WebMcpRiskTier = (typeof WEB_MCP_RISK_TIERS)[number];
+
 export const WebMcpToolSchema = z.object({
   name: z.string().max(200),
   description: z.string().max(500),
   /** The tool's own JSON Schema for its arguments, passed through as-is. */
   inputSchema: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Architecture Pillar 6 (the safety layer) — declared by whoever
+   * REGISTERED the tool (the page's own developer, via WebMCP's real
+   * registration call), never something the model can set or claim for
+   * itself — the same "never trust the model, verify against real
+   * registered state" invariant this whole schema already holds for
+   * `name`/`inputSchema`. `"confirm"` means a real-world effect (a
+   * payment, a delete, anything hard to undo) that must be surfaced to
+   * the END USER for a real yes before it executes — see
+   * verb-executor.ts's own `onConfirmTool` handling. Absent/`"safe"`
+   * (the default) means read-only or low-stakes — today's exact
+   * behavior for every tool registered before this field existed, so
+   * this is purely additive, never a breaking change to an existing
+   * WebMCP integration.
+   */
+  riskTier: z.enum(WEB_MCP_RISK_TIERS).optional(),
 });
 export type WebMcpTool = z.infer<typeof WebMcpToolSchema>;
 

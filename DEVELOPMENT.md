@@ -6119,6 +6119,142 @@ tiering) — the last pillar in the plan's own stated build order.
 
 ---
 
+### Architecture Pillar 6 — the safety layer (real per-tool risk tiering), and closing out the 6-pillar plan
+
+Sixth and last of the plan's pillars. Two real, distinct parts the plan
+names: (1) formalizing the Planner/Executor/Critic/Formulator/Talker roles
+already built across this session's own earlier pillars, and (2) a new
+Scout role for safe, genuinely-parallel read-only lookahead. Plus a safety
+layer meant to make growing the tool surface (Pillar 3's Skills) stay
+safe: a real per-tool risk tier on `WebMcpToolSchema`.
+
+**Role formalization — substantively already true, not new code**: by
+this point in the session, Planner (`resolvePlan`), Executor (`verb-
+executor.ts` + Pillar 1's drag/select/key), Critic (`resolveCritic`,
+running by default per Pillar 4, and the Skill-worthy-fact detector for
+Pillar 3), Formulator (`compileSkill`, Pillar 3), and Talker (the existing
+`emitEvent`/"thk"/"inj" stream) are all real, wired, and — as of Pillar
+4 — consistent across BOTH transports, not realtime-only. There was no
+actual functional gap left to close here; this entry is that
+acknowledgment, not a new feature.
+
+**The Scout role — explicitly, honestly deferred, not attempted this
+pass**: the plan's own text is candid about why this is the hardest,
+least-proven part of the whole plan: "Cairn's agents share ONE live
+page — click-level parallelism across agents isn't real parallelism, it's
+a race." A genuinely safe Scout (a background tab/context checking a
+route or reading docs while the Executor keeps working on the visible
+tab) needs real design work this pass didn't do: cross-origin/same-origin
+handling for a second browser context, a real merge-back contract for
+what a read-only lookahead is even allowed to report into the main loop's
+context, and a concrete answer to "what does 'safe specifically because it
+never mutates shared state' mean operationally in THIS codebase" — none
+of which has the kind of existing precedent this session could build on
+the way Pillars 1-5 each had (the element ladder, the Critic's own
+verification pattern, WebMCP's real tool-calling). Building this properly
+needs its own dedicated design pass, not a rushed version bolted onto the
+end of five other pillars in the same session — the same "don't half-
+build the hardest part" discipline `upload` got in the Pillar 1 entry, and
+the Skill-half-of-Pillar-3/Pillar-5 CLI wiring gap got in their own
+entries above.
+
+**Built — the safety layer** (this pass's real, concrete deliverable):
+- `packages/core/src/index.ts` — `WEB_MCP_RISK_TIERS = ["safe",
+  "confirm"]`; `WebMcpToolSchema` gained an optional `riskTier` field.
+  Declared by whoever REGISTERED the tool (the page's own developer, via
+  a real WebMCP registration call) — never something the model can set or
+  claim for itself, the same "never trust the model, verify against real
+  registered state" invariant this schema already holds for `name`/
+  `inputSchema`. Absent (or `"safe"`) is the default — every tool
+  registered before this field existed keeps behaving exactly as it
+  always has; this is purely additive.
+- `packages/sdk/src/webmcp-client.ts` — `discoverWebMcpTools()` passes a
+  real `riskTier` through (never invents or widens one — only the literal
+  string `"confirm"` survives the mapping, anything else normalizes to
+  undefined/safe). `executeWebMcpTool(name, args, confirmTool?)` gained a
+  3rd, optional parameter: for a tool whose OWN registration declared
+  `riskTier: "confirm"`, it's only ever executed after `confirmTool`
+  resolves `true` — a real payment/delete/hard-to-undo action needs a
+  genuine yes from the END USER, not just the model's own decision to
+  call it. No `confirmTool` provided (a host app that hasn't wired up a
+  confirmation UI) is treated as a decline, never an implicit yes — the
+  safe default when there's no real way to ask.
+- `packages/sdk/src/verb-executor.ts` — `VerbExecutorOptions` gained
+  `onConfirmTool`, threaded through both the single-step and batch
+  `call_tool` execution paths into `executeWebMcpTool`.
+- `packages/sdk/src/index.tsx` — `executeToolStep` gained the same 5th
+  parameter, wired at both real call sites (the typed loop's `executeStep`
+  and the realtime WS handler's continuing-tool-call branch) to a new
+  `confirmToolCall` function: a REAL, working default — a native browser
+  `window.confirm` dialog naming the tool's own real name/description,
+  not just plumbing with nothing on the other end. A host app wanting a
+  nicer in-widget modal only needs to replace this one function.
+- `examples/demo-app/components/WebMcpPolyfill.tsx` — the demo's own
+  `document.modelContext` shim (real browsers don't implement WebMCP
+  natively yet) updated to carry `riskTier` through from a real
+  `registerTool()` call to what `getTools()` reports — it was silently
+  dropping any field beyond name/title/description/inputSchema before
+  this, which would have made the new field invisible in this exact demo
+  even though the real mechanism worked everywhere else.
+- `examples/demo-app/components/InvoiceWebMcpTools.tsx` — a second, real,
+  mutating tool (`archive-invoice-by-client`, calling the same real
+  archive endpoint the "do" action already uses) registered with
+  `riskTier: "confirm"` — a concrete example a real deployment can copy,
+  and this session's own live-verification target (see below).
+
+**Tests**: `packages/core/src/index.test.ts` — 3 new tests: a tool with no
+riskTier at all is accepted (today's exact behavior, unchanged), a real
+`"safe"`/`"confirm"` value is accepted, an invented tier is rejected.
+`packages/sdk/src/webmcp-client.test.ts` — 4 new tests: a `"safe"` (or
+absent) tool executes with zero confirmation overhead, a `"confirm"` tool
+only executes after `confirmTool` resolves true (with the real tool name/
+description passed through), a declined confirmation genuinely never
+invokes the real tool, and no `confirmTool` at all defaults to declining.
+`packages/sdk/src/verb-executor.test.ts` — 2 new tests: the full
+single-step wiring (a real `"confirm"`-tier tool waits for
+`onConfirmTool`), and the no-`onConfirmTool`-wired-up default-decline
+case. 9 new tests total. Full repo `npx vitest run`: 674/674 passing,
+zero regressions. Full `npm run typecheck` clean across all 6 workspaces
+(including `demo-app`, which registers the new confirm-tier tool). `npm
+run build -w @cairnvibe/core -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified**: demo app rebuilt and restarted cleanly on the new
+builds, zero server/console errors. Navigated to the real `/invoices` page
+and called `document.modelContext.getTools()` directly in the live
+browser — confirmed the real, running polyfill correctly reports
+`archive-invoice-by-client` with `"riskTier": "confirm"` and
+`count-overdue-invoices` with no `riskTier` at all (defaulting to safe) —
+genuine, live proof the registration→discovery plumbing carries the real
+risk tier through exactly as `executeWebMcpTool`'s own gating logic
+expects, independent of the LLM. The full model-driven path (does a real
+model actually choose to call a confirm-tier tool, and does the browser's
+own native confirm dialog actually appear and block execution) is not yet
+observable live — same pre-existing Groq `401 Invalid API Key` block
+every entry in this session's own Architecture-Pillar work has been
+blocked by; the gating LOGIC itself (never the model's own behavior) is
+what the 9 tests above cover in full, including the exact "declined =
+never actually invoked" and "no confirm mechanism = default decline"
+cases a live check would otherwise need to exercise by hand.
+
+**Pending**: a real live-model check of the full confirm-tier flow
+(including the actual browser confirm dialog appearing) once a working
+API key exists. The Scout role — deferred with a clear rationale above,
+needs its own dedicated design pass before implementation, not a next-
+session default. `upload`/`scroll`/`wait_for` (Pillar 1's remaining
+verbs). Wiring a real `MemoryStore`/`SkillStore` into `examples/demo-app`
+and `realtime-cli.ts` (Pillar 5 and the Skill half of Pillar 3's own
+shared gap) so the memory/Skill mechanisms can be live-verified against
+real traffic, not just unit-tested. With this entry, 5 of the plan's 6
+pillars are concretely built, tested, and (to the extent this session's
+own tooling and the ongoing Groq key issue allow) live-verified; the
+sixth (Scout) is explicitly scoped out with a stated reason rather than
+half-built — the same honesty discipline every entry in this session has
+tried to hold itself to.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

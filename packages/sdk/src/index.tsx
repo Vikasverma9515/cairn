@@ -608,6 +608,26 @@ export function Copilot({
   }
 
   /**
+   * Architecture Pillar 6 (the safety layer) — the real, working default
+   * confirmation UI: a native browser confirm dialog, naming the tool's
+   * OWN real name/description (never inventing wording), for a WebMCP
+   * tool whose registration declared `riskTier: "confirm"` (a payment, a
+   * delete, anything hard to undo). `window.confirm` blocks the calling
+   * microtask until the user actually answers — exactly the real,
+   * synchronous "get a genuine yes before this runs" behavior needed
+   * here, and simple enough to need no new UI component for this to be a
+   * real, functioning default rather than just plumbing with nothing on
+   * the other end. A host app wanting a nicer in-widget modal can still
+   * build one — this function is the only thing that would need
+   * replacing to do that.
+   */
+  function confirmToolCall(tool: { name: string; description: string }): Promise<boolean> {
+    if (typeof window === "undefined" || typeof window.confirm !== "function") return Promise.resolve(false);
+    const message = tool.description ? `${tool.name}: ${tool.description}\n\nAllow this action?` : `Allow "${tool.name}"?`;
+    return Promise.resolve(window.confirm(message));
+  }
+
+  /**
    * Architecture Pillar 4 — the typed transport's own Planner call,
    * mirroring resolvePlan's real network shape but reached over HTTP
    * (planEndpoint's server-side handler — createPlanHandler in server.ts
@@ -738,7 +758,7 @@ export function Copilot({
       // frozen liveMapRef, so a step that reveals new DOM (a click that
       // opens a modal) doesn't leave the NEXT step unable to find
       // anything in it.
-      executeStep: (verb) => executeToolStep(verb, pathnameRef.current, liveRegistryRef.current.getSnapshot().byId, (route) => router.push(route)).then((r) => r?.observation),
+      executeStep: (verb) => executeToolStep(verb, pathnameRef.current, liveRegistryRef.current.getSnapshot().byId, (route) => router.push(route), confirmToolCall).then((r) => r?.observation),
       runCritic: plannerEnabled
         ? async ({ verb, observation }) => {
             // Real state, not the Executor's self-report — see
@@ -1471,7 +1491,7 @@ export function Copilot({
             // find that element on the page" — confirmed live, repeated
             // 5+ times in a row without ever recovering.
             const freshLiveMap = liveRegistryRef.current.getSnapshot().byId;
-            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap, (route) => router.push(route)).then((result) => {
+            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap, (route) => router.push(route), confirmToolCall).then((result) => {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "tool_result", observation: result?.observation ?? "no result" }));
               }

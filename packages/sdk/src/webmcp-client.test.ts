@@ -87,4 +87,50 @@ describe("executeWebMcpTool", () => {
     const result = await executeWebMcpTool("search-products", {});
     expect(result.ok).toBe(false);
   });
+
+  describe("Architecture Pillar 6 — the safety layer's per-tool risk tier", () => {
+    it("a 'safe' (or absent) riskTier tool executes with no confirmation needed at all", async () => {
+      const executeTool = vi.fn().mockResolvedValue("ok");
+      vi.stubGlobal("document", { modelContext: { getTools: async () => [{ name: "search-products", riskTier: "safe" }], executeTool } });
+      const confirmTool = vi.fn();
+
+      const result = await executeWebMcpTool("search-products", {}, confirmTool);
+      expect(confirmTool).not.toHaveBeenCalled();
+      expect(executeTool).toHaveBeenCalledTimes(1);
+      expect(result.ok).toBe(true);
+    });
+
+    it("a 'confirm' tool only executes after confirmTool resolves true, with the real tool name/description", async () => {
+      const executeTool = vi.fn().mockResolvedValue("archived");
+      vi.stubGlobal("document", {
+        modelContext: { getTools: async () => [{ name: "archive-invoice", description: "Archives the invoice — cannot be undone.", riskTier: "confirm" }], executeTool },
+      });
+      const confirmTool = vi.fn().mockResolvedValue(true);
+
+      const result = await executeWebMcpTool("archive-invoice", {}, confirmTool);
+      expect(confirmTool).toHaveBeenCalledWith({ name: "archive-invoice", description: "Archives the invoice — cannot be undone." });
+      expect(executeTool).toHaveBeenCalledTimes(1);
+      expect(result.ok).toBe(true);
+    });
+
+    it("a declined confirmation refuses the tool call — the real tool is never actually invoked", async () => {
+      const executeTool = vi.fn();
+      vi.stubGlobal("document", { modelContext: { getTools: async () => [{ name: "archive-invoice", riskTier: "confirm" }], executeTool } });
+      const confirmTool = vi.fn().mockResolvedValue(false);
+
+      const result = await executeWebMcpTool("archive-invoice", {}, confirmTool);
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+      expect(result.observation).toContain("confirmation");
+    });
+
+    it("no confirmTool provided for a 'confirm' tool defaults to declining — never an implicit yes", async () => {
+      const executeTool = vi.fn();
+      vi.stubGlobal("document", { modelContext: { getTools: async () => [{ name: "archive-invoice", riskTier: "confirm" }], executeTool } });
+
+      const result = await executeWebMcpTool("archive-invoice", {}); // no confirmTool arg at all
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(result.ok).toBe(false);
+    });
+  });
 });

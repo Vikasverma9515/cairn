@@ -20,7 +20,7 @@
 if (typeof document !== "undefined") {
   const doc = document as unknown as { modelContext?: any };
   if (!doc.modelContext) {
-    const tools: { name: string; title?: string; description: string; inputSchema?: unknown; execute: (args: unknown) => Promise<unknown> }[] = [];
+    const tools: { name: string; title?: string; description: string; inputSchema?: unknown; riskTier?: "safe" | "confirm"; execute: (args: unknown) => Promise<unknown> }[] = [];
 
     doc.modelContext = {
       registerTool: async (tool: (typeof tools)[number]) => {
@@ -32,7 +32,11 @@ if (typeof document !== "undefined") {
           },
         };
       },
-      getTools: async () => tools.map(({ name, title, description, inputSchema }) => ({ name, title, description, inputSchema })),
+      // Architecture Pillar 6 — riskTier carried through unchanged: it's
+      // declared by the real registerTool() call (the page's own
+      // developer), never invented here. Absent means "safe", matching
+      // webmcp-client.ts's own default.
+      getTools: async () => tools.map(({ name, title, description, inputSchema, riskTier }) => ({ name, title, description, inputSchema, riskTier })),
       executeTool: async (tool: { name: string }, args: unknown) => {
         const real = tools.find((t) => t.name === tool.name);
         if (!real) throw new Error(`No such tool: ${tool.name}`);

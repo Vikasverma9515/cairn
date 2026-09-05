@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, isTerminalVerb, safeParseVerbResponse } from "./index";
+import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, WebMcpToolSchema, isTerminalVerb, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -553,5 +553,23 @@ describe("AgentEventSchema (Phase 3 step 5 — the Talker's event stream)", () =
   it("rejects an 'act' event carrying an invalid verb — the discriminated union still enforces the real verb schema, not just its own shape", () => {
     const result = AgentEventSchema.safeParse({ type: "act", verb: { verb: "explode" }, at: Date.now() });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("WebMcpToolSchema — Architecture Pillar 6's per-tool risk tier", () => {
+  it("accepts a tool with no riskTier at all — the default, today's exact behavior for every tool registered before this field existed", () => {
+    const parsed = WebMcpToolSchema.safeParse({ name: "search-products", description: "Search the catalog" });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.riskTier).toBeUndefined();
+  });
+
+  it("accepts a real 'safe' or 'confirm' riskTier", () => {
+    expect(WebMcpToolSchema.safeParse({ name: "x", description: "x", riskTier: "safe" }).success).toBe(true);
+    expect(WebMcpToolSchema.safeParse({ name: "x", description: "x", riskTier: "confirm" }).success).toBe(true);
+  });
+
+  it("rejects an invented risk tier — never a value the model or a page could smuggle in as its own new tier", () => {
+    const parsed = WebMcpToolSchema.safeParse({ name: "x", description: "x", riskTier: "dangerous" });
+    expect(parsed.success).toBe(false);
   });
 });

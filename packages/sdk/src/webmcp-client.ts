@@ -8,12 +8,14 @@
 // no site has adopted it yet, so this is deliberately a no-op (empty list,
 // nothing to call) everywhere it isn't present, not a hard dependency.
 
-import type { WebMcpTool } from "@cairnvibe/core";
+import type { WebMcpRiskTier, WebMcpTool } from "@cairnvibe/core";
 
 interface ModelContextTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** Architecture Pillar 6 — declared by the page's own tool registration, never invented by Cairn. See WebMcpToolSchema's own doc comment. */
+  riskTier?: WebMcpRiskTier;
 }
 
 interface ModelContext {
@@ -44,6 +46,11 @@ export async function discoverWebMcpTools(): Promise<WebMcpTool[]> {
       name: String(tool.name),
       description: String(tool.description ?? "").slice(0, MAX_DESCRIPTION_LENGTH),
       inputSchema: tool.inputSchema,
+      // Architecture Pillar 6 — passed through only when the page's own
+      // registration declared a real "confirm" tier; anything else
+      // (absent, or a value that isn't literally "confirm") stays
+      // undefined/"safe" — never invented, never widened by a typo.
+      riskTier: tool.riskTier === "confirm" ? "confirm" : undefined,
     }));
   } catch {
     // A page's own registerTool()/getTools() implementation throwing is
@@ -59,8 +66,22 @@ export async function discoverWebMcpTools(): Promise<WebMcpTool[]> {
  * exact request's own discoverWebMcpTools() call), never invented.
  * Returns a plain-text observation for the agent loop to reason about
  * next, the same shape a click/fill/read result already takes.
+ *
+ * Architecture Pillar 6 (the safety layer) — `confirmTool` is only ever
+ * consulted for a tool whose OWN registration declared `riskTier:
+ * "confirm"` (never something the model or this call site can widen) — a
+ * real-world-effect tool (a payment, a delete, anything hard to undo)
+ * that must get a genuine yes from the END USER before it runs, not just
+ * the model's own decision to call it. No `confirmTool` provided (a host
+ * app that hasn't wired up a confirmation UI) is treated as a decline,
+ * never as an implicit yes — the safe default when there's no real way
+ * to ask.
  */
-export async function executeWebMcpTool(name: string, args: Record<string, unknown> | undefined): Promise<{ ok: boolean; observation: string }> {
+export async function executeWebMcpTool(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  confirmTool?: (tool: { name: string; description: string }) => Promise<boolean>,
+): Promise<{ ok: boolean; observation: string }> {
   const modelContext = getModelContext();
   if (!modelContext?.getTools || !modelContext.executeTool) {
     return { ok: false, observation: "This page no longer has that tool available." };
@@ -69,6 +90,13 @@ export async function executeWebMcpTool(name: string, args: Record<string, unkno
     const tools = await modelContext.getTools();
     const tool = Array.isArray(tools) ? tools.find((t) => t.name === name) : undefined;
     if (!tool) return { ok: false, observation: `No tool named "${name}" is available on this page right now.` };
+
+    if (tool.riskTier === "confirm") {
+      const confirmed = confirmTool ? await confirmTool({ name: tool.name, description: tool.description ?? "" }) : false;
+      if (!confirmed) {
+        return { ok: false, observation: "This action needs the user's real confirmation before it can run, and it wasn't confirmed." };
+      }
+    }
 
     const result = await modelContext.executeTool(tool, args ?? {});
     const observation = typeof result === "string" ? result : JSON.stringify(result ?? null);

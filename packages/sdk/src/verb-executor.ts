@@ -37,7 +37,13 @@ export interface ToolStepResult {
  * never actually move the page; real callers always pass one, same as
  * handleVerb's own options already do for the terminal case).
  */
-export function executeToolStep(raw: unknown, route: string, liveElements?: Map<string, HTMLElement>, onNavigate?: (route: string) => void): Promise<ToolStepResult | null> {
+export function executeToolStep(
+  raw: unknown,
+  route: string,
+  liveElements?: Map<string, HTMLElement>,
+  onNavigate?: (route: string) => void,
+  onConfirmTool?: (tool: { name: string; description: string }) => Promise<boolean>,
+): Promise<ToolStepResult | null> {
   return new Promise((resolve) => {
     // executeVerbResponse only ever reaches onToolStep for a genuinely
     // continuing verb — callers are only expected to call this after
@@ -51,6 +57,7 @@ export function executeToolStep(raw: unknown, route: string, liveElements?: Map<
       onExplain: () => {},
       liveElements,
       onNavigate,
+      onConfirmTool,
       onToolStep: (result) => {
         clearTimeout(timer);
         resolve(result);
@@ -82,6 +89,15 @@ export interface VerbExecutorOptions {
    * saw. Absent entirely for a caller that hasn't wired up live scanning.
    */
   liveElements?: Map<string, HTMLElement>;
+  /**
+   * Architecture Pillar 6 (the safety layer) — real confirmation for a
+   * WebMCP tool whose own registration declared `riskTier: "confirm"`
+   * (webmcp-client.ts's own doc comment covers the enforcement point).
+   * Absent means every "confirm"-tier tool call is declined by default —
+   * the safe fallback for a host app that hasn't wired up a real
+   * confirmation UI, never an implicit yes.
+   */
+  onConfirmTool?: (tool: { name: string; description: string }) => Promise<boolean>;
 }
 
 const FALLBACK_TEXT = "I'm not sure — I couldn't understand that response. Try rephrasing your question.";
@@ -269,7 +285,7 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
 
     case "call_tool": {
       if (verb.text) options.onExplain(verb.text);
-      void executeWebMcpTool(verb.name, verb.args).then((result) => {
+      void executeWebMcpTool(verb.name, verb.args, options.onConfirmTool).then((result) => {
         options.onToolStep?.({ verb: "call_tool", target: verb.name, ok: result.ok, observation: result.observation });
       });
       return;
@@ -410,7 +426,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       return { ok: true, observation: readElement(el) };
     }
     case "call_tool": {
-      const result = await executeWebMcpTool(action.name, action.args);
+      const result = await executeWebMcpTool(action.name, action.args, options.onConfirmTool);
       return { ok: result.ok, observation: result.observation };
     }
     case "drag": {
