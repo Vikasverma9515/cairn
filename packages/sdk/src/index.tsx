@@ -517,6 +517,22 @@ export function Copilot({
       // rtStateRef.current.startsWith("rt-") is what actually reflects
       // whether the connection is still live right now.
       if (wasRealtimeListening && rtStateRef.current.startsWith("rt-")) setRtStatus("rt-listening");
+    } catch (err) {
+      // Real, live-found gap: this function had NO catch at all — only
+      // try/finally. Any error thrown anywhere in the loop above (a
+      // rejected speakOverRealtime/speakAndWait call, a DOM exception
+      // from el.click(), a network failure) skipped the resume-listening
+      // line above ENTIRELY, leaving the mic stuck exactly where the
+      // tour left off — matching "after this it's not listening"
+      // reported live. Every other place in this file that can fail
+      // mid-turn (ask(), handleDeepgramMessage's own server-side
+      // equivalent) already guarantees SOME recovery path; this one
+      // didn't have one at all.
+      console.error("[cairn] tour failed partway through:", err);
+      rtLog("tour failed — forcing the mic back to listening instead of leaving it stuck", { error: String(err) });
+      setTourStep(null);
+      setCaption("");
+      if (wasRealtimeListening && rtStateRef.current.startsWith("rt-")) setRtStatus("rt-listening");
     } finally {
       if (tourGenerationRef.current === myGeneration) touringRef.current = false;
     }

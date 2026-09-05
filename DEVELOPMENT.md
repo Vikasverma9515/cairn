@@ -4422,6 +4422,81 @@ keeps its old, broken ids until it's rebuilt.
 
 ---
 
+## Live bug-fix pass: real server-side connection tracking, and a tour that could get permanently stuck with no error handling at all
+
+Two additions, both aimed at closing real gaps rather than another
+guessed symptom fix.
+
+**Server-side connection tracking.** The user raised a serious,
+legitimate concern — could a page reload (or several) leave more than
+one realtime connection open at once, each independently running its
+own Deepgram/LLM calls? Reading the code confirmed no server-side
+duplication (one `WebSocketServer`, one `"connection"` handler, one
+Deepgram STT setup, one Speak stream per client) — but confirming that
+by reading code once isn't the same as being able to SEE it hold on
+every future session. `createRealtimeServer` now assigns each
+connection a short id and logs it opening and closing, alongside a live
+count of how many are active — real, standing visibility instead of a
+one-time code-reading conclusion. If that count is ever more than 1
+during normal single-tab use, that's now real, direct proof of a
+genuine duplicate-connection bug; if it always reads 1, duplication is
+ruled out with evidence every session, not assumed away once.
+
+**`runTour()` had no catch block at all — only `try`/`finally`.** Read
+through the ENTIRE tour loop tracing "after this it's not listening" —
+the line that resumes the mic
+(`if (wasRealtimeListening && rtStateRef.current.startsWith("rt-"))
+setRtStatus("rt-listening")`) sits at the very end of the `try` block.
+Any error thrown ANYWHERE earlier in the loop — a DOM exception from
+`el.click()`, a rejected promise, a navigation failure — would skip
+that line entirely and leave the mic stuck in whatever state the tour
+left it in, with nothing surfaced anywhere except a silently-vanishing
+promise rejection. Every other place in this file that can fail mid-
+turn (`ask()`, the server's own `handleDeepgramMessage`) already
+guarantees some recovery path; this was the one place that didn't.
+
+**Built:**
+- `realtime-server.ts`: `nextConnectionId`/`activeConnections`,
+  logged on `wss.on("connection", ...)` open and the connection's own
+  `close` event.
+- `index.tsx`: `runTour()` gains a real `catch` block — logs the error
+  (both `console.error` and the new `rtLog` tag), then does the exact
+  same mic-resume/status-reset the success path does, so a tour that
+  fails partway through still hands control back instead of leaving the
+  session stuck.
+
+**Tests:** no new automated test — `createRealtimeServer` has no
+existing unit test coverage at all (spinning up a real
+`WebSocketServer` + client is real, separate infrastructure work, not
+attempted here); the tour catch-block fix is a live-DOM/timing path
+like every other lifecycle fix in this series. Full regression suite
+re-run instead: 524/524 tests pass repo-wide (unchanged — no test file
+touched), zero regressions. Full `npm run typecheck` clean across all 6
+workspaces. `npm run build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified, for real this time — not asked of the user.** Started
+the actual demo app via this session's own browser tooling, opened the
+widget, and drove it directly: a plain typed "hello" got a real reply
+with zero errors in the server log; asking it to highlight one of the
+four previously-broken landing-page links got "Here is the Invoices
+link" (not "Could not find that element") — real, direct confirmation
+the `getElementText` fix (two entries up) holds up live, not just in
+its own unit tests. Microphone access is blocked in this sandbox, so
+the realtime voice path itself — including the tour catch-block fix —
+could not be exercised end-to-end; the connection-tracking logging is
+now in place specifically so the next real voice test (by the user, who
+does have a mic) settles the open "duplicate connection" question with
+real terminal output instead of another round of guessing from a
+screenshot.
+
+**Pending:** the realtime/voice-specific paths (the tour catch block,
+the connection-count logging under real concurrent load) still need a
+real microphone to fully exercise — flagged honestly, not glossed over.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

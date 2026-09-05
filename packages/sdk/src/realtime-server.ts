@@ -243,10 +243,31 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   });
   const wss = new WebSocketServer({ server: httpServer });
 
+  // Real, server-side visibility into how many browser tabs/connections
+  // are actually live at once — added specifically to answer, with real
+  // data instead of a guess, a live-raised concern: could a page reload
+  // (or several in quick succession) leave more than one realtime
+  // connection open at the same time, each independently running its own
+  // Deepgram STT/TTS and LLM calls for the same user? Every connection
+  // gets a short id, logged on open and close, alongside a live count —
+  // if that count is ever more than 1 during normal single-tab use, THAT
+  // is the real, direct evidence of a genuine duplicate-connection bug;
+  // if it always reads 1, duplication server-side is ruled out with real
+  // proof, not assumed away.
+  let nextConnectionId = 1;
+  let activeConnections = 0;
+
   wss.on("connection", (client) => {
+    const connectionId = nextConnectionId++;
+    activeConnections++;
+    console.log(`[cairn realtime] connection ${connectionId} opened — ${activeConnections} active`);
+    client.on("close", () => {
+      activeConnections--;
+      console.log(`[cairn realtime] connection ${connectionId} closed — ${activeConnections} active`);
+    });
     handleConnection(client, { deepgramApiKey, sttModel, ttsVoice, llm, planLLM, criticLLM, speakerLLM, systemPrompt, manifest: options.manifest, registeredActions, actionDescriptions, capability, memory: options.memory }).catch(
       (err) => {
-        console.error("[cairn realtime] connection error:", err);
+        console.error(`[cairn realtime] connection ${connectionId} error:`, err);
         safeSend(client, { type: "error", message: "internal error" });
         client.close();
       },
