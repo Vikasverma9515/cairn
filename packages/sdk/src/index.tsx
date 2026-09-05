@@ -1124,7 +1124,23 @@ export function Copilot({
         }
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
         setRtStatus("rt-listening");
-        setCaption("");
+        // Real, live-found bug this fix removes: this used to also clear
+        // the caption here (setCaption("")). That's correct-looking for a
+        // REAL, VAD-triggered barge-in (the user's about to say something
+        // new) — the very next "final" already does archiveCurrentExchange()
+        // then overwrites caption with the new utterance, so clearing it
+        // here was always redundant for that path. But this function is
+        // ALSO called by the thinking watchdog on a timeout, where there is
+        // no new utterance coming — clearing the caption there wiped out
+        // the very question that just timed out, an instant before
+        // setAnswer(the timeout message) ran, leaving the live pair as
+        // {caption: "", answer: "That's taking longer..."} — a reply
+        // visibly floating with no question above it, and nothing for
+        // archiveCurrentExchange() to pair it with on the next turn either
+        // (archiveText skips empty text). Simply never clearing it here is
+        // correct for both callers: the barge-in path already gets a fresh
+        // caption from the next "final", and the watchdog path now keeps
+        // the timed-out question correctly paired with its own answer.
       }
 
       ws.onopen = () => {

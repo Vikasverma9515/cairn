@@ -538,6 +538,57 @@ describe("handleDeepgramMessage", () => {
     expect(sent.filter((m: any) => m.type === "verb").map((m: any) => m.generation)).toEqual([0, 1]);
   });
 
+  it("real fix for a deeper live-found bug: TWO ORDINARY, SEQUENTIAL turns with NO barge-in between them still get different generation numbers — before this fix, generation only ever bumped on an explicit barge-in, so two normal back-to-back turns shared the exact same generation, and a merely-slow first reply arriving after the second turn's own 'final' had no way to be recognized as stale (it looked identical to the current turn). handleConnection wires bumpGeneration as `() => { generation++; }`, called once per real, newly-recognized final — this test proves that wiring actually changes the outcome versus the getGeneration-only call sites above.", async () => {
+    const { client, sent } = fakeClient();
+    let generation = 0;
+    const bumpGeneration = () => {
+      generation++;
+    };
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "ok" });
+    const deps = fakeDeps(respond);
+    const speakStreamed = vi.fn().mockResolvedValue(undefined);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+
+    // Two ordinary turns, back to back — no barge-in message, no manual
+    // generation bump in the test itself, unlike the test above.
+    await handleDeepgramMessage(
+      resultsMessage("hello", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => generation,
+      neverCalledWaitForToolResult,
+      undefined,
+      undefined,
+      undefined,
+      bumpGeneration,
+    );
+    await handleDeepgramMessage(
+      resultsMessage("overview please", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      speakStreamed,
+      history,
+      turnState,
+      () => generation,
+      neverCalledWaitForToolResult,
+      undefined,
+      undefined,
+      undefined,
+      bumpGeneration,
+    );
+
+    // Starts at 1, not 0 — bumpGeneration() runs BEFORE finalizeTurn
+    // captures myGeneration, even for the very first turn.
+    expect(sent.filter((m: any) => m.type === "final").map((m: any) => m.generation)).toEqual([1, 2]);
+    expect(sent.filter((m: any) => m.type === "verb").map((m: any) => m.generation)).toEqual([1, 2]);
+  });
+
   const getContextWithArchiveBtn = () => ({
     route: "/",
     visible: [] as string[],

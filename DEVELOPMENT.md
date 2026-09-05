@@ -4497,6 +4497,86 @@ real microphone to fully exercise — flagged honestly, not glossed over.
 
 ---
 
+## Live bug-fix pass: the actual deepest root cause of transcript mispairing — `generation` only ever bumped on a barge-in, never on an ordinary new turn
+
+The user reported, precisely: asked "hello", got a real, good reply;
+asked a second, different question; it took ~30 seconds; the timeout
+message appeared, but paired with the FIRST question's own reply text,
+and the second question's own words were gone from the transcript
+entirely. Every earlier entry in this series assumed the client-side
+generation check (added two entries up) was airtight — tracing this
+report line by line finally found the real gap underneath it.
+
+`generation` (`triggerServerBargeIn`'s own counter, the value every
+message gets tagged with on the wire) only ever incremented on an
+EXPLICIT barge-in. Two ORDINARY, back-to-back turns — no interruption
+between them, just the first one taking a while — shared the exact
+same generation number, because nothing had bumped it. The client's own
+`isStaleRtMessage` check (built specifically to catch a stale message)
+had no way to tell the first turn's late reply apart from the second
+turn's current one — they looked identical. That's the real explanation
+for every "wrong answer attached to the wrong question" report in this
+entire series, including ones the earlier, narrower barge-in-specific
+fix didn't close.
+
+A second, independent bug compounded it: the thinking watchdog's own
+`triggerBargeIn()` call also ran `setCaption("")` — correct-looking for
+a REAL, VAD-triggered barge-in (the next "final" immediately overwrites
+it with the new utterance anyway), but wrong for the watchdog's own
+timeout path, where there is no new utterance coming. It wiped out the
+very question that had just timed out, an instant before the timeout
+message got set as the answer — leaving the live pair as `{caption:
+"", answer: "That's taking longer..."}`, a reply with no visible
+question above it, exactly matching the screenshot, and nothing left
+for the next `archiveCurrentExchange()` to correctly pair it with
+either (`archiveText` skips empty text).
+
+**Built:**
+- `realtime-server.ts`: `handleDeepgramMessage` gains a new optional
+  `bumpGeneration?: () => void`, called once per genuinely NEW turn (both
+  the `speech_final` and `UtteranceEnd` call sites) — BEFORE
+  `finalizeTurn` captures its own `myGeneration`, so every real turn now
+  gets its own fresh generation number, not just ones following an
+  explicit interruption. `handleConnection` wires it as
+  `() => { generation++; }` — the exact same counter
+  `triggerServerBargeIn` already bumps, now bumped from a second place
+  too. Optional and a no-op by default, so every existing call site
+  (including every existing test) keeps behaving exactly as before —
+  confirmed live: all 45 pre-existing tests passed unchanged with zero
+  edits.
+- `index.tsx`: `triggerBargeIn()`'s `setCaption("")` removed entirely.
+  The next real "final" already handles clearing/overwriting the
+  caption correctly via `archiveCurrentExchange()` — this line was
+  always redundant for a genuine barge-in and actively destructive for
+  the watchdog's own timeout path.
+
+**Tests:** `realtime-server.test.ts` (+1): two ordinary, back-to-back
+turns with NO barge-in message and no manual generation bump in the
+test itself — proven to receive different generation numbers (`[1, 2]`,
+not `[0, 0]`) once `bumpGeneration` is wired in, the exact case the
+existing barge-in-specific test doesn't cover. 525/525 tests pass repo-
+wide (up from 524, +1 new), zero regressions — including all 45 pre-
+existing `realtime-server.test.ts` tests passing completely unedited,
+real confirmation the new parameter is genuinely additive. Full `npm
+run typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment (still no live mic here) — traced directly from the user's
+own precise, turn-by-turn description (which reply arrived when, which
+question's text went missing, exactly what the timeout message was
+paired with), not guessed at, and reasoned through to the actual code
+path rather than assumed fixed by the earlier, narrower barge-in-scoped
+generation check.
+
+**Pending:** this is the deepest fix in this whole bug-fix series and
+still needs a real voice test to fully confirm — flagged honestly, same
+as every other realtime-specific fix tonight.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

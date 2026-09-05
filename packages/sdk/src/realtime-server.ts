@@ -514,7 +514,9 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   const turnState = { buffer: "" };
 
   dg.on("message", (data) => {
-    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech, recordMemoryTurn, () => scopeId);
+    void handleDeepgramMessage(data.toString(), client, deps, () => context, speakStreamed, history, turnState, () => generation, waitForToolResult, confirmRealSpeech, recordMemoryTurn, () => scopeId, () => {
+      generation++;
+    });
   });
 
   dg.on("error", (err) => {
@@ -640,6 +642,26 @@ export async function handleDeepgramMessage(
   /** Phase 5 step 2 — see finalizeTurn's own doc comment. Threaded
    * through here purely to reach finalizeTurn's two call sites below. */
   getScopeId?: () => string | null,
+  /** Real, live-found gap this closes: `generation` (getGeneration/
+   * triggerServerBargeIn) previously only ever bumped on an EXPLICIT
+   * barge-in — two ordinary, sequential turns with no interruption
+   * between them shared the exact same generation number. That was
+   * fine for what `generation` was originally built for (dropping
+   * audio/verbs abandoned mid-turn by a real interruption), but it
+   * left the CLIENT's own generation-based staleness check (added for
+   * that same reason, in index.tsx) with no way to tell a merely SLOW
+   * turn's late-arriving reply apart from the current one — nothing
+   * had bumped, so the late reply's generation still matched. Found
+   * live: a "hello" reply that took long enough to arrive AFTER the
+   * next question's own "final" had already fired, landing on the
+   * wrong caption because both were tagged the same generation.
+   * Called once per genuinely NEW turn (both call sites below), so
+   * every real "final" gets its own fresh generation — a turn is now
+   * "superseded" the instant a newer one starts, not only when an
+   * explicit interruption says so. Optional and a no-op by default so
+   * every existing call site (own or a test's) that doesn't pass this
+   * keeps behaving exactly as before. */
+  bumpGeneration?: () => void,
 ): Promise<void> {
   let msg: any;
   try {
@@ -653,7 +675,10 @@ export async function handleDeepgramMessage(
     // after utterance_end_ms of silence — a safety net for the rare case a
     // Results message never carries speech_final:true, so a turn can't get
     // permanently stuck with real transcript sitting in the buffer forever.
-    if (turnState.buffer) await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn, getScopeId);
+    if (turnState.buffer) {
+      bumpGeneration?.();
+      await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn, getScopeId);
+    }
     return;
   }
 
@@ -683,6 +708,7 @@ export async function handleDeepgramMessage(
     return;
   }
 
+  bumpGeneration?.();
   await finalizeTurn(turnState, client, deps, getContext, speakStreamed, history, getGeneration, waitForToolResult, recordMemoryTurn, getScopeId);
 }
 
