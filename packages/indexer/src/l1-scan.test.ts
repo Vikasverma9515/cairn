@@ -1,7 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Project, SyntaxKind } from "ts-morph";
 import { describe, expect, it } from "vitest";
-import { scanL1 } from "./l1-scan";
+import { getElementText, scanL1 } from "./l1-scan";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.resolve(here, "../../../fixtures/simple-app");
@@ -126,5 +127,46 @@ describe("scanL1", () => {
 
     const home = facts.pages.find((p) => p.route === "/")!;
     expect(home.inAppCopy).toEqual([{ tag: "h1", text: "Welcome", file: "app/page.tsx", line: expect.any(Number) }]);
+  });
+});
+
+function openingElementOf(source: string, tag: string) {
+  const project = new Project({ useInMemoryFileSystem: true });
+  const sf = project.createSourceFile("/App.tsx", source);
+  return sf
+    .getDescendantsOfKind(SyntaxKind.JsxOpeningElement)
+    .find((el) => el.getTagNameNode().getText() === tag)!;
+}
+
+describe("getElementText", () => {
+  it("reads a direct JsxText child, the simple case", () => {
+    const opening = openingElementOf(`const x = <a href="/x">Go to Invoices</a>;`, "a");
+    expect(getElementText(opening)).toBe("Go to Invoices");
+  });
+
+  it("real bug this fixes, found live against examples/demo-app's own landing page: recurses into a nested wrapper to find text that isn't a DIRECT child — an icon+label pattern (<a><span><Icon/> Go to Invoices</span></a>) previously came back with NO text at all, which is exactly what left these elements with a synthetic id/label and a bare, non-unique 'a' selector as their only fallback", () => {
+    const opening = openingElementOf(
+      `const x = <a href="/invoices"><span><FileText size={18}/> Go to Invoices</span></a>;`,
+      "a",
+    );
+    expect(getElementText(opening)).toBe("Go to Invoices");
+  });
+
+  it("joins text split across multiple nested elements and multiple text nodes, collapsing whitespace", () => {
+    const opening = openingElementOf(
+      `const x = <button><span>View</span> <span>failure dashboard</span></button>;`,
+      "button",
+    );
+    expect(getElementText(opening)).toBe("View failure dashboard");
+  });
+
+  it("never invents text for a dynamic JsxExpression child ({count}) — only real, static text is ever read", () => {
+    const opening = openingElementOf(`const x = <button>{count} events</button>;`, "button");
+    expect(getElementText(opening)).toBe("events");
+  });
+
+  it("returns null (not an empty string) when there is no real static text anywhere, even nested — e.g. an icon-only button", () => {
+    const opening = openingElementOf(`const x = <button><Icon/></button>;`, "button");
+    expect(getElementText(opening)).toBeNull();
   });
 });

@@ -4347,6 +4347,81 @@ dependent fix in this series.
 
 ---
 
+## Live bug-fix pass: the real, indexer-level root cause of "Could not find that element on the page" — a genuine INDEXER bug, not a runtime one
+
+The user kept hitting persistent "Could not find that element" failures
+even after the fresh-scan-per-step fix landed. Rather than keep guessing
+from screenshots, queried the demo app's own SQLite `cairn_misses`
+table directly (it already persists every reported miss — real, exact
+evidence, no browser console needed for this one): every single miss,
+across two separate test sessions, was the SAME four element ids —
+`a-13`, `a-22`, `a-31`, `a-40` — always on route `/`.
+
+Looked those ids up in the actual `ui-manifest.json`: their `label` was
+literally the SAME synthetic string as their `id` ("a-13" as its own
+label — not a real word), their `selector` was the bare tag name `"a"`
+with an EMPTY fallback list. That's not a runtime bug at all — it's the
+INDEXER (`packages/indexer`) having failed to extract any real text for
+these elements when the manifest was originally built, months before
+tonight's session even started, leaving them permanently untargetable
+no matter how fresh the live DOM scan is.
+
+Traced to the actual page source (`examples/demo-app/app/page.tsx`):
+these are the landing page's four navigation cards, each a `<Link>`
+wrapping a `<span><Icon/> Go to Invoices</span>` — the label text is
+NOT a direct child of the `<Link>`/`<a>`, it's nested one level deeper
+inside the icon+text wrapper span. `l1-scan.ts`'s `getElementText()`
+only ever read DIRECT `JsxText` children — for an element whose text is
+nested inside any wrapper, it found nothing, and `manifest.ts`'s
+`elementFallbackSelector` had nothing to fall back to but the bare tag
+name once both `text` and `ariaLabel` came back empty. Icon+label is an
+extremely common, entirely normal real-world UI pattern — this wasn't
+an edge case, it was silently breaking targeting for a mainstream
+component shape.
+
+**Built:** `getElementText()` now recurses into nested `JsxElement`
+children (collecting every real, static `JsxText` node found anywhere
+inside, not just direct children) while deliberately still skipping a
+`JsxExpression` (`{dynamicValue}` — never guessed at) and a
+`JsxSelfClosingElement` (an icon — has no text to read). Same function
+is reused by `l1-in-app-copy.ts` (Phase 4 layer 4) for copy-block
+extraction — a pure improvement there too (a `<p>` with nested inline
+formatting now reads its real full text instead of only its direct
+fragment), not a behavior change requiring separate handling.
+
+**Tests:** `l1-scan.test.ts` (+5, new `getElementText` describe block,
+isolated in-memory ts-morph projects): the simple direct-text case
+(unchanged behavior); the REAL bug's exact shape, reproduced verbatim
+from demo-app's own landing page (`<a><span><Icon/> Go to
+Invoices</span></a>` → `"Go to Invoices"`); text joined correctly
+across multiple nested elements and multiple text nodes with whitespace
+collapsed; a dynamic `{count}` expression never invented as text, only
+the real static text around it; an icon-only element with no real text
+anywhere returns `null`, not an empty string. 524/524 tests pass repo-
+wide (up from 519, +5 new), zero regressions. Full `npm run typecheck`
+clean across all 6 workspaces.
+
+**Live-verified:** rebuilt the indexer and re-ran `cairn build` against
+the REAL `examples/demo-app` end to end (a real 10-page L3 LLM describe
+pass, not a mock). Confirmed directly in the regenerated
+`ui-manifest.json`: all four previously-broken elements now have real,
+human-readable ids/labels ("Go to Invoices", "View failure dashboard",
+"Sessions (no per-row id, on purpose)", "Agent Builder (click-only
+action, no fetch)") and real, unique selectors (`a >> text=Go to
+Invoices`, etc.) instead of the useless bare `"a"` tag — the exact real,
+concrete proof this closes the exact misses recorded live in the user's
+own session.
+
+**Pending:** `ui-manifest.json` needs regenerating for any OTHER
+already-deployed app that has this same icon+label pattern elsewhere in
+its own pages — this fix only affects manifests built (or rebuilt) with
+the indexer from this point forward; a manifest built before this fix
+keeps its old, broken ids until it's rebuilt.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

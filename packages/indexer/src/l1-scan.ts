@@ -245,19 +245,45 @@ function getAttrInitializerNode(attrs: Node[], name: string): Node | undefined {
 }
 
 /** Exported for reuse by l1-in-app-copy.ts (Phase 4 layer 4) — the exact
- * same "read a JSX element's own text children" logic, not a second copy. */
+ * same "read a JSX element's own text" logic, not a second copy.
+ *
+ * Real, live-found bug this fixes: only DIRECT JsxText children were ever
+ * read — an element whose label sits inside a wrapper (`<a><span><Icon/>
+ * Go to Invoices</span></a>`, an extremely common real-world icon+label
+ * pattern, confirmed live in examples/demo-app's own landing page) came
+ * back with NO text at all. With no text and no aria-label, manifest.ts's
+ * elementFallbackSelector had nothing to fall back to but the bare tag
+ * name ("a") — a selector matching every link on the page, useless for
+ * actually finding the ONE the manifest meant. That's the real, traced
+ * cause of "Could not find that element on the page" repeating for the
+ * landing page's own nav cards — not a runtime bug at all, a static-
+ * analysis gap in how a label gets extracted in the first place. Now
+ * recurses into nested JsxElement children (never into a JsxExpression's
+ * `{dynamic value}` or a JsxSelfClosingElement icon, which have no real
+ * static text to read) so any REAL, human-authored text anywhere inside
+ * the element is found, no matter how deeply it's wrapped. */
 export function getElementText(opening: Node): string | null {
   const parent = opening.getParentIfKind(SyntaxKind.JsxElement);
   if (!parent) return null;
   const texts: string[] = [];
-  for (const child of parent.getJsxChildren()) {
+  collectJsxText(parent, texts);
+  const joined = texts.join(" ").trim().replace(/\s+/g, " ");
+  return joined.length > 0 ? joined : null;
+}
+
+function collectJsxText(element: import("ts-morph").JsxElement, texts: string[]): void {
+  for (const child of element.getJsxChildren()) {
     if (Node.isJsxText(child)) {
       const t = child.getText().trim().replace(/\s+/g, " ");
       if (t) texts.push(t);
+    } else if (Node.isJsxElement(child)) {
+      collectJsxText(child, texts);
     }
+    // JsxSelfClosingElement (an icon like <FileText/>) and JsxExpression
+    // (a dynamic value like {count}) are deliberately skipped — neither
+    // has real static text to read, and a dynamic value must never be
+    // guessed at.
   }
-  const joined = texts.join(" ").trim();
-  return joined.length > 0 ? joined : null;
 }
 
 function resolveHandlerCall(sf: SourceFile, initializer: Node | undefined): string | null {
