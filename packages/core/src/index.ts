@@ -16,6 +16,13 @@ export type Verb = (typeof VERBS)[number];
  * "check something, then decide, then act" instead of one guess. batch is
  * also continuing — see BatchActionSchema below — it just carries several
  * of those steps in one round trip instead of one.
+ *
+ * `navigate` is the one real exception to "verb type alone decides" — see
+ * `isTerminalVerb` below, which is what every real caller should use
+ * instead of checking this Set directly for a `VerbResponse` it already
+ * has in hand. This Set stays the plain type-level classification (still
+ * correct and sufficient everywhere the model's chosen verb TYPE, not its
+ * full response, is all that's available — e.g. CapabilityTier checks).
  */
 export const TERMINAL_VERBS = new Set<Verb>(["explain", "highlight", "open", "navigate", "do", "tour"]);
 
@@ -236,6 +243,7 @@ const COMPANION_FIELDS = {
   args: optionalRecord(),
   steps: optionalUnknownArray(),
   actions: optionalUnknownArray(),
+  continueAfter: optionalBoolean(),
 };
 
 // Same companion-field reasoning as COMPANION_FIELDS above, scoped to just
@@ -305,6 +313,16 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       ...COMPANION_FIELDS,
       verb: z.literal("navigate"),
       route: z.string().min(1),
+      // Real, live-reported gap this closes: navigate was ALWAYS terminal,
+      // so a genuinely compound goal that starts with navigation ("buy
+      // earbuds" — navigate to the shop, THEN search, THEN report back)
+      // ended the turn the instant it navigated, leaving the rest of the
+      // goal for the user to manually re-prompt one step at a time. Set to
+      // true only when the model itself judges the stated goal needs more
+      // than just arriving at the new page — see isTerminalVerb below,
+      // which is what actually acts on this (inherited from
+      // COMPANION_FIELDS as an optional boolean, same shape every other
+      // per-verb field already uses).
     })
     .strict(),
   z
@@ -414,6 +432,20 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
 ]);
 export type VerbResponse = z.infer<typeof VerbResponseSchema>;
 export type TourStep = Extract<VerbResponse, { verb: "tour" }>["steps"][number];
+
+/**
+ * The real "does this end the turn" check for an actual, resolved
+ * VerbResponse — TERMINAL_VERBS alone for every verb except `navigate`,
+ * which the model can now mark `continueAfter: true` when the stated goal
+ * needs more than just arriving at the new page. Every caller that has a
+ * real VerbResponse in hand (not just a bare verb name) should use this,
+ * not TERMINAL_VERBS.has(verb.verb) directly — agent-loop.ts's shared
+ * driveAgentLoop and index.tsx's realtime WS handler both do.
+ */
+export function isTerminalVerb(verb: VerbResponse): boolean {
+  if (verb.verb === "navigate" && verb.continueAfter) return false;
+  return TERMINAL_VERBS.has(verb.verb);
+}
 
 export const HistoryTurnSchema = z.object({
   role: z.enum(["user", "assistant"]),

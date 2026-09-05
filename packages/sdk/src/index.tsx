@@ -16,7 +16,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { TERMINAL_VERBS, safeParseVerbResponse, type HistoryTurn as HistoryEntry, type TourStep } from "@cairnvibe/core";
+import { isTerminalVerb, safeParseVerbResponse, type HistoryTurn as HistoryEntry, type TourStep } from "@cairnvibe/core";
 import { driveAgentLoop } from "./agent-loop";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
@@ -622,7 +622,12 @@ export function Copilot({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            route: pathname,
+            // pathnameRef, not the closed-over `pathname` — a navigate
+            // step (now possibly continuing, see isTerminalVerb) can
+            // change the real route mid-loop; this whole async function's
+            // own `pathname` closure was captured once, at the render
+            // that started this turn, and never updates again on its own.
+            route: pathnameRef.current,
             question: q,
             visible: collectVisible(),
             history: loopHistory,
@@ -652,7 +657,7 @@ export function Copilot({
       // frozen liveMapRef, so a step that reveals new DOM (a click that
       // opens a modal) doesn't leave the NEXT step unable to find
       // anything in it.
-      executeStep: (verb) => executeToolStep(verb, pathname, liveRegistryRef.current.getSnapshot().byId).then((r) => r?.observation),
+      executeStep: (verb) => executeToolStep(verb, pathnameRef.current, liveRegistryRef.current.getSnapshot().byId, (route) => router.push(route)).then((r) => r?.observation),
     });
 
     if (result.outcome === "terminal" || result.outcome === "unparseable") {
@@ -1294,7 +1299,7 @@ export function Copilot({
           if (isStaleRtMessage(msg)) return; // belongs to a turn a later "final" already superseded
           rtLog("verb received", { verb: msg.verb?.verb, generation: msg.generation });
           const parsedStep = safeParseVerbResponse(msg.verb);
-          if (parsedStep && !TERMINAL_VERBS.has(parsedStep.verb)) {
+          if (parsedStep && !isTerminalVerb(parsedStep)) {
             // A continuing agent-loop step (click/fill/read/call_tool) —
             // the turn isn't over: execute it for real and report the
             // result back so the server can decide the next step, instead
@@ -1321,7 +1326,7 @@ export function Copilot({
             // find that element on the page" — confirmed live, repeated
             // 5+ times in a row without ever recovering.
             const freshLiveMap = liveRegistryRef.current.getSnapshot().byId;
-            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap).then((result) => {
+            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap, (route) => router.push(route)).then((result) => {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "tool_result", observation: result?.observation ?? "no result" }));
               }

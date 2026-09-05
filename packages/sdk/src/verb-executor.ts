@@ -9,15 +9,15 @@ import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type
 import { findElement, findElementWithRetry, fillElement, highlightElement, logMiss, readElement, waitForDomSettle, type MissContext } from "./element-ladder";
 import { executeWebMcpTool } from "./webmcp-client";
 
-/** The real result of one agent-loop step (click/fill/read/call_tool, or a
- * batch of several) — fed back to the model as its next turn's
- * "observation" so it can decide what to do next instead of acting blind.
- * The loop that drives this lives on the caller's side, not here:
+/** The real result of one agent-loop step (click/fill/read/call_tool/
+ * navigate, or a batch of several) — fed back to the model as its next
+ * turn's "observation" so it can decide what to do next instead of acting
+ * blind. The loop that drives this lives on the caller's side, not here:
  * index.tsx's runTypedAgentLoop for the HTTP path, realtime-server.ts's
  * finalizeTurn for the realtime one — this module only ever executes one
  * step (or one batch of steps) at a time. */
 export interface ToolStepResult {
-  verb: "click" | "fill" | "read" | "call_tool" | "batch";
+  verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate";
   target?: string;
   ok: boolean;
   observation: string;
@@ -25,17 +25,23 @@ export interface ToolStepResult {
 
 /**
  * Promise wrapper around executeVerbResponse for a continuing verb
- * (click/fill/read/call_tool) — resolves once the real action has actually
- * finished (synchronously for click/fill/read, after a real await for
- * call_tool) with its real observation, instead of the fire-and-forget
- * callback shape every other verb uses. This is what a loop driver awaits
- * before deciding whether to call the model again.
+ * (click/fill/read/call_tool, or now a navigate marked `continueAfter` —
+ * see isTerminalVerb in @cairnvibe/core) — resolves once the real action
+ * has actually finished (synchronously for click/fill/read, after a real
+ * await for call_tool/navigate) with its real observation, instead of the
+ * fire-and-forget callback shape every other verb uses. This is what a
+ * loop driver awaits before deciding whether to call the model again.
+ * `onNavigate` is only needed for that new navigate-as-continuing-step
+ * case — every existing caller that never passes it keeps working
+ * unchanged (a continueAfter navigate with no onNavigate here would just
+ * never actually move the page; real callers always pass one, same as
+ * handleVerb's own options already do for the terminal case).
  */
-export function executeToolStep(raw: unknown, route: string, liveElements?: Map<string, HTMLElement>): Promise<ToolStepResult | null> {
+export function executeToolStep(raw: unknown, route: string, liveElements?: Map<string, HTMLElement>, onNavigate?: (route: string) => void): Promise<ToolStepResult | null> {
   return new Promise((resolve) => {
     // executeVerbResponse only ever reaches onToolStep for a genuinely
     // continuing verb — callers are only expected to call this after
-    // already confirming (via TERMINAL_VERBS) that the parsed verb is one,
+    // already confirming (via isTerminalVerb) that the parsed verb is one,
     // so this should always fire; a real timeout (not an immediate
     // microtask — call_tool's own real network round trip needs the time)
     // is the safety net for the case where it somehow doesn't, so a loop
@@ -44,6 +50,7 @@ export function executeToolStep(raw: unknown, route: string, liveElements?: Map<
     executeVerbResponse(raw, route, {
       onExplain: () => {},
       liveElements,
+      onNavigate,
       onToolStep: (result) => {
         clearTimeout(timer);
         resolve(result);
@@ -111,10 +118,34 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       return;
     }
 
-    case "navigate":
+    case "navigate": {
+      // Real, live-reported gap this closes: navigate used to ALWAYS end
+      // the turn the instant it fired, even for a compound goal like "buy
+      // earbuds" that needs navigate, then search, then a real report
+      // back — see isTerminalVerb's own doc comment in @cairnvibe/core.
+      // `options.onToolStep` is only ever set by executeToolStep's own
+      // continuing-step wrapper — handleVerb's options never provide it —
+      // so this branch can only run when the caller already confirmed
+      // (via isTerminalVerb) that this navigate was genuinely marked
+      // continueAfter; the defensive `verb.continueAfter` check here is
+      // belt-and-suspenders, not the real gate.
+      if (verb.continueAfter && options.onToolStep) {
+        if (verb.text) options.onExplain(verb.text);
+        options.onNavigate?.(verb.route);
+        // A client-side route change is itself an async re-render (a new
+        // page's whole DOM mounting) — same real race waitForDomSettle
+        // already closes for fill/click, arguably more likely here. The
+        // NEXT resolveVerb call needs the settled new page's context, not
+        // whatever was on screen the instant router.push was called.
+        void waitForDomSettle(300, 200, 2000).then(() => {
+          options.onToolStep?.({ verb: "navigate", target: verb.route, ok: true, observation: `Navigated to ${verb.route}.` });
+        });
+        return;
+      }
       options.onNavigate?.(verb.route);
       if (verb.text) options.onExplain(verb.text);
       return;
+    }
 
     case "do": {
       const allowed = options.registeredActions ?? [];

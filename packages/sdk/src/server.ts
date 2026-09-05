@@ -8,8 +8,8 @@ import Groq from "groq-sdk";
 import {
   CopilotRequestSchema,
   CriticVerdictSchema,
+  isTerminalVerb,
   PlannerOutputSchema,
-  TERMINAL_VERBS,
   VERBS,
   VerbResponseSchema,
   type CriticVerdict,
@@ -168,9 +168,10 @@ export function createCopilotHandlerWithLLM(
 
     // Recorded only for a TERMINAL verb — matching the realtime relay's
     // own discipline exactly: a continuing step (click/fill/read/
-    // call_tool/batch) is an internal implementation detail of one
-    // logical exchange, never its own remembered "turn".
-    if (options.memory && input.scopeId && TERMINAL_VERBS.has(verb.verb)) {
+    // call_tool/batch, or now a navigate marked continueAfter — see
+    // isTerminalVerb's own doc comment) is an internal implementation
+    // detail of one logical exchange, never its own remembered "turn".
+    if (options.memory && input.scopeId && isTerminalVerb(verb)) {
       options.memory.recordTurn(input.scopeId, "user", input.question);
       options.memory.recordTurn(input.scopeId, "assistant", summarizeVerbForHistory(verb));
     }
@@ -810,6 +811,11 @@ export function buildVerbToolSchema(registeredActions: string[], actionDescripti
         "An id from currentPageElements or liveElements. Required for highlight/open/click/fill/read. For do, the id of what the action applies to, if it needs one — prefer a liveElements id when the user means one specific item among several. Not used for batch — each of its own actions carries its own target instead. null (or omitted) if not applicable.",
       ),
       route: nullableString("A route from the manifest. Required for navigate. null (or omitted) if not applicable."),
+      continueAfter: {
+        type: ["boolean", "null"],
+        description:
+          'Only for navigate. Set to true when the user\'s real goal needs MORE than just arriving at the new page — e.g. "buy earbuds" means navigate there, then search, then report back what you found, not just navigate. When true, you\'ll be asked again once you\'ve arrived, with that page\'s own real elements, so you can decide the next real step (or say you\'re done). Leave false/null for a plain "take me to X" request, where arriving IS the whole answer — setting this needlessly costs an extra real turn for no reason.',
+      },
       action: nullableString(
         "Required for do. A short label for what's being done, e.g. \"archive-invoice\" " +
           (registeredActions.length
@@ -940,6 +946,11 @@ Always call ${VERB_TOOL_NAME} exactly once with one of these verbs:
   panel — this one actually clicks the element after highlighting it, so
   only use it when the element is meant to reveal something on click.
 - navigate: send the user to a route that appears in the manifest, in "route".
+  Set "continueAfter" to true only when the real goal needs more than just
+  arriving there (e.g. "buy earbuds" — navigate, then search, then report
+  back) — you'll be asked again once you've arrived, with that page's own
+  real elements, to decide the next step. Leave it false/null for a plain
+  "take me to X" request, where arriving is the whole answer.
 - tour: 2-6 ordered "steps", each with its own "text" and (usually) a
   "target". Use this whenever explaining the answer means touching more
   than one element — e.g. "what can I do on this page" or "give me a tour" —

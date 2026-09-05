@@ -19,7 +19,7 @@
 // built-ins) — imported as raw source by index.tsx's browser bundle AND
 // compiled to dist/ for realtime-server.ts's Node build.
 
-import { TERMINAL_VERBS, type AgentEvent, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
+import { isTerminalVerb, type AgentEvent, type CriticVerdict, type HistoryTurn, type VerbResponse } from "@cairnvibe/core";
 
 /** 4 exchanges — matches the cap both original drivers independently used. */
 export const MAX_HISTORY_TURNS = 8;
@@ -55,9 +55,11 @@ export interface AgentLoopStepEvent {
   verb: VerbResponse;
   /** 0-based. */
   iteration: number;
-  /** True if this verb is a TERMINAL_VERBS member — will end the loop
-   * right after this hook returns. Lets a caller act differently for a
-   * continuing vs. final step without re-deriving TERMINAL_VERBS itself. */
+  /** True if isTerminalVerb(verb) says this ends the loop right after
+   * this hook returns (TERMINAL_VERBS membership, except a navigate
+   * marked continueAfter — see isTerminalVerb's own doc comment). Lets a
+   * caller act differently for a continuing vs. final step without
+   * re-deriving that check itself. */
   terminal: boolean;
 }
 
@@ -151,7 +153,7 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
     const verb = await deps.getNextStep(loopHistory, i);
     if (verb === null) return { outcome: "unparseable", workingHistory: loopHistory };
 
-    const terminal = TERMINAL_VERBS.has(verb.verb);
+    const terminal = isTerminalVerb(verb);
     if (deps.onStep) {
       const abort = await deps.onStep({ verb, iteration: i, terminal });
       if (abort) return { outcome: "aborted", workingHistory: loopHistory };

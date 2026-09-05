@@ -25,6 +25,35 @@ describe("executeVerbResponse", () => {
     expect(opts.onNavigate).toHaveBeenCalledWith("/invoices");
   });
 
+  it("navigate: with no continueAfter, never calls onToolStep even when the caller provides one — the plain 'take me to X' case ends the turn exactly as before", () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "navigate", route: "/invoices" }, "/", opts);
+    expect(opts.onToolStep).not.toHaveBeenCalled();
+  });
+
+  // Real, live-reported gap this closes: navigate was ALWAYS terminal, so
+  // "buy earbuds" (navigate, then search, then report back) ended the turn
+  // the instant it navigated. See isTerminalVerb in @cairnvibe/core.
+  it("navigate: continueAfter true executes the real navigation AND reports a real observation via onToolStep, continuing the loop", async () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "navigate", route: "/shop", continueAfter: true }, "/", opts);
+    expect(opts.onNavigate).toHaveBeenCalledWith("/shop"); // the real navigation still happens immediately, not deferred
+    await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "navigate", target: "/shop", ok: true, observation: "Navigated to /shop." }));
+  });
+
+  it("navigate: continueAfter true still speaks any real text before navigating, same as the terminal case", async () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "navigate", route: "/shop", continueAfter: true, text: "Taking you to the shop" }, "/", opts);
+    expect(opts.onExplain).toHaveBeenCalledWith("Taking you to the shop");
+    await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+  });
+
+  it("navigate: continueAfter true with no onToolStep provided by the caller defensively falls back to the plain terminal behavior instead of silently dropping the navigation", () => {
+    const { onToolStep: _onToolStep, ...optsWithoutToolStep } = makeOptions();
+    executeVerbResponse({ verb: "navigate", route: "/shop", continueAfter: true }, "/", optsWithoutToolStep);
+    expect(optsWithoutToolStep.onNavigate).toHaveBeenCalledWith("/shop");
+  });
+
   it("do: executes only when the action is in the caller's registered allowlist", () => {
     const opts = makeOptions();
     executeVerbResponse({ verb: "do", action: "archiveInvoice" }, "/invoices", {
@@ -526,6 +555,18 @@ describe("executeVerbResponse", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("executeToolStep: a continueAfter navigate calls the passed onNavigate and resolves with a real observation — the real fix for a compound goal that starts with navigation", async () => {
+    const onNavigate = vi.fn();
+    const result = await executeToolStep({ verb: "navigate", route: "/shop", continueAfter: true }, "/", undefined, onNavigate);
+    expect(onNavigate).toHaveBeenCalledWith("/shop");
+    expect(result).toEqual({ verb: "navigate", target: "/shop", ok: true, observation: "Navigated to /shop." });
+  });
+
+  it("executeToolStep: a continueAfter navigate with no onNavigate passed still resolves (just doesn't move the page) — never hangs the loop waiting on a callback the caller didn't provide", async () => {
+    const result = await executeToolStep({ verb: "navigate", route: "/shop", continueAfter: true }, "/");
+    expect(result).toEqual({ verb: "navigate", target: "/shop", ok: true, observation: "Navigated to /shop." });
   });
 
   it("degrades a verb outside the fixed enum to explain, never executes it", () => {

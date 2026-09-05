@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, safeParseVerbResponse } from "./index";
+import { AgentEventSchema, ApiCallSchema, CopilotRequestSchema, CopyBlockSchema, DataShapeSchema, ManifestSchema, PageSchema, TERMINAL_VERBS, isTerminalVerb, safeParseVerbResponse } from "./index";
 
 describe("ManifestSchema", () => {
   it("accepts a well-formed manifest", () => {
@@ -369,6 +369,64 @@ describe("safeParseVerbResponse", () => {
     expect(safeParseVerbResponse("explain")).toBeNull();
     expect(safeParseVerbResponse({ verb: "explain" })).toBeNull(); // missing text
     expect(safeParseVerbResponse({ verb: "highlight" })).toBeNull(); // missing target
+  });
+
+  // Real, live-reported gap this closes: navigate was ALWAYS terminal, so a
+  // genuinely compound goal that starts with navigation ("buy earbuds" —
+  // navigate to the shop, THEN search, THEN report back) ended the turn
+  // the instant it navigated, leaving the rest of the goal for the user to
+  // manually re-prompt one step at a time. See isTerminalVerb below.
+  it("accepts navigate's optional continueAfter flag, true or false", () => {
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/shop", continueAfter: true })).toEqual({
+      verb: "navigate",
+      route: "/shop",
+      continueAfter: true,
+    });
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/shop", continueAfter: false })).toEqual({
+      verb: "navigate",
+      route: "/shop",
+      continueAfter: false,
+    });
+  });
+
+  it("accepts navigate with continueAfter omitted or explicit null — the common, single-step case", () => {
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices" })).toEqual({ verb: "navigate", route: "/invoices" });
+    expect(safeParseVerbResponse({ verb: "navigate", route: "/invoices", continueAfter: null })).toEqual({
+      verb: "navigate",
+      route: "/invoices",
+    });
+  });
+
+  it("tolerates continueAfter: null as a companion field on every other verb — the same flat-wire-schema shape every other optional field already gets", () => {
+    expect(safeParseVerbResponse({ verb: "explain", text: "hi", continueAfter: null })).toEqual({ verb: "explain", text: "hi" });
+    expect(safeParseVerbResponse({ verb: "click", target: "archive-btn", continueAfter: null })).toEqual({ verb: "click", target: "archive-btn" });
+  });
+});
+
+describe("isTerminalVerb", () => {
+  it("matches TERMINAL_VERBS for every verb that isn't navigate", () => {
+    expect(isTerminalVerb({ verb: "explain", text: "hi" })).toBe(true);
+    expect(isTerminalVerb({ verb: "highlight", target: "x" })).toBe(true);
+    expect(isTerminalVerb({ verb: "open", target: "x" })).toBe(true);
+    expect(isTerminalVerb({ verb: "do", action: "archiveInvoice" })).toBe(true);
+    expect(isTerminalVerb({ verb: "tour", steps: [{ text: "a" }, { text: "b" }] })).toBe(true);
+    expect(isTerminalVerb({ verb: "click", target: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "fill", target: "x", value: "y" })).toBe(false);
+    expect(isTerminalVerb({ verb: "read", target: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "call_tool", name: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "batch", actions: [{ verb: "read", target: "a" }, { verb: "click", target: "b" }] })).toBe(false);
+  });
+
+  it("a plain navigate (no continueAfter) stays terminal — the common, single-step 'take me to X' case, unchanged", () => {
+    expect(isTerminalVerb({ verb: "navigate", route: "/invoices" })).toBe(true);
+  });
+
+  it("navigate with continueAfter: false stays terminal — an explicit false is the same as omitting it", () => {
+    expect(isTerminalVerb({ verb: "navigate", route: "/invoices", continueAfter: false })).toBe(true);
+  });
+
+  it("real fix this verifies: navigate with continueAfter: true is NOT terminal — the agent loop keeps going instead of ending the turn the instant it arrives", () => {
+    expect(isTerminalVerb({ verb: "navigate", route: "/shop", continueAfter: true })).toBe(false);
   });
 });
 

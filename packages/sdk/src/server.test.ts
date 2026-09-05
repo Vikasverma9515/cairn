@@ -1341,6 +1341,33 @@ describe("buildVerbToolSchema", () => {
     expect(schema.properties.steps.type).toEqual(["array", "null"]);
   });
 
+  // Real, live-reported gap this closes: navigate was ALWAYS terminal, so
+  // "buy earbuds" ended the turn the instant it navigated, never letting
+  // the loop search or report back. See isTerminalVerb in @cairnvibe/core.
+  it("declares a nullable continueAfter property, for navigate's own compound-goal escape hatch", () => {
+    const schema = buildVerbToolSchema([]) as { properties: Record<string, { type: unknown }> };
+    expect(schema.properties.continueAfter.type).toEqual(["boolean", "null"]);
+  });
+
+  it("a flat navigate response with continueAfter: true round-trips through VerbResponseSchema", () => {
+    const flat = {
+      verb: "navigate",
+      route: "/shop",
+      continueAfter: true,
+      text: null,
+      target: null,
+      action: null,
+      value: null,
+      name: null,
+      args: null,
+      steps: null,
+    };
+    expect(VerbResponseSchema.safeParse(flat)).toEqual({
+      success: true,
+      data: { verb: "navigate", route: "/shop", continueAfter: true },
+    });
+  });
+
   it("a genuinely flat response — every wire property present, matching what Groq's structured tool calling actually sends — round-trips through VerbResponseSchema", () => {
     const flat = {
       verb: "click",
