@@ -605,7 +605,12 @@ export function Copilot({
         if (!terminal && !typedPlaybackSuspendedRef.current) setAnswer(summarizeVerbForHistory(verb));
         return false;
       },
-      executeStep: (verb) => executeToolStep(verb, pathname, liveMapRef.current).then((r) => r?.observation),
+      // Same real, live-found fix as the realtime WS "verb" handler's own
+      // executeToolStep call — a fresh scan per step, not the turn's
+      // frozen liveMapRef, so a step that reveals new DOM (a click that
+      // opens a modal) doesn't leave the NEXT step unable to find
+      // anything in it.
+      executeStep: (verb) => executeToolStep(verb, pathname, liveRegistryRef.current.getSnapshot().byId).then((r) => r?.observation),
     });
 
     if (result.outcome === "terminal" || result.outcome === "unparseable") {
@@ -1174,7 +1179,22 @@ export function Copilot({
             // — the server's loop stays quiet between steps on purpose,
             // to keep it fast.
             setAnswer(summarizeVerbForHistory(msg.verb));
-            void executeToolStep(msg.verb, pathnameRef.current, liveMapRef.current).then((result) => {
+            // A FRESH scan, not the turn's starting liveMapRef snapshot —
+            // real, live-found bug: a step in THIS SAME multi-step turn
+            // (a "click New Agent" that opens a modal) can reveal DOM a
+            // later step (a "fill" targeting the modal's own input) needs
+            // to find, and liveMapRef is deliberately frozen once per
+            // turn (see its own doc comment — that freeze exists to stop
+            // a background rescan from shifting an id mid-flight during
+            // ONE step's own round trip, not to survive across several
+            // sequential steps that genuinely changed the page).
+            // runTour() already does exactly this for its own steps, for
+            // the identical reason. Without it, "click New Agent, then
+            // type the name" reliably failed every time with "Could not
+            // find that element on the page" — confirmed live, repeated
+            // 5+ times in a row without ever recovering.
+            const freshLiveMap = liveRegistryRef.current.getSnapshot().byId;
+            void executeToolStep(msg.verb, pathnameRef.current, freshLiveMap).then((result) => {
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "tool_result", observation: result?.observation ?? "no result" }));
               }

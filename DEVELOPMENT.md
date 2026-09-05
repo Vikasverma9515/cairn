@@ -4291,6 +4291,62 @@ one.
 
 ---
 
+## Live bug-fix pass: a multi-step tool loop could never target DOM its own previous step revealed
+
+Live testing of a real multi-step task ("create a new agent named
+vikas" — click New Agent, then fill in the name) showed the SAME
+failure, "Could not find that element on the page," repeating 5+ times
+in a row without ever recovering, across several different re-attempted
+strategies from the Critic/replan loop. A real, reproducible,
+diagnosable bug, not a flaky one-off.
+
+`liveMapRef` (`index.tsx`) is deliberately frozen once per TURN — its
+own doc comment explains why: a background MutationObserver-driven
+rescan landing mid-flight shouldn't be able to shift what an element id
+resolves to between when a request went out and its response came
+back. That reasoning is correct for ONE step's own round trip. It's
+wrong across MULTIPLE SEQUENTIAL steps within the same multi-step turn
+— a "click New Agent" step that opens a modal genuinely changes the
+DOM, and the NEXT step ("fill the name field") needs a scan taken AFTER
+that change, not the turn's original, now-stale snapshot from before
+the modal even existed. `runTour()` already gets this right for its own
+steps (its own comment: "A fresh scan, not the tour's starting
+liveMapRef snapshot — a step after a mid-tour navigation targets
+elements on a page that didn't exist when the tour began") — the same
+fix just hadn't been applied to the two OTHER places a multi-step loop
+executes a continuing verb.
+
+**Built:** both the realtime WS `"verb"` message handler's continuing-
+step execution and the typed path's `runTypedAgentLoop`'s own
+`executeStep` now take a fresh `liveRegistryRef.current.getSnapshot().byId`
+immediately before executing each step, instead of reusing the turn's
+frozen `liveMapRef.current` — the exact pattern `runTour()` already
+established, now applied consistently everywhere a multi-step loop
+actually executes a DOM action. `web-component.ts` checked and
+confirmed clean: it doesn't implement multi-step tool execution at all,
+so this bug doesn't exist there.
+
+**Tests:** no new automated test — same DOM/live-registry timing
+dependency as other lifecycle fixes in this series; would need a real
+DOM fixture with a modal that appears mid-sequence to properly cover.
+Full regression suite re-run instead: 519/519 tests pass repo-wide
+(unchanged), zero regressions. Full `npm run typecheck` clean across
+all 6 workspaces. `npm run build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** not re-tested against a real mic/browser in this
+environment — traced directly from the user's own pasted server log,
+which showed the exact repeated failure sequence (click New Agent →
+"Clicked it" → fill input-40 → "Could not find that element on the
+page", repeated across multiple distinct retry strategies from the
+Critic), not guessed at.
+
+**Pending:** same DOM-fixture test-coverage gap as every other live-DOM-
+dependent fix in this series.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
