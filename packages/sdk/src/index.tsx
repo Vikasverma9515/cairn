@@ -89,6 +89,18 @@ export function Copilot({
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
+  // Real, live-reported gap this closes: once a continuing agent-loop step
+  // (click/fill/read/call_tool/batch) sets `answer` to its own progress
+  // text ("Typing earbuds into the search box"), that text just sat there
+  // unchanged for however long the NEXT resolveVerb call took — several
+  // real seconds, more under rate-limit retries — with nothing on screen
+  // telling the user the agent was still actually doing something. `answer`
+  // itself can't double as that signal (a terminal turn's own real,
+  // finished answer looks identical to unfinished progress text). This is
+  // a separate, explicit flag: true from the moment a continuing step's
+  // progress text is shown until the turn actually ends (a terminal verb,
+  // an error, or a give-up) — see its own setters below for exactly where.
+  const [loopWorking, setLoopWorking] = useState(false);
   const [status, setStatus] = useState<Status>("idle");
   const [caption, setCaption] = useState("");
   // The user's own last question, shown as its own floating caption bubble
@@ -375,6 +387,7 @@ export function Copilot({
   }
 
   function handleVerb(raw: unknown) {
+    setLoopWorking(false); // only ever called for a genuinely terminal verb — the turn is over
     executeVerbResponse(raw, pathname, {
       onExplain: (text) => {
         setAnswer(text);
@@ -628,7 +641,10 @@ export function Copilot({
         // Same stale-typed-reply guard as the terminal case below — a
         // multi-step typed loop can still be mid-flight when a realtime
         // call starts.
-        if (!terminal && !typedPlaybackSuspendedRef.current) setAnswer(summarizeVerbForHistory(verb));
+        if (!terminal && !typedPlaybackSuspendedRef.current) {
+          setAnswer(summarizeVerbForHistory(verb));
+          setLoopWorking(true);
+        }
         return false;
       },
       // Same real, live-found fix as the realtime WS "verb" handler's own
@@ -675,6 +691,7 @@ export function Copilot({
     }
 
     // "gave-up" — the iteration cap was hit with no terminal verb.
+    setLoopWorking(false);
     setAnswer("I wasn't able to finish that — try asking again or breaking it into smaller steps.");
     historyRef.current = [
       ...result.workingHistory,
@@ -1154,6 +1171,7 @@ export function Copilot({
           // old generation number and gets correctly dropped by the
           // isStaleRtMessage check above instead of confusingly resuming.
           triggerBargeIn();
+          setLoopWorking(false);
           // triggerBargeIn() clears the caption but never touched `answer`
           // — without this, a timed-out turn gave the user literally
           // nothing: no reply, no error, just a silent reset back to
@@ -1287,6 +1305,7 @@ export function Copilot({
             // — the server's loop stays quiet between steps on purpose,
             // to keep it fast.
             setAnswer(summarizeVerbForHistory(msg.verb));
+            setLoopWorking(true);
             // A FRESH scan, not the turn's starting liveMapRef snapshot —
             // real, live-found bug: a step in THIS SAME multi-step turn
             // (a "click New Agent" that opens a modal) can reveal DOM a
@@ -1370,6 +1389,7 @@ export function Copilot({
           // otherwise the mic never resumes and the session is stuck
           // exactly the way a silently-dropped response used to leave it.
           disarmThinkingWatchdog();
+          setLoopWorking(false);
           setAnswer(msg.message ?? "Something went wrong.");
           if (touringRef.current) {
             // A tour step's own speakStreamed() failed server-side (see
@@ -1422,6 +1442,7 @@ export function Copilot({
     setRtSpeakerMuted(false);
     setCaption("");
     setRtStatus("idle");
+    setLoopWorking(false); // defensive — a connection dropping mid-loop must never leave the "still working" indicator stuck on
     tourGenerationRef.current++; // cancel an in-progress tour rather than leaving it stuck waiting to resume rt-listening
     touringRef.current = false;
     setTourStep(null);
@@ -1503,7 +1524,25 @@ export function Copilot({
                 <div className="cairn-bubble cairn-bubble-agent" key={`a-${answer ?? status}`}>
                   {tourChip && <span className="cairn-chip">{tourChip}</span>}
                   {answer ? (
-                    <span className="cairn-bubble-text">{renderCaptionWords(answer)}</span>
+                    <span className="cairn-bubble-text">
+                      {renderCaptionWords(answer)}
+                      {loopWorking && (
+                        // Real, live-reported gap this closes: this bubble
+                        // used to go static the instant a continuing step's
+                        // own progress text was shown ("Typing earbuds into
+                        // the search box"), with nothing telling the user
+                        // the agent was still actively working for however
+                        // long the next real LLM call took. Appended inline
+                        // (not swapped in place of the text, which the
+                        // no-answer-yet case below does) so the progress
+                        // text stays legible while still showing motion.
+                        <span className="cairn-thinking cairn-thinking-inline" aria-label="Still working">
+                          <span className="cairn-thinking-dot" />
+                          <span className="cairn-thinking-dot" />
+                          <span className="cairn-thinking-dot" />
+                        </span>
+                      )}
+                    </span>
                   ) : (
                     <span className="cairn-thinking" aria-label="Thinking">
                       <span className="cairn-thinking-dot" />
@@ -1897,6 +1936,10 @@ const COPILOT_STYLES = `
   display: inline-flex;
   gap: 4px;
   padding: 2px 0;
+}
+.cairn-thinking-inline {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 .cairn-thinking-dot {
   width: 5px;

@@ -6,7 +6,7 @@
 // enforces the same schema independently — never trust the client alone.
 
 import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { findElement, findElementWithRetry, fillElement, highlightElement, logMiss, readElement, type MissContext } from "./element-ladder";
+import { findElement, findElementWithRetry, fillElement, highlightElement, logMiss, readElement, waitForDomSettle, type MissContext } from "./element-ladder";
 import { executeWebMcpTool } from "./webmcp-client";
 
 /** The real result of one agent-loop step (click/fill/read/call_tool, or a
@@ -189,7 +189,14 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       }
       highlightElement(el);
       el.click();
-      options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: "Clicked it." });
+      // Real, live-found race this closes — see waitForDomSettle's own doc
+      // comment: a click can trigger an async re-render (a cart count
+      // updating, a filtered list refreshing) that hasn't happened yet the
+      // instant .click() returns. A subsequent read step in the same turn
+      // needs the SETTLED result, not whatever was on screen a moment ago.
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: "Clicked it." });
+      });
       return;
     }
 
@@ -207,7 +214,13 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         return;
       }
       highlightElement(el);
-      options.onToolStep?.({ verb: "fill", target: verb.target, ok: true, observation: `Typed "${verb.value}" into it.` });
+      // See the click case's own comment — the exact real bug found live:
+      // typing into a search box, then reading the still-unfiltered
+      // results a moment later and reporting a match the real, since-
+      // filtered page never actually showed.
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "fill", target: verb.target, ok: true, observation: `Typed "${verb.value}" into it.` });
+      });
       return;
     }
 
@@ -282,6 +295,10 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       }
       highlightElement(el);
       el.click();
+      // Same real race as the single-step case (see waitForDomSettle's own
+      // doc comment) — arguably MORE likely here, since a batch's next
+      // step often deliberately reads what THIS step just changed.
+      await waitForDomSettle();
       return { ok: true, observation: "Clicked it." };
     }
     case "fill": {
@@ -294,6 +311,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         };
       }
       highlightElement(el);
+      await waitForDomSettle();
       return { ok: true, observation: `Typed "${action.value}" into it.` };
     }
     case "read": {

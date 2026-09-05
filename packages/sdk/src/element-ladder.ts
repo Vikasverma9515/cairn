@@ -67,6 +67,67 @@ export async function findElementWithRetry(
   return null;
 }
 
+/**
+ * Real, live-found bug this closes: a `fill`/`click` step reported itself
+ * "done" the instant its DOM event was dispatched — but the app's own
+ * reaction to that event (a filtered search-results grid re-rendering, a
+ * cart count updating) can be an unbounded-latency async round trip (a
+ * Next.js App Router `router.push` re-fetching a server component, for
+ * example — not a fixed debounce with a known delay to just sleep past).
+ * A `read` step immediately after saw STALE content and the agent
+ * confidently reported findings that didn't match what the page actually,
+ * eventually, showed — confirmed live: typing "book" into a search box,
+ * then reading the still-unfiltered product grid a moment later, and
+ * reporting a match ("Novel: The Long Way") the REAL, since-filtered page
+ * went on to show zero results for.
+ *
+ * Waits for real DOM mutations instead of guessing a sleep duration: if
+ * nothing starts mutating within `initialWaitMs`, resolves immediately
+ * (the action had no async effect at all — no reason to add latency to
+ * the common case); once mutations start, waits for `quietMs` of no
+ * further mutations before considering the page settled; a hard
+ * `timeoutMs` ceiling means a page that never stops mutating (an
+ * animation, a polling widget) can't stall the agent loop forever.
+ */
+export function waitForDomSettle(initialWaitMs = 100, quietMs = 200, timeoutMs = 1500): Promise<void> {
+  return new Promise((resolve) => {
+    // Real gap this closes: some callers stub a partial `document` (real
+    // tests in this repo do exactly that for other reasons — a fake
+    // WebMCP-tool document, for instance) without the rest of the DOM API
+    // surface — checking `document` alone isn't enough to guarantee
+    // MutationObserver (or document.body) actually exist too.
+    if (typeof document === "undefined" || typeof MutationObserver === "undefined" || !document.body) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    let sawMutation = false;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      if (quietTimer) clearTimeout(quietTimer);
+      clearTimeout(hardCap);
+      resolve();
+    };
+
+    const observer = new MutationObserver(() => {
+      sawMutation = true;
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, quietMs);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+
+    const hardCap = setTimeout(finish, timeoutMs);
+
+    setTimeout(() => {
+      if (!sawMutation) finish(); // the action had no async effect — nothing to wait for
+    }, initialWaitMs);
+  });
+}
+
 export function highlightElement(el: HTMLElement, glowMs = 4000): void {
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.add("cairn-glow");

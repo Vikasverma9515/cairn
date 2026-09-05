@@ -246,15 +246,20 @@ describe("executeVerbResponse", () => {
     }
   });
 
-  it("click (agent loop): clicks the resolved target and reports a real observation, not a terminal explain", () => {
+  it("click (agent loop): clicks the resolved target and reports a real observation, not a terminal explain", async () => {
+    const opts = makeOptions();
+    const el = fakeElement();
+    const liveElements = new Map([["sessions-tab", el]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const el = fakeElement();
-      const liveElements = new Map([["sessions-tab", el]]);
       executeVerbResponse({ verb: "click", target: "sessions-tab" }, "/admin", { ...opts, liveElements });
-      expect(el.click).toHaveBeenCalledTimes(1);
-      expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "click", target: "sessions-tab", ok: true, observation: "Clicked it." });
     });
+    expect(el.click).toHaveBeenCalledTimes(1);
+    // onToolStep now fires after waitForDomSettle's own promise resolves
+    // (element-ladder.ts) — a real microtask hop even on its "no document,
+    // resolve immediately" fast path, not a synchronous call anymore.
+    // window is already unstubbed by here, but nothing past this point
+    // needs it — highlightElement's window.setTimeout already ran above.
+    await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "click", target: "sessions-tab", ok: true, observation: "Clicked it." }));
   });
 
   it("click (agent loop): a miss reports a failed observation instead of a silent no-op", () => {
@@ -285,20 +290,24 @@ describe("executeVerbResponse", () => {
     } as unknown as HTMLInputElement;
   }
 
-  it("fill (agent loop): types into a real form field and reports the value back", () => {
+  it("fill (agent loop): types into a real form field and reports the value back", async () => {
+    const opts = makeOptions();
+    const input = fakeInput();
+    const liveElements = new Map([["client-name", input]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const input = fakeInput();
-      const liveElements = new Map([["client-name", input]]);
       executeVerbResponse({ verb: "fill", target: "client-name", value: "Acme Co." }, "/invoices", { ...opts, liveElements });
-      expect(input.value).toBe("Acme Co.");
+    });
+    expect(input.value).toBe("Acme Co.");
+    // See the click test's own comment — onToolStep is a microtask hop
+    // away now (waitForDomSettle), not synchronous.
+    await vi.waitFor(() =>
       expect(opts.onToolStep).toHaveBeenCalledWith({
         verb: "fill",
         target: "client-name",
         ok: true,
         observation: 'Typed "Acme Co." into it.',
-      });
-    });
+      }),
+    );
   });
 
   it("fill (agent loop): rejects a target that resolves but isn't a real form field", () => {

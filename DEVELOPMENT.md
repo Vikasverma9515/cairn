@@ -5200,6 +5200,105 @@ different, still-unknown cause is at work, rather than guessing again.
 
 ---
 
+### Two real, live-reported multi-step bugs: a stale-read race after fill/click, and no visible sign the agent was still working
+
+Direct, live report with real screenshots: asking the widget to search the
+Shop for "earbuds" then report back got a confidently-wrong answer (a book
+title, not matching what the real, since-filtered page went on to show),
+and separately, once a multi-step turn's progress text appeared ("Typing
+earbuds into the search box"), it just sat there unchanged with no visible
+sign the agent was still doing anything — indistinguishable from having
+silently stopped, especially once the real Groq rate-limit contention from
+this session's own heavy testing made a mid-loop call take several real
+seconds.
+
+**Bug 1 — stale read after fill/click.** Traced from the server's own
+log: the agent typed "book" into the shop search box, then immediately
+read the product grid — which still listed EVERY product, including a
+book that happened to be in the (not-yet-filtered) list. The real, live
+page's search is driven by a Next.js `router.push` → server-component
+round trip (`examples/demo-app/components/ShopSearch.tsx`,
+`app/shop/page.tsx`) — unbounded network latency, not a fixed debounce a
+sleep could reliably wait out. `fill`/`click` in `verb-executor.ts`
+reported "done" the instant their DOM event was dispatched, with zero
+wait for whatever async re-render that event might trigger — a `read`
+step immediately after saw the pre-filter DOM and the agent confidently
+reported findings the real, settled page never actually showed.
+
+**Built:** `waitForDomSettle()` (new, `element-ladder.ts`) — watches for
+real DOM mutations instead of guessing a sleep duration: resolves
+immediately if nothing starts mutating within `initialWaitMs` (100ms —
+the action had no async effect, no reason to add latency to the common
+case); once mutations start, waits for `quietMs` (200ms) of no further
+mutations; a hard `timeoutMs` ceiling (1500ms) means a continuously-
+animating/polling page can't stall the agent loop forever. Wired into
+both the single-step `fill`/`click` cases in `verb-executor.ts` and the
+`batch` action's own `fill`/`click` cases (`executeOneBatchAction`) —
+the exact same race exists there too. Defensively falls back to
+resolving immediately when `document`/`document.body`/`MutationObserver`
+aren't fully available (a real gap found running this session's own
+existing tests — one stubs a partial `document` for an unrelated reason,
+which broke on `MutationObserver is not defined` before this check was
+added).
+
+**Bug 2 — no visible "still working" signal.** The agent's progress
+text for a continuing step (`setAnswer(summarizeVerbForHistory(verb))`)
+replaces the UI's own animated "thinking" dots (previously shown only
+when `answer` was still null) — once that text appears, nothing on
+screen changes again until the turn actually ends, however long that
+takes. **Built:** a new `loopWorking` boolean state (`index.tsx`), true
+from the moment a continuing step's progress text is shown until the
+turn genuinely ends (a terminal verb via `handleVerb`, a typed-loop
+give-up, a realtime error, or the 20s thinking-watchdog firing) — set at
+every one of those real exit points, plus a defensive reset in
+`endRealtime()` so a dropped connection can't leave it stuck on. Rendered
+as the same three-dot bounce animation, appended inline after the
+progress text (a new `.cairn-thinking-inline` CSS modifier) rather than
+replacing it, so the "what it's doing" text stays legible while still
+showing real motion. `web-component.ts` was checked and confirmed to
+have no parallel gap to fix here — its realtime `handleVerb` never
+passes an `onToolStep` callback at all, so continuing verbs are already
+silently unexecuted there (a real, separate, pre-existing limitation,
+out of scope for this fix).
+
+**Tests:** `element-ladder.test.ts` gains 6 new tests for
+`waitForDomSettle` — resolves immediately with no/partial `document`,
+resolves at `initialWaitMs` when nothing mutates, waits out `quietMs`
+once a mutation arrives, keeps resetting the quiet window while
+mutations continue, never exceeds the hard `timeoutMs` ceiling, and
+disconnects its observer once settled — using a small hand-rolled
+`FakeMutationObserver` (no jsdom dependency in this repo) plus
+`vi.useFakeTimers()`. Two existing `verb-executor.test.ts` tests
+(`click`/`fill` "agent loop" cases) updated from synchronous assertions
+to `vi.waitFor`, since `onToolStep` is now a real microtask hop away
+even on the fast (no-mutation) path — not a behavior regression, a test
+correctly catching up to a real timing change. Full repo `npx vitest
+run`: 529/529 passing (523 + 6 new, zero regressions). Full `npm run
+typecheck` clean across all 6 workspaces. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified:** both fixes confirmed together in one real run against
+the live demo-app — asked "Search for keyboard and tell me if you found
+it" on `/shop`; screenshot mid-turn showed "(2 steps: fill, read)" with
+the new inline dots animating, and the search box had already, really
+filtered to just "Mechanical Keyboard" (the settle-wait working); the
+final answer — "I searched for 'keyboard' and found a Mechanical
+Keyboard product listed." — exactly matched that real, settled state,
+with the dots correctly gone once the terminal answer arrived.
+
+**Pending:** the earlier-flagged, real architecture gap this same
+conversation surfaced — `navigate` being unconditionally terminal, so a
+compound goal like "buy earbuds" that starts with navigation never lets
+the Planner/Critic engage — is still open, scoped separately (it's a
+`TERMINAL_VERBS`-contract-level change affecting both transports, not a
+timing/UI fix). `web-component.ts`'s missing `onToolStep` wiring (no
+multi-step tool execution over its own realtime path at all) is a real,
+separate, pre-existing gap, also not addressed here.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
