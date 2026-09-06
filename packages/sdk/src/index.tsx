@@ -124,6 +124,13 @@ export function Copilot({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
   const router = useRouter();
+  // Starts at the same safe default on both server and client's first
+  // render — same hydration-mismatch reason `micSupported` below does this
+  // — then, once actually restored from sessionStorage post-mount (see the
+  // dedicated restore effect further down), flips to whatever a real page
+  // reload (a host app's own mutation handler, e.g. — see
+  // loadPersistedConversation's own doc comment) had showing a moment ago,
+  // so a real reload never again looks like the conversation simply ended.
   const [open, setOpen] = useState(false);
   // Collapsed by default so the panel only ever shows the current exchange
   // — the full archived transcript (built up over a long conversation)
@@ -335,6 +342,36 @@ export function Copilot({
     setMicSupported(!!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined");
   }, []);
 
+  // Restores a conversation that survived a real page reload — same
+  // hydration-safety reason as `micSupported` just above: `open`/`answer`/
+  // `lastQuestion`/`transcript` all start at their normal empty defaults on
+  // both server and client's first render (matching what SSR produced), and
+  // only flip to whatever sessionStorage actually holds here, post-mount.
+  // Real, live-verified bug this closes: a host app's own mutation handler
+  // calling `window.location.reload()` (this SDK's own demo app does this
+  // after several real actions, e.g. moving a kanban card) tears down the
+  // entire React tree, this widget included — every bit of visible
+  // conversation state reset to nothing, making an in-progress conversation
+  // look like it had simply ended the instant the host page happened to
+  // reload, even though nothing about the CONVERSATION itself was over.
+  useEffect(() => {
+    const persisted = loadPersistedConversation();
+    if (!persisted) return;
+    setOpen(persisted.open);
+    setAnswer(persisted.answer);
+    setLastQuestion(persisted.lastQuestion);
+    setTranscript(persisted.transcript);
+    historyRef.current = reconstructHistoryFromPersisted(persisted);
+    // Starts past the restored transcript's own highest id — otherwise the
+    // very next archived entry would reuse an id already on screen, a real
+    // duplicate-React-key bug (React silently confuses which DOM node is
+    // which when two list items share a key).
+    if (persisted.transcript.length > 0) {
+      transcriptIdRef.current = Math.max(...persisted.transcript.map((t) => t.id)) + 1;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const asking = status === "asking";
   const recording = status === "recording";
   const realtimeActive = status.startsWith("rt-");
@@ -356,6 +393,26 @@ export function Copilot({
   useEffect(() => {
     answerRef.current = answer;
   }, [answer]);
+
+  // Persists the visible conversation to sessionStorage on every change, so
+  // a host app's own `window.location.reload()` (e.g. after a board-card
+  // move — see loadPersistedConversation's own comment for the full story)
+  // doesn't make an in-progress conversation look like it simply ended.
+  // Skips its own very first (mount) invocation on purpose: that call is
+  // always tied to the initial render's plain defaults (open:false,
+  // transcript:[], ...) — captured before the restore effect above's
+  // setState calls have actually landed — so persisting it would clobber a
+  // real, just-restored conversation with empty state for one tick, right
+  // before the corrective post-restore render fixes it back. Skipping costs
+  // nothing on a genuinely fresh session (there's nothing to persist yet).
+  const skippedMountPersistRef = useRef(false);
+  useEffect(() => {
+    if (!skippedMountPersistRef.current) {
+      skippedMountPersistRef.current = true;
+      return;
+    }
+    savePersistedConversation({ transcript, lastQuestion, answer, open });
+  }, [transcript, lastQuestion, answer, open]);
 
   // Auto-scroll to the newest content whenever the transcript grows or the
   // live (not-yet-archived) bubble's text changes.
@@ -1873,6 +1930,82 @@ export function Copilot({
 }
 
 const MAX_HISTORY_TURNS = 8; // 4 exchanges — matches the same cap the realtime relay uses server-side
+
+export const CONVERSATION_STORAGE_KEY = "cairn:conversation:v1";
+
+export interface PersistedConversation {
+  transcript: { id: number; role: "user" | "agent"; text: string }[];
+  lastQuestion: string | null;
+  answer: string | null;
+  open: boolean;
+}
+
+/**
+ * Real, live-reported bug this closes: a host app's own mutation handler
+ * calling a real `window.location.reload()` — a common, entirely valid
+ * pattern; this SDK's own demo app uses it after several real actions,
+ * e.g. moving a kanban card — tears down the ENTIRE React tree, this
+ * widget included. Every bit of conversation state (the visible
+ * transcript, the current exchange, even whether the panel was open)
+ * reset to nothing, making a real, in-progress conversation look like it
+ * had simply ended the instant a host page happened to reload — even
+ * though nothing about the CONVERSATION itself was actually over.
+ * `sessionStorage`, not `localStorage`, is deliberate: it survives
+ * exactly a reload/navigation within the same tab — the real scope of
+ * "this conversation" — and clears itself once the tab/window actually
+ * closes, never lingering into an unrelated later visit the way
+ * `localStorage` would.
+ */
+export function loadPersistedConversation(): PersistedConversation | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(CONVERSATION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const transcript = Array.isArray(parsed.transcript)
+      ? parsed.transcript.filter(
+          (t: unknown): t is { id: number; role: "user" | "agent"; text: string } =>
+            !!t && typeof t === "object" && typeof (t as { id?: unknown }).id === "number" && typeof (t as { text?: unknown }).text === "string" && ((t as { role?: unknown }).role === "user" || (t as { role?: unknown }).role === "agent"),
+        )
+      : [];
+    return {
+      transcript,
+      lastQuestion: typeof parsed.lastQuestion === "string" ? parsed.lastQuestion : null,
+      answer: typeof parsed.answer === "string" ? parsed.answer : null,
+      open: Boolean(parsed.open),
+    };
+  } catch {
+    return null; // private browsing, quota, or a genuinely corrupt value — never crash the widget over this
+  }
+}
+
+export function savePersistedConversation(data: PersistedConversation): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // Storage unavailable/full — the conversation just won't survive a reload this time, never worth crashing the widget over.
+  }
+}
+
+/**
+ * Rebuilds a real seed for `historyRef` (what gets sent to the model on
+ * the NEXT typed turn) from a restored transcript — deliberately derived
+ * from the same, already-persisted `transcript` rather than separately
+ * persisting `historyRef`'s own shape: one real source of truth for "what
+ * was actually said," not two that could quietly drift apart. Capped the
+ * same way every other history array in this file already is.
+ */
+export function reconstructHistoryFromPersisted(persisted: PersistedConversation | null): HistoryEntry[] {
+  if (!persisted) return [];
+  const fromTranscript: HistoryEntry[] = persisted.transcript.map((t) => ({ role: t.role === "agent" ? "assistant" : "user", text: t.text }));
+  const live: HistoryEntry[] = [
+    ...(persisted.lastQuestion ? [{ role: "user" as const, text: persisted.lastQuestion }] : []),
+    ...(persisted.answer ? [{ role: "assistant" as const, text: persisted.answer }] : []),
+  ];
+  return [...fromTranscript, ...live].slice(-MAX_HISTORY_TURNS);
+}
 
 /** Best-effort text form of a raw (unvalidated) verb response for the
  * conversation-history log — not shown to the user, just fed back to the

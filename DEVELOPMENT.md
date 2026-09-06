@@ -6554,6 +6554,95 @@ not a gap.
 
 ---
 
+### A real page reload no longer ends the conversation — sessionStorage-backed persistence for the Copilot widget
+
+Found live: reported directly — "in the board page I told the agent to
+move the task to another board, the page reloaded and then our
+conversation ended." Confirmed the mechanism: `examples/demo-app`'s own
+`BoardColumns.tsx` calls a real `window.location.reload()` after a card
+move (a legitimate, common host-app pattern for refreshing server state,
+also used by 6 other components in the demo app) — this tears down the
+ENTIRE React tree, the Copilot widget included, wiping every bit of
+visible conversation state (transcript, current exchange, even whether
+the panel was open) back to nothing. Per this session's standing rule,
+fixed at the SDK level (`packages/sdk/src/index.tsx`), not by softening
+the demo app's own reload call — any host app's own legitimate
+reload-after-mutation pattern should get this for free.
+
+**Built**:
+- `packages/sdk/src/index.tsx` — the visible conversation
+  (`transcript`/`lastQuestion`/`answer`/`open`) is now persisted to
+  `window.sessionStorage` (key `cairn:conversation:v1`) on every change,
+  and restored on the next mount. `sessionStorage`, not `localStorage`,
+  deliberately: survives exactly a reload/navigation within the same tab
+  — the real scope of "this conversation" — and clears itself once the
+  tab actually closes, never lingering into an unrelated later visit.
+  New exported helpers: `loadPersistedConversation`,
+  `savePersistedConversation`, `reconstructHistoryFromPersisted` (rebuilds
+  `historyRef`'s seed — what gets sent to the model on the next typed turn
+  — from the same restored transcript, rather than persisting a second,
+  separately-shaped copy of history that could drift). Restoring also
+  reseeds `transcriptIdRef` past the restored transcript's own highest id,
+  avoiding a real duplicate-React-key collision between restored entries
+  and newly-archived ones.
+- **A real bug found and fixed while live-verifying, not guessed**: the
+  first version read `sessionStorage` directly inside each `useState`'s
+  lazy initializer. That works functionally but is a genuine hydration
+  bug — Next.js server-renders this "use client" component too, where
+  `window` doesn't exist (so the server always renders the empty/closed
+  default), but the CLIENT's first render read real, already-restored
+  sessionStorage state, so a leftover open conversation made the client's
+  first render disagree with the server's HTML the instant one existed.
+  This file already had the correct, established pattern for exactly this
+  problem sitting right there (`micSupported`, a few lines below): start
+  at the same safe default on both server and client, then restore in a
+  `useEffect` that only ever runs post-mount, client-only. Rewritten to
+  match it — all four `useState` calls start at their plain defaults
+  again, and a new mount-only effect calls `loadPersistedConversation()`
+  and applies it via `setState`. A second, more subtle bug this surfaced:
+  the existing persist effect, if left unconditional, fires on the SAME
+  initial commit using the pre-restore render's stale empty values —
+  since effects in one commit run in declaration order using that
+  render's own closure, this would briefly overwrite (then a tick later
+  self-correct) a real just-restored conversation with empty state. Fixed
+  by skipping the persist effect's own very first (mount) invocation —
+  free of cost on a genuinely fresh session (nothing to persist yet
+  either way).
+
+**Tests**: `packages/sdk/src/conversation-persistence.test.ts` (new, 11
+tests, first test coverage this file has ever had) — round-trips a real
+conversation through save/load; returns `null` (never throws) on a
+corrupt stored value, on a missing/malformed transcript entry, when
+`window` doesn't exist (the SSR case), and when `sessionStorage` itself
+throws (private-browsing quota); `reconstructHistoryFromPersisted`'s role
+mapping, its live (not-yet-archived) question/answer append, its
+null-question/answer omission, and its `MAX_HISTORY_TURNS` cap keeping the
+most RECENT turns. Full repo `npx vitest run`: 736/736 passing (up from
+725), zero regressions. Full `npm run typecheck` clean. `npm run build -w
+@cairnvibe/core -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified — the actual reported scenario, twice**: started the demo
+app fresh, opened the Copilot widget on `/board`, had a real exchange,
+then moved a card via its real `Move to…` control (the exact
+`window.location.reload()` path) and confirmed the conversation panel
+still showed the same exchange after the reload — first on a tab that
+still held sessionStorage state from BEFORE the fix (where this exact
+repro surfaced the hydration bug above, including a visible Next.js "1
+error" dev-overlay toast and a full console hydration-error stack naming
+`Copilot` directly), then a second time from a genuinely fresh tab after
+the fix, confirming zero console errors, zero Next.js error-overlay
+portals, and the restored exchange rendering correctly.
+
+**Pending**: nothing structural for this specific bug. Flagged
+separately, out of scope for this fix: a live-observed, unrelated model
+error during verification (`Tool call validation failed: ... attempted to
+call tool 'json' which was not in request.tools`) — a Groq tool-calling
+behavior issue, not a reload/persistence issue.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
