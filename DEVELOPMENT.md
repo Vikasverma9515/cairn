@@ -7025,6 +7025,94 @@ correctly diagnosed, not a failed fix attempt.
 
 ---
 
+### A real brand mark — "Waybalance" — replacing the generic indigo-gradient badge everywhere, plus GitHub/LinkedIn assets to go with it
+
+Direct ask: pick a real logo direction (from four concepts presented
+earlier) and ship it everywhere, then set up the repo and marketing
+assets to actually get people to try the package. Picked **Waybalance** —
+three real, irregular stones (each built from a couple of overlapping
+ellipses, never a straight rectangle), stacked slightly off-center the
+way a hiker actually balances a trail cairn, with the top stone in an
+ember accent — over the other three concepts (a stone-stack monogram, a
+refined-bars evolution of the old mark, and a path-plus-stack lockup),
+because it's the most literal, warm, and ownable of the four: nothing
+else in this space uses organic stacked-stone shapes, and unlike the old
+mark, it actually reads as the word "cairn" means.
+
+**Built — the mark itself, everywhere it appears**:
+- `docs/images/logo.svg` — the app-icon badge (used in the README),
+  replaced: ink→slate gradient background (was indigo→violet), the
+  Waybalance stones in warm stone (`#EDE6DA`) with the top stone in ember
+  (`#E07A3F`), same rounded-square badge shape and sheen treatment as
+  before so it drops in at the same size/format.
+- `packages/sdk/src/index.tsx`'s `CairnMark()` — the actual in-product
+  widget button icon, redrawn as a simplified 5-ellipse version of the
+  same mark (a main ellipse + one bump per stone, tuned and confirmed
+  legible at the real ~20px render size, not just at preview scale) in
+  `currentColor` so it still inherits the button's own color/theme.
+- `site/index.html`'s nav badge — same mark, same ink/stone/ember
+  palette, replacing the old indigo badge with matching bars.
+- `docs/images/mark.svg` (new) — the flat mark with no badge/background,
+  for placing directly on a colored surface (the two new marketing assets
+  below both use it this way).
+
+**Built — marketing/discovery assets**, all rendered from real SVG
+(`docs/images/*.svg` sources, kept alongside the PNG exports so they stay
+editable) via `rsvg-convert`, using Fraunces/Work Sans/IBM Plex Mono
+loaded into a throwaway local fontconfig (`/tmp/cairn-fontconfig` —
+deliberately NOT installed into the real system font library, so this
+left no trace outside the repo and the temp dir):
+- `docs/images/github-social-preview.png` (1280×640, GitHub's own
+  recommended size) — the mark, the wordmark in Fraunces, the real
+  tagline, and `npx @cairnvibe/indexer setup` as a small authentic
+  developer-tool detail, on the same ink/ember ground as the new logo.
+- `docs/images/linkedin-banner.png` (1584×396, LinkedIn's personal
+  profile banner size) — same system, laid out so the bottom-left
+  quarter (where LinkedIn actually overlays the circular profile photo)
+  stays clear of any text or the mark — a real, checked constraint, not
+  guessed; caught and fixed a genuine text-collision bug in the first
+  draft (the wordmark and tagline overlapped the mark and each other)
+  before shipping the corrected layout.
+- `docs/images/logo-256.png` / `logo-512.png` — plain raster exports of
+  the new badge, for anywhere an SVG isn't accepted.
+
+**Built — repo discoverability** (`gh repo edit`, live against the real
+GitHub repo, verified by reading the result back, not just trusting the
+command succeeded): set a real description ("Don't learn the software —
+just tell it what you want. An in-app AI copilot that reads your app's
+real source and clicks its real buttons.") and ten real topics (`ai`,
+`nextjs`, `copilot`, `voice-ai`, `developer-tools`, `react`, `typescript`,
+`llm`, `ai-agent`, `in-app-assistant`) — both were empty before this.
+
+**Verified before shipping, not assumed**: rendered the new
+`CairnMark()` at its true ~20px button size (not just a large preview)
+and confirmed by eye it still reads clearly as stacked stones rather than
+blurring into a blob; confirmed via `npm run typecheck -w @cairnvibe/sdk`
+and a live rebuild+restart of `examples/demo-app` that the widget button
+actually renders the new SVG markup (checked the live DOM's own
+`outerHTML`, not just the source file); confirmed both `@cairnvibe/core`
+and `@cairnvibe/sdk` are genuinely published on npm at the versions this
+repo's own `package.json` files claim (`npm view` against the real
+registry) — a real precondition for "advertise it and have people try
+it" that was worth checking rather than assuming.
+
+**Pending — the parts only the account owner can actually do**: GitHub
+has no API for uploading a repository's social-preview image (confirmed
+by checking — it's genuinely Settings-UI-only, drag-and-drop at
+Settings → General → Social preview) — `docs/images/github-social-preview.png`
+is ready, uploading it is a manual step. Same for LinkedIn: no account
+access exists here to upload a banner or publish a post on the user's
+behalf (posting on someone's behalf needs their own explicit action per
+this session's standing rules, not something to route around) —
+`docs/images/linkedin-banner.png` and a suggested post are ready; using
+them is the user's own action.
+
+**Failed:** nothing — one genuine bug (the first LinkedIn banner draft's
+overlapping text) was caught on the required look-once-before-publish
+pass and fixed before anything shipped, not after.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

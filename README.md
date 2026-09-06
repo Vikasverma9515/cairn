@@ -8,9 +8,9 @@
 
   <p>
     <a href="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml"><img src="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-6366f1.svg" alt="MIT License"></a>
-    <a href="./ROADMAP.md"><img src="https://img.shields.io/badge/framework%20support-Next.js%20today%2C%20any%20framework%20on%20the%20roadmap-6366f1.svg" alt="Framework support"></a>
-    <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-6366f1.svg" alt="PRs welcome"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-E07A3F.svg" alt="MIT License"></a>
+    <a href="./ROADMAP.md"><img src="https://img.shields.io/badge/framework%20support-Next.js%20today%2C%20any%20framework%20on%20the%20roadmap-E07A3F.svg" alt="Framework support"></a>
+    <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-E07A3F.svg" alt="PRs welcome"></a>
   </p>
 
   <img src="docs/images/landing-page.png" width="720" alt="Cairn landing page — 'Don't learn the software, just tell it what you want,' with a live example of an agent building an n8n-style flow from a spoken request" />

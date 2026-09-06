@@ -2083,12 +2083,19 @@ function renderCaptionWords(text: string) {
   ));
 }
 
+// "Waybalance" — three real, irregular stones (an ellipse plus a smaller
+// bump, not a rectangle), stacked slightly off-center the way a hiker
+// actually balances a trail cairn, instead of the perfectly centered flat
+// bars this replaced. Same mark as docs/images/logo.svg and site/index.html's
+// nav badge, just currentColor here so it inherits the button's own color.
 function CairnMark() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <rect x="7" y="12.5" width="6" height="2.6" rx="0.5" fill="currentColor" />
-      <rect x="4.5" y="8.5" width="11" height="2.6" rx="0.5" fill="currentColor" opacity="0.75" />
-      <rect x="8.2" y="4.5" width="3.6" height="2.6" rx="0.5" fill="currentColor" opacity="0.5" />
+      <ellipse cx="10" cy="14.6" rx="6.1" ry="2.3" fill="currentColor" />
+      <ellipse cx="6.3" cy="14.1" rx="2.5" ry="1.6" fill="currentColor" />
+      <ellipse cx="9.1" cy="10.4" rx="4.3" ry="2" fill="currentColor" opacity="0.82" />
+      <ellipse cx="6.2" cy="10" rx="1.7" ry="1.2" fill="currentColor" opacity="0.82" />
+      <ellipse cx="11.7" cy="6.4" rx="2.6" ry="1.6" fill="currentColor" opacity="0.6" />
     </svg>
   );
 }
