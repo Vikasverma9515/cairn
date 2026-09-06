@@ -31,7 +31,9 @@ would with a mouse. Say "build me a flow that emails me on a new lead,"
 and it happens in front of you, in a tool you've never opened before.
 
 It's not a chatbot bolted onto the side that tells you what to click. It
-clicks.
+plans the steps, checks its own work, and gets the whole thing done —
+clicking, filling, navigating, or talking, whatever the goal actually
+needs.
 
 - **For your customers** — they don't learn your product, they describe
   what they want and watch it happen.

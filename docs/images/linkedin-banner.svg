@@ -32,7 +32,7 @@
 
   <text x="695" y="300" font-family="Work Sans" font-weight="500" font-size="27" fill="#C9BFB0">Don't learn the software — <tspan fill="#E07A3F">just tell it what you want.</tspan></text>
 
-  <text x="695" y="337" font-family="IBM Plex Mono" font-size="18.5" fill="#8A8072">An in-app AI copilot that clicks the real buttons for your users.</text>
+  <text x="695" y="337" font-family="IBM Plex Mono" font-size="18.5" fill="#8A8072">An agentic AI copilot that plans and gets real work done in your app.</text>
 
   <text x="1500" y="370" font-family="IBM Plex Mono" font-size="19" fill="#B9AF9F" text-anchor="end">npx @cairnvibe/indexer setup</text>
 
