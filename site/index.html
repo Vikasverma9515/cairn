@@ -313,7 +313,7 @@
     </div>
 
     <div class="proof-strip">
-      <div class="proof-item"><div class="val">5</div><div class="lbl">fixed verbs — never a raw click it invented</div></div>
+      <div class="proof-item"><div class="val">16</div><div class="lbl">fixed verbs — never a raw click it invented</div></div>
       <div class="proof-item"><div class="val">~1.5s</div><div class="lbl">to first spoken reply, streamed</div></div>
       <div class="proof-item"><div class="val">2</div><div class="lbl">LLM providers — Anthropic or Groq</div></div>
       <div class="proof-item"><div class="val">0</div><div class="lbl">dependencies for the web component</div></div>
@@ -391,19 +391,33 @@
     </div>
 
     <p class="kicker" style="margin-top:56px;">What keeps it safe</p>
-    <h2 style="max-width: 30ch;">The model never picks a selector. It picks one of five verbs.</h2>
+    <h2 style="max-width: 34ch;">The model never picks a selector. It picks from a fixed 16-verb enum, verified every step.</h2>
     <p class="lede">
       Every response is independently re-validated server-side against a fixed schema —
       regardless of what the client sends. It can only take an action you registered; it can
-      never invent a click, run arbitrary code, or touch something you didn't allow. A lookup
-      miss degrades to a plain explanation, never a guess.
+      never invent a click, run arbitrary code, or touch something you didn't allow. A goal that
+      needs more than one step runs through a real Planner → Executor → Critic loop — a genuinely
+      separate pass checks each real result before deciding to continue, replan, or stop, instead
+      of the executor grading its own work. A lookup miss degrades to a plain explanation, never
+      a guess.
     </p>
     <div class="verb-row">
       <span class="verb">explain</span>
       <span class="verb">highlight</span>
       <span class="verb">open</span>
       <span class="verb">navigate</span>
+      <span class="verb">tour</span>
       <span class="verb">do</span>
+      <span class="verb">click</span>
+      <span class="verb">fill</span>
+      <span class="verb">read</span>
+      <span class="verb">call_tool</span>
+      <span class="verb">drag</span>
+      <span class="verb">select</span>
+      <span class="verb">key</span>
+      <span class="verb">scroll</span>
+      <span class="verb">wait_for</span>
+      <span class="verb">batch</span>
     </div>
   </div>
 </section>
@@ -434,9 +448,19 @@
         <p>Point <code>cairn build</code> at a running URL instead of source and it crawls the rendered page with a headless browser — works on any framework's output.</p>
       </div>
       <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></div>
+        <h3>Plans, acts, and checks its own work</h3>
+        <p>A goal needing more than one step gets a real Planner → Executor → Critic loop — an independent pass verifies each real result before continuing, replanning, or stopping, instead of the executor grading itself.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M4 19h1a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H4"/><path d="M13 6h4a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-4"/><path d="M13 6V4a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v2"/><path d="M13 12h4"/></svg></div>
+        <h3>Learns your platform as it goes</h3>
+        <p>Every task that genuinely completes can leave behind a small, verified Skill — a real fact about how your app works, never user data — retrieved next time so it stops re-discovering the same thing.</p>
+      </div>
+      <div class="card">
         <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></svg></div>
-        <h3>Conversation memory</h3>
-        <p>"Do that for the other one too" resolves against the last few turns, not just the current request — a real back-and-forth, not stateless Q&amp;A.</p>
+        <h3>Real, tiered memory</h3>
+        <p>"Do that for the other one too" resolves for free within one exchange. Wire a memory store and it's a real SQLite-backed system — an explicit <code>remember</code>, a searchable turn history, and long-term facts recalled only when relevant — not just what fits in one request.</p>
       </div>
       <div class="card">
         <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
@@ -472,7 +496,7 @@
 <section id="cli">
   <div class="wrap">
     <p class="kicker">CLI reference</p>
-    <h2>Seven commands, that's the whole surface.</h2>
+    <h2>Eight commands, that's the whole surface.</h2>
     <table class="cli">
       <tr><th style="width:1%;">Command</th><th class="desc">What it does</th></tr>
       <tr><td><code>cairn setup [dir]</code></td><td class="desc">The one-command path — installs, asks skippable questions, wires the widget into your real layout, builds once, sets up auto-rebuild.</td></tr>
@@ -482,6 +506,7 @@
       <tr><td><code>cairn build &lt;url&gt;</code></td><td class="desc">Crawl mode — points at a running app instead of source, works on any framework.</td></tr>
       <tr><td><code>cairn diff &lt;a&gt; &lt;b&gt;</code></td><td class="desc">What changed between two manifests — useful in CI to catch silent drift.</td></tr>
       <tr><td><code>cairn docs &lt;dir&gt;</code></td><td class="desc">Reads an existing manifest and writes a human-readable <code>CAIRN_DOCS.md</code>.</td></tr>
+      <tr><td><code>cairn webmcp &lt;dir&gt;</code></td><td class="desc">Reads a manifest, generates a component that registers your already-traced actions as WebMCP tools for any MCP-compatible agent.</td></tr>
     </table>
   </div>
 </section>

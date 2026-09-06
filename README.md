@@ -108,19 +108,91 @@ scaffolding — see the CLI reference below.
 
 ```
 your app ──► read source ──► map what's real ──► register actions ──► live agent
-             (AST scan)       (reachability)      (your own auth)     explain / highlight
-                                                                       open / navigate / do
+             (AST scan)       (reachability)      (your own auth)     plans, acts, verifies
 ```
 
 At runtime, `<Copilot/>` reads the user's question + current route +
-visible elements, sends them to your own `/api/copilot` route, and gets
-back exactly one verb from a fixed enum — `explain`, `highlight`, `open`,
-`navigate`, or `do` — never a raw selector, never arbitrary code. Every
-response is independently re-validated server-side against that same
-schema, so a prompt-injection attempt in the user's question can't
-produce an unregistered action (see `packages/sdk/src/server.test.ts`). A
-lookup miss always degrades to a plain explanation — it never guesses and
-clicks the wrong thing.
+visible elements (both the build-time manifest AND a live scan of what's
+*actually* rendered right now — see "What's actually running" below),
+sends them to your own `/api/copilot` route, and gets back exactly one
+verb from a **fixed 16-verb enum** — never a raw selector, never
+arbitrary code:
+
+- **Terminal** (end the turn): `explain`, `highlight`, `open`, `navigate`, `tour`, `do`
+- **Continuing** (one step of a multi-step goal, repeated until done): `click`, `fill`, `read`, `call_tool`, `drag`, `select`, `key`, `scroll`, `wait_for`, `batch`
+
+A question that needs more than one step ("find this invoice, then
+archive it") drives a real Planner → Executor → Critic loop: a Planner
+call breaks the goal into ordered tasks, each continuing step actually
+runs, and a genuinely separate Critic pass checks the real result before
+deciding to continue, replan, or stop — not the executor grading its own
+work. Every single verb, on every step, is independently re-validated
+server-side against the same fixed schema, so a prompt-injection attempt
+in the user's question (or in anything scraped from the page) can never
+produce an action that wasn't explicitly registered (see
+`packages/sdk/src/server.test.ts`). A lookup miss always degrades to a
+plain explanation — it never guesses and clicks the wrong thing.
+
+<details>
+<summary><b>What's actually running underneath — the full capability list</b></summary>
+
+- **A live DOM scan, not just the build-time manifest** — a background
+  scanner keeps a real inventory of what's clickable *right now*,
+  independent of `data-ai` tagging, so the agent can address a
+  dynamically-rendered row/card the indexer never saw ahead of time, or
+  even a plain `<div onClick>` styled as a button (`runtime-scan.ts`).
+- **Planner + Critic**, on both the typed and the realtime-voice
+  transport — real multi-step task decomposition and independent
+  step-by-step verification (`resolvePlan`/`resolveCritic` in
+  `packages/sdk/src/server.ts`).
+- **UI-pattern classification + Playbooks** — the live scan is classified
+  against known patterns (`table-crud`, `kanban`, `canvas`,
+  `search-filter`, `wizard`) and, when one matches, the Planner gets a
+  starting-point hint for how that *kind* of page is usually operated —
+  never a script, still fully re-verified (`packages/core/src/ui-patterns.ts`,
+  `playbooks.ts`).
+- **Skills — the agent writes its own notes.** Once a task genuinely
+  completes, any new, Critic-verified fact about the *platform* (never
+  user data) gets compiled into a small, reusable Skill for next time —
+  "the canvas's connection field is a dropdown, not a drag" — retrieved
+  by a cheap keyword match against the next goal, no extra LLM call
+  (`packages/sdk/src/skill-store.ts`, `compileSkill`/`matchSkillByGoal` in
+  `server.ts`).
+- **Real, tiered memory** — Core (explicit `remember`, small, always
+  injected), Recall (every turn, keyword-searchable), and Archive
+  (long-term facts, pulled in only when relevant) — a real SQLite store,
+  not just "the last few turns" in one request (`memory-sqlite.ts`).
+- **Deep runtime context beyond button labels** — the indexer also
+  traces a page's real TypeScript data shapes (`Invoice { status: "Paid"
+  | "Overdue" }`), real guard-clause business rules ("must be logged in"),
+  real human-authored heading/paragraph copy, and which real project
+  function actually handles a traced API call — so the agent reasons
+  from what's real, not a guess (`packages/indexer/src/l1-data-shapes.ts`,
+  `l1-business-rules.ts`, `l1-in-app-copy.ts`, `l1-api-routes.ts`).
+- **WebMCP tool calling** — a page can register real, typed functions
+  (`document.modelContext.registerTool`) as the highest-trust action
+  source there is; a tool can require a real end-user confirmation before
+  it runs, which only the page's own registration can set, never the
+  model (`webmcp-client.ts`; `cairn webmcp <dir>` auto-generates this from
+  already-traced actions — see the CLI table below).
+- **Session-aware key rotation** — a confirmed-dead API key is excluded
+  from rotation for the rest of the process's life (never handed out
+  forever), a rate limit retries on a different configured key
+  automatically, and a model's already-generated answer is recovered
+  directly from certain provider errors instead of wasting a retry
+  (`key-rotator.ts`, `isInvalidKeyError`/`extractFailedGenerationArguments`
+  in `server.ts`).
+- **Conversation survives a reload** — the widget's visible transcript
+  persists across a real `window.location.reload()` (a common pattern
+  after a mutation), so a host app refreshing the page mid-conversation
+  doesn't make it look like the agent simply stopped answering
+  (`loadPersistedConversation`/`savePersistedConversation` in `index.tsx`).
+- **A misses dashboard** — every client-side element-lookup miss is
+  aggregated server-side (by route and target, most-frequent-first), so
+  a deployer can see exactly which questions the agent can't resolve yet
+  instead of guessing (`dashboard.ts`, `reportMissesEndpoint` below).
+
+</details>
 
 ## Quick start
 
@@ -245,11 +317,17 @@ npx cairn-realtime --port 3010   # its own long-lived process alongside `next de
 - **Barge-in** — talk over the agent and it stops immediately.
 - **Tours** — an answer spanning several elements comes back as an
   ordered walkthrough, not one paragraph naming five buttons.
-- **Memory** — "highlight that instead" resolves against the last few
-  turns.
-- **Capability tiers** — `explain` / `guide` / `act` (default `act`) caps
-  what the agent is *allowed* to do, independent of which actions are
-  registered.
+- **Memory, in-turn and persistent** — "highlight that instead" resolves
+  against the current exchange for free; wire a `memory` store
+  (`createSqliteMemoryStore`) and a `scopeId` and you get real, tiered,
+  cross-session memory — an explicit `remember` (small, always injected),
+  a searchable turn history, and long-term facts recalled only when
+  relevant — not just what fits in one request.
+- **Capability tiers** — `explain` (read/point-at-things only, plus
+  `tour`), `guide` (adds navigating and clicking), or `act` (default —
+  every verb) caps what the agent is *allowed* to do, independent of
+  which actions are registered, and can't be bypassed even by a
+  registered action id.
 
 Every spoken/displayed line follows one rule regardless of path: no
 markdown, never say an internal element id out loud.
@@ -265,6 +343,7 @@ markdown, never say an internal element id out loud.
 | `cairn build <url>` | Crawl mode — any framework, from a running app. |
 | `cairn diff <a> <b>` | What changed between two manifests. |
 | `cairn docs <dir>` | Reads a manifest, writes a human-readable `CAIRN_DOCS.md`. |
+| `cairn webmcp <dir>` | Reads a manifest, generates a `CairnWebMcpTools.tsx` that registers your already-traced actions as WebMCP tools for *any* MCP-compatible agent, not just Cairn. |
 
 ## Repo layout
 
