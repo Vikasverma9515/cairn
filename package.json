@@ -7,6 +7,7 @@
     "examples/*"
   ],
   "scripts": {
+    "dev": "npm run dev -w demo-app",
     "build": "npm run build --workspaces --if-present",
     "test": "vitest run",
     "determinism": "bash scripts/check-determinism.sh",
