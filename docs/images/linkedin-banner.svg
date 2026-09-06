@@ -4,8 +4,8 @@
       <stop offset="0%" stop-color="#242019"/>
       <stop offset="100%" stop-color="#1B1815"/>
     </linearGradient>
-    <radialGradient id="glow" cx="66%" cy="38%" r="60%">
-      <stop offset="0%" stop-color="#E07A3F" stop-opacity="0.26"/>
+    <radialGradient id="glow" cx="62%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#E07A3F" stop-opacity="0.30"/>
       <stop offset="100%" stop-color="#E07A3F" stop-opacity="0"/>
     </radialGradient>
   </defs>
@@ -17,7 +17,7 @@
        meaningful sits right of that, matching how LinkedIn actually
        overlaps a circular photo on this banner -->
 
-  <g transform="translate(560,96) scale(1.65)">
+  <g transform="translate(400,50) scale(2.3)">
     <ellipse cx="64" cy="83" rx="38" ry="17" fill="#EDE6DA"/>
     <ellipse cx="45" cy="79" rx="18" ry="12" fill="#EDE6DA"/>
     <ellipse cx="86" cy="82" rx="15" ry="11" fill="#EDE6DA"/>
@@ -28,12 +28,12 @@
     <ellipse cx="84" cy="36" rx="8" ry="6" fill="#E07A3F"/>
   </g>
 
-  <text x="812" y="205" font-family="Fraunces" font-weight="600" font-size="66" letter-spacing="-1.5" fill="#EDE6DA">cairn</text>
+  <text x="690" y="250" font-family="Fraunces" font-weight="600" font-size="92" letter-spacing="-2" fill="#EDE6DA">cairn</text>
 
-  <text x="814" y="250" font-family="Work Sans" font-weight="500" font-size="21" fill="#B9AF9F">Don't learn the software — <tspan fill="#E07A3F">just tell it what you want.</tspan></text>
+  <text x="695" y="300" font-family="Work Sans" font-weight="500" font-size="27" fill="#C9BFB0">Don't learn the software — <tspan fill="#E07A3F">just tell it what you want.</tspan></text>
 
-  <text x="814" y="288" font-family="IBM Plex Mono" font-size="15.5" fill="#8A8072">An in-app AI copilot that clicks the real buttons for your users.</text>
+  <text x="695" y="337" font-family="IBM Plex Mono" font-size="18.5" fill="#8A8072">An in-app AI copilot that clicks the real buttons for your users.</text>
 
-  <text x="1174" y="352" font-family="IBM Plex Mono" font-size="16" fill="#8A8072" text-anchor="end">npx @cairnvibe/indexer setup</text>
+  <text x="1500" y="370" font-family="IBM Plex Mono" font-size="19" fill="#B9AF9F" text-anchor="end">npx @cairnvibe/indexer setup</text>
 
 </svg>
