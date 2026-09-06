@@ -6832,6 +6832,88 @@ gap, not a known failure.
 
 ---
 
+### Closing the internal-id leak live-found in the last entry, plus a real brevity rule — "fix that also" and "responses should be small dude, like a real person talking"
+
+Two direct, back-to-back follow-ups on the same conversation. First: "fix
+that also dude," pointing at the internal-element-id leak flagged (and
+initially spun off as a separate task, then pulled back in) at the end of
+the prior entry. Second, sent mid-fix: "the agent should only say the
+required right things... the agent response should be small dude, like a
+real person talking" — a real, separate observation that even the now-
+natural-sounding answers were running long: 3-5 sentences of prose for
+questions a real person would answer in one breath.
+
+**The id leak, and why the first attempt at fixing it wasn't enough**: the
+existing "never say an element's internal id" rule already lived in
+`buildSystemPrompt`'s style section, but live-testing showed the model
+overriding it specifically when a question's most natural answer seemed to
+require the id — "how would you tell two same-named cards apart?" pulled
+the model straight to `board-card-card-1788625210797` despite the rule
+telling it not to. First fix (a carve-out in the same style bullet,
+explicitly naming this exact question shape) worked for that phrasing but
+still failed live under a more pointed rephrasing ("what's the *technical*
+way the system distinguishes them?"). Root issue: a rule stated once, late
+in the prompt, wasn't enough for a smaller open-weight model against a
+question that directly invites internal/technical detail. Fixed properly
+with two more things, not just more of the same: (1) a second reinforcement
+placed right where `currentPageElements`/`liveElements` are first
+introduced — where the model actually learns ids exist at all — stating
+plainly they're for `target` only, never for the user, even under a
+"technical"/"internal" framing; (2) a concrete wrong/right example pair
+(`Wrong: "...(for example, board-card-card-1788625210797)."` /
+`Right: "...an internal identifier, though that's not something you'd
+normally see or need."`) — few-shot examples reliably outperform abstract
+rules alone for this kind of instruction-following. Live-verified against
+the exact adversarial phrasing that leaked twice before: no raw id printed,
+answer describes the CONCEPT of a hidden identifier instead.
+
+**The brevity rule**: added directly to the same "must sound like a person
+talking" section — say only what answers the question, then stop; one or
+two sentences is the normal length; more only when a question genuinely
+has several distinct parts; if the same point is being made twice in
+different words, cut one. Deliberately scoped to PROSE length, not
+structural completeness — a tour verb's own "2-6 steps" requirement is
+untouched, and each step's own "text" just gets the same one-or-two-
+sentence treatment individually.
+
+**Live-verified**: the same adversarial "technical way" question that had
+leaked a raw id under BOTH the original rule and the first carve-out now
+answers cleanly and shorter: "Each card gets its own hidden unique
+identifier when it's created; the system uses that internal ID—not the
+visible title—to tell cards apart even if their names are identical." — no
+id string, and about half the length of the pre-fix answer. Also tested
+"what can I do on this page?" (a real tour-shaped question) to confirm the
+brevity rule doesn't break multi-step structure: one attempt hit a genuine,
+unrelated, pre-existing model hiccup (a schema-invalid response, no id/
+tool-name error logged — the model just produced something that didn't
+parse, falling to resolveVerb's existing "I'm not sure how to help with
+that" fallback, same safety net as always); an identical retry succeeded
+cleanly with a real 5-step tour, concise per-step text, confirming the
+brevity wording doesn't compromise tour's structural requirements — the
+one failure was ordinary model variance, not a regression.
+
+**Tests**: full repo `npx vitest run`: 739/739 passing, no regressions
+(both fixes are prompt-content-only — no new schema/logic paths, so no new
+unit tests were needed beyond the existing structural coverage). Full `npm
+run typecheck` clean. `npm run build -w @cairnvibe/sdk` rebuilt cleanly
+after each of the three edits in this entry (id carve-out, stronger id
+fix, brevity rule), each rebuilt and re-verified live before moving to the
+next.
+
+**Pending**: same honest gap as the prior entry — no quantitative eval
+run confirming these hold at scale, only targeted live sampling against
+the specific phrasings that had failed. The id-leak fix is now verified
+against the hardest phrasing tried so far, but "hardest tried" isn't the
+same as "provably can't happen" for a probabilistic model; a real eval
+pass (`packages/evals`) scoring id-leak and response-length across many
+real transcripts would be the honest way to close this out fully.
+
+**Failed:** nothing — the one schema-parse hiccup during testing was
+confirmed as pre-existing model variance (resolveVerb's existing fallback
+handled it correctly), not a new failure introduced by this entry's edits.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
