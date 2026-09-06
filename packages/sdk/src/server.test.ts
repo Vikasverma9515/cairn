@@ -1106,6 +1106,94 @@ describe("GroqVerbLLM", () => {
     expect(attempt).toBe(2);
   });
 
+  it("real, live-found recovery: a tool_use_failed error's own failed_generation already carries the model's real answer — recovers it directly, with no retry at all", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            // The exact real shape logged live: Groq's error carries the
+            // complete, correctly-shaped answer the model generated,
+            // wrapped in the wrong tool name ("json" instead of
+            // VERB_TOOL_NAME) — a real answer, not a hallucinated one.
+            const err: any = new Error("attempted to call tool 'json' which was not in request.tools");
+            err.error = {
+              error: {
+                code: "tool_use_failed",
+                failed_generation: JSON.stringify({ name: "json", arguments: { verb: "explain", text: "recovered straight from the error" } }),
+              },
+            };
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "recovered straight from the error" });
+    expect(attempt).toBe(1); // no retry needed — recovered from the first error's own failed_generation
+  });
+
+  it("real, live-found bug this closes: the SAME hallucinated-tool-name failure hitting TWICE in a row used to exhaust the one retry and throw — now recovers from the RETRY's own failed_generation too, not just the first attempt's", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            if (attempt === 1) {
+              // First failure has nothing to recover (a real
+              // output_parse_failed case — no forced tool call was even
+              // produced) — forces a genuine retry, same as before this fix.
+              const err: any = new Error('400 {"error":{"message":"Parsing failed...","code":"output_parse_failed"}}');
+              err.code = "output_parse_failed";
+              throw err;
+            }
+            // The one real retry ALSO fails, this time with tool_use_failed
+            // — but Groq's own error on this second attempt carries the
+            // model's real answer too. Before this fix, this second failure
+            // had already exhausted the one retry and just threw.
+            const err: any = new Error("attempted to call tool 'json' which was not in request.tools");
+            err.error = {
+              error: {
+                code: "tool_use_failed",
+                failed_generation: JSON.stringify({ name: "json", arguments: { verb: "explain", text: "recovered on the retry" } }),
+              },
+            };
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "recovered on the retry" });
+    expect(attempt).toBe(2);
+  });
+
+  it("falls through safely (no crash, normal retry/throw path) when failed_generation is missing or unparseable", async () => {
+    let attempt = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempt++;
+            const err: any = new Error("attempted to call tool 'json' which was not in request.tools");
+            err.error = {
+              error: {
+                code: "tool_use_failed",
+                failed_generation: "not valid json at all {{{",
+              },
+            };
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["fake-key"]), "openai/gpt-oss-120b", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).rejects.toThrow();
+    expect(attempt).toBe(2); // still gets its one real retry, then throws — same as before this fix existed
+  });
+
   it("does NOT retry a tool_use_failed error unrelated to a hallucinated tool name", async () => {
     let attempt = 0;
     const fakeClient: GroqLikeClient = {

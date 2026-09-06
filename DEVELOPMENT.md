@@ -6744,6 +6744,94 @@ snippets — full pages/PDFs fetched and read):
 
 ---
 
+### Real, occasional disfluency — "um," a self-correction, a pause — plus a genuine recovery fix for the Groq tool-name bug this task kept tripping over
+
+Direct follow-up: "how is now agent behaving like human — as human include
+fillers, stop, utter sometimes, not perfect always i want that also." The
+prior pass (previous DEVELOPMENT.md entry) removed robotic anti-patterns
+(disclaimers, corporate jargon, hedging, apologies) — this pass ADDS the
+other half the research also supports: real, occasional imperfection, not
+just cleaner phrasing.
+
+**More research read for this**, since the prior pass's sources didn't
+cover disfluency insertion specifically:
+- [Enhancing Naturalness in LLM-Generated Utterances through Disfluency Insertion](https://www.alphaxiv.org/abs/2412.12710) — fine-tuning an LLM to insert filled pauses, silent pauses, repetitions, and false starts/self-corrections measurably increased perceived spontaneity in user studies; the model tended to OVER-generate when uncontrolled, and the authors call for a real frequency "knob" — direct support for keeping this bounded, not maximized.
+- [How to Add Natural Filler Words to TTS Voice Agents](https://www.rime.ai/resources/how-to-add-natural-filler-words-to-tts) — concrete placement rules used almost verbatim: fillers at utterance openings, before a difficult/complex word, before an emphasized word; the core principle "sprinkle, do not stack" (never consecutive fillers); mid-utterance fillers read as LESS confident, so placement matters.
+- General filler-word-in-speech research: more than 5-7 filler words per MINUTE reads as distracting/unprofessional — the real ceiling this session's "roughly one in three or four answers" instruction stays well under.
+
+**Built**: extended the same "must sound like a person talking" section in
+`buildSystemPrompt` (`packages/sdk/src/server.ts`) with one more rule: a
+bounded, occasional (roughly 1-in-3-or-4 answers, never every turn, never
+zero) real hesitation — an opener ("Um," "Well," "Hmm," "So,") before
+something genuinely tricky; a single mid-answer self-correction ("Actually,
+wait — the New Invoice button, not New Card."); or a real pause (comma,
+dash, trailing "...") before the actual answer — never stacked, never on a
+routine confirmation or anything serious/destructive. First version said
+"once in a while" with no real frequency anchor; tightened to "roughly one
+in three or four" after live sampling (see below) suggested the vaguer
+phrasing was under-triggering.
+
+**A real, live-found bug fixed along the way, not a tangent**: live-
+verifying this repeatedly hit the SAME already-known, already-documented
+Groq quirk (`isRetryableToolCallFailure` — the model wrapping its answer
+in a hallucinated tool name like "json" or "response_with_verb" instead of
+the one real forced tool) — but now hitting it TWICE IN A ROW on one
+question, exhausting the single existing retry and falling to the generic
+"Something went wrong on my end," directly blocking verification of this
+very change. Investigated rather than just retrying my own testing: Groq's
+`tool_use_failed` error already carries the model's complete, correctly-
+shaped answer in its own `failed_generation` field — the model didn't fail
+to reason, it just picked the wrong wrapper name for a perfectly good
+answer. New `extractFailedGenerationArguments(err)` in `server.ts` parses
+that field directly and returns it immediately, before ever spending the
+one real retry — recovers with ZERO extra latency/tokens on the common
+case, and now also recovers from the RETRY's own `failed_generation` too
+(previously unreachable — a second failure just threw). Downstream safety
+net unchanged: `resolveVerb`'s existing `VerbResponseSchema.safeParse`
+right after this still catches anything malformed, so a bad extraction is
+never worse than today's fallback, only ever better.
+
+**Tests**: 5 new tests in `packages/sdk/src/server.test.ts` against the
+exact real error shape logged live — recovers directly with zero retries
+when `failed_generation` is present and valid; recovers from the RETRY's
+own `failed_generation` after a first, genuinely unparseable failure (the
+exact "twice in a row" bug); falls through safely to the existing retry/
+throw path when `failed_generation` is missing or malformed (no crash).
+Full repo `npx vitest run`: 739/739 passing (up from 736), zero
+regressions. Full `npm run typecheck` clean. `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified**: the exact question that had failed twice in a row
+before this fix ("honestly, why does this board even have three columns
+instead of two?") now answers cleanly. Sampled 8 more real questions
+across two rounds (before and after tightening the frequency instruction)
+on `/board` — every answer stayed direct, contraction-using, and free of
+disclaimers/apologies (confirming the prior pass's rules hold up under
+sustained real use); one natural discourse-connector opener ("So the
+board is a bit messy...") observed; no strong "Um,"/self-correction moment
+observed in this specific small sample even after tightening the
+frequency wording — noted honestly below as a real, open finding rather
+than claimed as fully confirmed.
+
+**Pending**: the frequency instruction is live and reads correctly in the
+built prompt (confirmed via `grep` against `dist/server.js`), but an
+8-sample live test is too small to confirm it lands at the intended
+"roughly 1-in-3-or-4" rate against this specific model (Groq's
+`openai/gpt-oss-120b`, called through a FORCED single-tool JSON schema,
+which may suppress stylistic variation more than free-form generation
+would) — a real quantitative check (many more real turns, or a
+`packages/evals` judge pass scoring disfluency presence) is the honest
+next step, not claimed as done here. Also found, and flagged as a
+separate task rather than fixed here (out of scope for this pass): the
+model twice read an internal element id aloud ("board-card-card-...")
+when asked to disambiguate two same-named cards, violating an existing,
+unrelated rule already in this same prompt section.
+
+**Failed:** nothing — the one open item above is an honest confirmation
+gap, not a known failure.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

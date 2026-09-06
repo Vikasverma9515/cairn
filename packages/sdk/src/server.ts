@@ -896,6 +896,24 @@ export class GroqVerbLLM implements VerbLLM {
         //    running the new eval harness's synthetic-voice scenario, where
         //    it surfaced as "Something went wrong on my end" with no other
         //    symptom, exactly matching what got reported.
+        // Real, live bug found AFTER the single-retry mitigation above had
+        // already shipped: the SAME hallucinated-tool-name failure can hit
+        // twice in a row (seen live, back to back, on one otherwise-normal
+        // question), exhausting the one retry and still falling through to
+        // the generic fallback — even though Groq's own error response
+        // carries the model's complete, correctly-shaped answer right there
+        // in `failed_generation` (it parsed the arguments fine; it only
+        // picked the wrong TOOL NAME to wrap them in). Recovering that
+        // directly costs nothing (no extra round trip) and can't make
+        // things worse than today — resolveVerb's own VerbResponseSchema
+        // check right after this returns is the same safety net a normal,
+        // successful response already goes through, so a malformed
+        // extraction just falls to its existing "I'm not sure" fallback.
+        // Tried before spending the one real retry on output_parse_failed's
+        // case, where there's genuinely nothing to extract (no forced tool
+        // call was even produced).
+        const recovered = extractFailedGenerationArguments(err);
+        if (recovered !== undefined) return recovered;
         // One retry — not exponential backoff, this is a latency-sensitive
         // voice/chat path — genuinely helps rather than just delaying the
         // same failure. Anything else still propagates to resolveVerb's own
@@ -1039,6 +1057,36 @@ function isRetryableToolCallFailure(err: unknown): boolean {
   // was found.
   if (code === "tool_use_failed" && message.includes("attempted to call tool")) return true;
   return false;
+}
+
+/**
+ * Recovers the model's real, already-generated answer straight out of a
+ * `tool_use_failed` error, instead of spending a retry re-asking for
+ * something Groq already has. Same doubly-nested shape
+ * isRetryableToolCallFailure/isRateLimitError check against
+ * (`err.error.error.*`) plus the one extra field this specific error
+ * carries: `failed_generation`, a JSON-encoded string of exactly what the
+ * model produced — `{"name": "<hallucinated tool name>", "arguments":
+ * {...the real verb payload...}}`. Deliberately narrow: only fires for
+ * `tool_use_failed` specifically (never `output_parse_failed`, where the
+ * model didn't produce a forced tool call at all, so there's nothing real
+ * to recover here), and only returns something when `arguments` actually
+ * parses as an object — anything else (a missing field, a non-JSON
+ * string, a differently-shaped error) returns undefined and the caller
+ * falls through to its existing retry/throw path, unchanged.
+ */
+function extractFailedGenerationArguments(err: unknown): unknown {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as { error?: { error?: { code?: unknown; failed_generation?: unknown } } };
+  if (e.error?.error?.code !== "tool_use_failed") return undefined;
+  const raw = e.error.error.failed_generation;
+  if (typeof raw !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { arguments?: unknown };
+    return parsed && typeof parsed === "object" && parsed.arguments && typeof parsed.arguments === "object" ? parsed.arguments : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Same defensive-shape-checking approach as isRetryableToolCallFailure —
@@ -1398,6 +1446,21 @@ person talking, not documentation:
   routine confirmation ("Moved it to Done."), plain and direct — not
   jokey — for an error or anything destructive/irreversible. A casual
   quip lands fine on a small thing and badly on a real one.
+- Let a small, real hesitation through sometimes instead of always
+  polishing it away — aim for roughly one answer in every three or four,
+  not every single one and not zero: open with "Um," "Well," "Hmm," or
+  "So," right before something genuinely tricky, surprising, or hard to
+  phrase; catch yourself and correct once mid-answer ("Actually, wait —
+  the New Invoice button, not New Card.") the way a person naturally
+  does; or use a real pause — a comma, a dash, a trailing "..." — right
+  before landing on the actual answer, instead of stating it flatly.
+  Never more than one of these in the same answer, never two in a row,
+  and never on a routine confirmation or anything serious/destructive —
+  a stray "um" there reads as careless, not human. Don't force one onto
+  an answer that has nothing tricky about it — a plain, easy question
+  still gets a plain, easy answer most of the time; reaching for a
+  hesitation on EVERY response reads as more annoying than the flat,
+  polished tone it's meant to fix.
 
 The request may include "history" — earlier turns of this same
 conversation, oldest first. Use it to resolve references like "the first
