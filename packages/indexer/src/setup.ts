@@ -181,8 +181,20 @@ export async function runSetup(dir: string): Promise<void> {
     try {
       execSync(`npm install ${PACKAGES.join(" ")}`, { cwd: absDir, stdio: "pipe" });
       spinner.stop(green(`✓ installed ${PACKAGES.join(", ")}`));
-    } catch {
+    } catch (err) {
       spinner.stop(red("✗ npm install failed"));
+      // Real, live-found bug this closes: `catch {}` (no bound error) threw
+      // away npm's own stderr — the ONE thing that actually explains why it
+      // failed (a real registry error, an ERESOLVE conflict, a permissions
+      // problem, no network) — leaving a user with nothing but "failed, try
+      // again," which just fails the same way for the same unknown reason.
+      // execSync's thrown error carries the captured output on
+      // `.stderr`/`.stdout` (Buffers, from the `stdio: "pipe"` above) even
+      // though the command itself never printed anything to this process's
+      // own stderr — surface it instead of discarding it.
+      const e = err as { stderr?: Buffer; stdout?: Buffer };
+      const detail = (e.stderr?.toString().trim() || e.stdout?.toString().trim() || "").trim();
+      if (detail) console.error(`\n${detail}\n`);
       console.error(`Install these yourself and re-run \`cairn setup\`:\n  npm install ${PACKAGES.join(" ")}`);
       return;
     }
