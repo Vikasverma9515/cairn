@@ -6643,6 +6643,107 @@ behavior issue, not a reload/persistence issue.
 
 ---
 
+### Real research applied to the agent's own voice — grounding "sound less robotic" in actual papers, not a vibe
+
+Explicit ask: "the conversation is looking like a robot now, it should be
+like a jarvis dude... do a proper research on internet, how people speak,
+what they include, that act like a human, read research papers and
+include it." Read actual sources (arXiv papers, a CHI paper, and one
+practitioner writeup, all cited below) instead of guessing at "sound more
+human" phrasing, then translated concrete findings into concrete rules in
+`buildSystemPrompt` — the one prompt both the typed/HTTP path and the
+realtime voice path build on (`realtime-server.ts`'s own voice-specific
+addition appends to this same base).
+
+**What the research actually says** (sources at the end):
+- Self-referential disclaimers ("As an AI...", "I'm just a language
+  model") measurably hurt human-likeness — a DPO fine-tuning study
+  training models AWAY from this got humans to prefer the result 79-90%
+  of the time over the baseline.
+- Filler words ("um," "uh") in real human speech aren't noise — they
+  concentrate right before informationally-dense/hard-to-retrieve words
+  (one disfluency predicts ~1.7 extra bits of surprise in the next word).
+  Backchannels ("mhm," "yeah") regulate flow, arriving roughly every 23
+  seconds, clustered after easy/predictable stretches.
+- Verbal fillers measurably shrink PERCEIVED wait time independent of
+  real latency — a 1.5s reply that opens with "Let me check that" reads
+  as faster than 2s of silence. Naturalness of the filler barely matters;
+  presence does.
+- Hedging a correct answer ("I think," "it seems," "possibly") makes
+  people trust and act on it LESS even when they rate it equally
+  "trustworthy" in the abstract — hedging reads as competence, not
+  humility, and costs reliance.
+- AI-attributed apologies are perceived as less sincere than the same
+  words from a human, and apologizing repeatedly compounds this rather
+  than reading as extra polite.
+- Informal language (contractions, casual phrasing) does increase
+  perceived warmth/human-likeness, but the effect flips when style and
+  topic mismatch — an overly casual tone on a serious topic reads as
+  LESS competent, not more approachable. Overall human-likeness effects
+  are real but modest (meta-analysis: g = 0.36) — a lever worth pulling,
+  not a silver bullet.
+
+**Built**: extended `buildSystemPrompt`'s existing "must sound like a
+person talking" section in `packages/sdk/src/server.ts` with rules
+translating each finding above into an instruction the model actually
+follows: no self-referential disclaimers (say the specific reason instead
+— "that's not on this page" beats any "I am unable to" phrasing); no
+stock openers ("Certainly!", "Great question!") or closers ("Hope this
+helps!"); no corporate-memo words (delve, leverage, utilize, streamline,
+robust); contractions by default; state things plainly when actually
+known instead of hedging a correct answer; when something fails, say so
+once and move to what's true instead — never stack apologies; match tone
+to stakes (brief and light for a routine confirmation, plain and direct —
+not jokey — for an error or anything destructive/irreversible). Left the
+existing `ACK_PHRASES` array (`realtime-server.ts`) untouched — it
+already independently converged on exactly what the latency-perception
+research says works (short verbal fillers before a real wait,
+deliberately shortened this session already for the same "coordinating
+coworker, not a phone-tree script" reason) — the research confirms that
+design rather than calling for a change to it.
+
+**Tests**: full repo `npx vitest run`: 736/736 passing, zero regressions
+(`server.test.ts`'s existing `toContain`/`not.toContain` assertions on
+`buildSystemPrompt`'s output are all substring checks against specific
+unrelated fragments — nothing broke from appending new rules to the
+"sound like a person" section). Full `npm run typecheck` clean. `npm run
+build -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified**: asked the real widget "can you delete all my
+invoices?" on `/invoices` — first attempt hit a known, already-mitigated
+Groq quirk (`isRetryableToolCallFailure`, see its own doc comment —
+unrelated pre-existing issue, not something this change touched), a
+retry got a real answer: "I'm taking you to the Invoices page where you
+can manage and delete your invoices." Asked "what can I do on this
+page?" and got: "There isn't a single button that removes every invoice
+at once. Each invoice can be archived individually with its own Archive
+button, which sends a request to delete that specific record. You'd
+need to click the Archive button for each invoice you want to remove."
+Both: direct, contractions used naturally, no disclaimer, no stock
+opener, no apology — a real, visible before/after against the rules
+above, not a guess that they'd help.
+
+**Pending**: nothing structural. A real quantitative measure (the kind
+Pillar 3/4's own "before/after number, not eyeballed" standard calls
+for) would need `packages/evals`' judge to score persona/naturalness on
+a real batch of transcripts before and after this prompt change — noted
+as a real follow-up, not done here, since this pass was about grounding
+the CHANGE in research, not building new eval infrastructure.
+
+**Failed:** nothing.
+
+**Sources actually read for this entry** (not just search-result
+snippets — full pages/PDFs fetched and read):
+- [Enhancing Human-Like Responses in Large Language Models](https://arxiv.org/html/2501.05032v1) — the DPO/self-disclaimer finding.
+- [From "um" to "yeah": Producing, predicting, and regulating information flow in human conversation](https://arxiv.org/html/2403.08890v1) — the filler/backchannel timing and information-flow findings.
+- [Investigating the Representation of Backchannels and Fillers in Fine-tuned Language Models](https://arxiv.org/html/2509.20237v1) — treating backchannels/fillers as real content, not noise, in dialogue generation.
+- [Please Let Me Think: The Influence of Conversational Fillers on Transparency and Perception of Waiting Time](https://dl.acm.org/doi/10.1145/3716553.3750792) — the perceived-latency finding.
+- Linguistic Uncertainty Markers for Trust Calibration in AI-Assisted Decision-Making (ACM CUI) and the AI-apology trust/sincerity literature (ScienceDirect, Springer AI & Society) — the hedging-reduces-reliance and repeated-apology findings.
+- Linguistic anthropomorphism / style-topic congruence chatbot research (ACM HAI proceedings, Frontiers in Psychology, Humanities & Social Sciences Communications meta-analysis) — the contractions/informality-with-caveats finding, including the g = 0.36 modest-effect-size figure.
+- [How to Fix That Robotic AI Tone in Your LLM-Powered Features](https://dev.to/alanwest/how-to-fix-that-robotic-ai-tone-in-your-llm-powered-features-4h5e) — practitioner-level (not peer-reviewed), used only for the concrete banned-phrase/banned-vocabulary list, cross-checked against the academic sources above before including.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
