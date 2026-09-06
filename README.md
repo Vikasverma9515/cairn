@@ -9,7 +9,7 @@
   <p>
     <a href="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml"><img src="https://github.com/Vikasverma9515/cairn/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-E07A3F.svg" alt="MIT License"></a>
-    <a href="./ROADMAP.md"><img src="https://img.shields.io/badge/framework%20support-Next.js%20today%2C%20any%20framework%20on%20the%20roadmap-E07A3F.svg" alt="Framework support"></a>
+    <a href="./ROADMAP.md"><img src="https://img.shields.io/badge/framework%20support-any%20framework%2C%20Next.js%20gets%20deeper%20analysis-E07A3F.svg" alt="Framework support"></a>
     <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-E07A3F.svg" alt="PRs welcome"></a>
   </p>
 
@@ -48,21 +48,24 @@ needs.
   <p><sub>A real, unscripted capture against the example app.</sub></p>
 </div>
 
-Status: working end-to-end today, including live LLM calls (Anthropic or
-Groq) and live voice (Deepgram STT/TTS). **Next.js is the only framework
-Cairn's analyzer reads source for today** — the runtime (voice, action
-execution, element finding) is already framework-agnostic, and
-`cairn build <url>` can point at *any* framework's running app via a
-headless-browser crawl instead of reading source. See
-[ROADMAP.md](./ROADMAP.md) for what's left and
-[DEVELOPMENT.md](./DEVELOPMENT.md) for the full build history, phase by
-phase.
+Status: working end-to-end today, on **any framework** — install
+(`cairn init`), analyze (`cairn build`, either reading Next.js source
+directly for the most precise result, or crawling any other framework's
+running app), and run (`<Copilot/>` for React, or the framework-agnostic
+`<cairn-widget>` for Vue, Angular, Svelte, even a plain static HTML page)
+are all live-verified, not just planned — including live LLM calls
+(Anthropic or Groq) and live voice (Deepgram STT/TTS), identical either
+way. Next.js gets the deeper, AST-based analysis; everything else gets
+the same real runtime via a headless-browser crawl instead of a source
+read. See [ROADMAP.md](./ROADMAP.md) for what's actually left (mostly
+open-source polish at this point) and [DEVELOPMENT.md](./DEVELOPMENT.md)
+for the full build history, phase by phase.
 
 Published on npm as `@cairnvibe/core`, `@cairnvibe/indexer`, and
 `@cairnvibe/sdk`. The Quick start below builds from this repo directly
 instead, since that's what you want if you're developing Cairn itself
-or running the example app — for installing into *your own* Next.js
-app, see "Install into your own project" right below.
+or running the example app — for installing into *your own* project
+(Next.js or otherwise), see "Install into your own project" right below.
 
 ## Install into your own project
 
