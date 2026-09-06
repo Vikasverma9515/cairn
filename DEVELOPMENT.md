@@ -7113,6 +7113,111 @@ pass and fixed before anything shipped, not after.
 
 ---
 
+### A visible synthetic cursor — the agent's "mouse" glides to whatever it's about to act on, arriving before the action fires
+
+Direct ask: build a hey-clicky-style moving cursor so a real person
+watching the widget can see, in real time, exactly what element the agent
+resolved and is about to interact with — not just a click happening with
+no visible lead-up.
+
+**Built — `packages/sdk/src/cursor-overlay.ts` (new file)**: a small,
+framework-neutral module exporting `moveCursorTo(el)` and `hideCursor()`.
+`moveCursorTo` creates (once, reused after) a `#cairn-cursor` div — an
+ember-filled pointer SVG — animates it to the target element's real
+center via `getBoundingClientRect()`, and resolves only after it has
+genuinely arrived plus a brief hover pause (~710ms total; ~100ms under
+`prefers-reduced-motion`, checked via `matchMedia` so the real delay
+shrinks, not just the visual glide). Deliberately timer-driven
+(`window.setTimeout`, not `transitionend`/`Element.animate().finished`)
+to stay testable with fake timers in this repo's plain-Node test
+environment. Purely additive — never replaces `element-ladder.ts`'s own
+`highlightElement` scroll+glow, which still fires exactly as before.
+
+**Built — wired into every verb, both transports**: `packages/sdk/src/verb-executor.ts`
+now awaits (or, in the fire-and-forget single-step dispatch path,
+`.then()`s) `moveCursorTo(el)` before the real effect for every verb that
+targets a real element — click, fill, read, drag (visits `from`, fires
+the action, then echoes to `to`), select, key (only when a target is
+given — pressing on whatever's already focused stays synchronous, no
+pointless cursor trip), scroll, wait_for — in both the single-step
+dispatch functions and `executeOneBatchAction`'s batch path. Solved the
+one real design snag without touching `element-ladder.ts`: `fillElement`/
+`selectOption` both validate and commit in one call, so the pre-flight
+miss-check was moved to fire only after the cursor's `moveCursorTo(el)`
+promise resolves, instead of needing to split "check" from "commit".
+
+**Built — `hideCursor()` wired into both widget lifecycles**: fades the
+cursor out (opacity → 0, element kept, not removed) when the panel
+closes or the widget unmounts, so it never lingers on screen after a
+conversation ends. `packages/sdk/src/index.tsx`: a `useEffect` on the
+`open` state calls `hideCursor()` on close and on unmount.
+`packages/sdk/src/web-component.ts`: called from `toggleOpen()` when
+`isOpen` flips false, and from `disconnectedCallback()`.
+
+**Built — a real, separate bug found and fixed while wiring this in**:
+`.cairn-glow`/`cairn-pulse-indigo` and `cairn-word-sweep` in both
+`index.tsx`'s and `web-component.ts`'s injected `<style>` blocks were
+still using the old indigo (`#6366f1`/`rgba(99,102,241,…)`/`#4f46e5`)
+left over from before this session's earlier Waybalance rebrand, which
+had only touched the logo SVGs and the widget's own icon, never this
+older highlight/pulse CSS. Renamed `cairn-pulse-indigo` →
+`cairn-pulse-ember` with the real ember color in both files, added a new
+`cairn-cursor-arrive` keyframe + `.cairn-cursor-hover` class for the
+cursor's own arrival pulse, and added `#cairn-cursor` to the existing
+`prefers-reduced-motion` selector list in both files (was only ever in
+one file before this — `web-component.ts` had its own separate duplicate
+block, confirmed via grep, that had none of this).
+
+**Tests**: `packages/sdk/src/cursor-overlay.test.ts` (new, 8 tests) —
+SSR/no-DOM safety, no-`getBoundingClientRect` safety, singleton reuse,
+correct center-position math, genuine timer-gated delay (doesn't resolve
+before fake timers advance), session state persisting across calls
+(rewritten once — the first draft tried to observe a transient pre-paint
+`style.transform` value that a fake-DOM environment with no real layout
+engine can't produce; rewritten to check the real, verifiable contract
+instead: a second call moves to the second target, not back to the
+window corner), and `hideCursor` safety/behavior. `packages/sdk/src/verb-executor.test.ts` —
+11 pre-existing tests fixed for the new async cursor-arrival step ahead
+of every action, all using this file's own established
+`await vi.waitFor(() => expect(...))` idiom; one real source bug this
+caught: the `key` case's no-target branch was routing through the same
+`.then()` as the with-target branch, adding a pointless microtask hop
+before a `pressKey` call that should stay synchronous — fixed with an
+`afterMove` closure called directly when there's no target to glide to.
+Full regression suite: 747/747 passing (`npx vitest run`).
+`npm run typecheck -w @cairnvibe/sdk` clean. `npm run build -w @cairnvibe/sdk`
+rebuilt cleanly, dist confirmed (via grep) to contain the new
+`moveCursorTo` calls at every verb site.
+
+**Live-verified, with a real limit worth stating plainly**: restarted
+`examples/demo-app`'s dev server against the freshly rebuilt SDK and
+drove the real widget in a real browser. Confirmed live: the invoice
+Archive action resolved and highlighted the real DOM button with the new
+ember-colored glow ring (proof the rebuilt CSS/JS is actually what the
+running app is serving, not a stale cache) before the invoice's status
+flipped to Archived, with zero console errors. Did **not** get a clean,
+unambiguous multi-frame capture of the SVG cursor icon itself mid-glide —
+several follow-up attempts hit real friction unrelated to this feature
+(stale viewport/coordinate assumptions after the Browser pane was
+resized, and this demo deployment's own Groq key rotation burning
+through two more dead keys under the repeated LLM calls this testing
+required) — and testing was deliberately stopped once it started
+consuming the user's real API keys rather than continuing to force it.
+The verb-executor's own dist output was directly confirmed (via grep) to
+call `moveCursorTo` at the exact same code path that produced the
+live-confirmed glow, so the remaining gap is a clean visual capture, not
+open uncertainty about whether the wiring is live.
+
+**Pending**: a clean live screen-recording/screenshot sequence of the
+cursor mid-glide, once fresh Groq keys or a quieter LLM budget make that
+safe to spend more live-testing time on.
+
+**Failed:** nothing shipped incorrectly — the two setbacks above (the
+transient-value test rewrite, the `key`-case microtask-hop fix) were both
+caught before landing, not after.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

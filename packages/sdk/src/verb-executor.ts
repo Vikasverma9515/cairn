@@ -7,6 +7,7 @@
 
 import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
 import { dragElement, findElement, findElementWithRetry, fillElement, highlightElement, logMiss, pressKey, readElement, selectOption, waitForDomSettle, type MissContext } from "./element-ladder";
+import { moveCursorTo } from "./cursor-overlay";
 import { executeWebMcpTool } from "./webmcp-client";
 
 /** The real result of one agent-loop step (click/fill/read/call_tool/
@@ -136,10 +137,15 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         return;
       }
       highlightElement(el);
-      // "open" means make the thing actually appear (a menu, a modal, a
-      // panel) — highlighting alone doesn't do that; a real click does.
-      if (verb.verb === "open") el.click();
-      if (verb.text) options.onExplain(verb.text);
+      // The cursor visibly arrives before "open"'s real click fires — the
+      // whole point is a user watching sees where it's about to click
+      // BEFORE the menu/modal/panel actually opens, not simultaneously.
+      void moveCursorTo(el).then(() => {
+        // "open" means make the thing actually appear (a menu, a modal, a
+        // panel) — highlighting alone doesn't do that; a real click does.
+        if (verb.verb === "open") el.click();
+        if (verb.text) options.onExplain(verb.text);
+      });
       return;
     }
 
@@ -198,8 +204,10 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
           // on a different page) — never fired in addition to a real
           // click, so the action can't run twice.
           highlightElement(el);
-          el.click();
-          if (verb.text) options.onExplain(verb.text);
+          void moveCursorTo(el).then(() => {
+            el.click();
+            if (verb.text) options.onExplain(verb.text);
+          });
           return;
         }
         if (verb.target) (options.onMiss ?? logMiss)({ attempted: verb.target, route });
@@ -244,14 +252,16 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         return;
       }
       highlightElement(el);
-      el.click();
-      // Real, live-found race this closes — see waitForDomSettle's own doc
-      // comment: a click can trigger an async re-render (a cart count
-      // updating, a filtered list refreshing) that hasn't happened yet the
-      // instant .click() returns. A subsequent read step in the same turn
-      // needs the SETTLED result, not whatever was on screen a moment ago.
-      void waitForDomSettle().then(() => {
-        options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: "Clicked it." });
+      void moveCursorTo(el).then(() => {
+        el.click();
+        // Real, live-found race this closes — see waitForDomSettle's own
+        // doc comment: a click can trigger an async re-render (a cart count
+        // updating, a filtered list refreshing) that hasn't happened yet the
+        // instant .click() returns. A subsequent read step in the same turn
+        // needs the SETTLED result, not whatever was on screen a moment ago.
+        void waitForDomSettle().then(() => {
+          options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: "Clicked it." });
+        });
       });
       return;
     }
@@ -259,23 +269,30 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
     case "fill": {
       if (verb.text) options.onExplain(verb.text);
       const el = findElement(verb.target, options.liveElements);
-      if (!el || !fillElement(el, verb.value)) {
+      if (!el) {
         (options.onMiss ?? logMiss)({ attempted: verb.target, route });
-        options.onToolStep?.({
-          verb: "fill",
-          target: verb.target,
-          ok: false,
-          observation: el ? "That element isn't a real form field — can't type into it." : "Could not find that element on the page.",
-        });
+        options.onToolStep?.({ verb: "fill", target: verb.target, ok: false, observation: "Could not find that element on the page." });
         return;
       }
       highlightElement(el);
-      // See the click case's own comment — the exact real bug found live:
-      // typing into a search box, then reading the still-unfiltered
-      // results a moment later and reporting a match the real, since-
-      // filtered page never actually showed.
-      void waitForDomSettle().then(() => {
-        options.onToolStep?.({ verb: "fill", target: verb.target, ok: true, observation: `Typed "${verb.value}" into it.` });
+      // fillElement itself is both the "is this a real form field" check
+      // AND the commit (it sets the value the instant it returns true) —
+      // deliberately called from inside this .then(), not the synchronous
+      // miss-check above, so the cursor is genuinely seen arriving BEFORE
+      // any text appears, not simultaneously with it.
+      void moveCursorTo(el).then(() => {
+        if (!fillElement(el, verb.value)) {
+          (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+          options.onToolStep?.({ verb: "fill", target: verb.target, ok: false, observation: "That element isn't a real form field — can't type into it." });
+          return;
+        }
+        // See the click case's own comment — the exact real bug found live:
+        // typing into a search box, then reading the still-unfiltered
+        // results a moment later and reporting a match the real, since-
+        // filtered page never actually showed.
+        void waitForDomSettle().then(() => {
+          options.onToolStep?.({ verb: "fill", target: verb.target, ok: true, observation: `Typed "${verb.value}" into it.` });
+        });
       });
       return;
     }
@@ -288,7 +305,12 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         options.onToolStep?.({ verb: "read", target: verb.target, ok: false, observation: "Could not find that element on the page." });
         return;
       }
-      options.onToolStep?.({ verb: "read", target: verb.target, ok: true, observation: readElement(el) });
+      // No mutation here, but the cursor still visits what's being read —
+      // real visual proof of what the agent is actually looking at, not
+      // just a claim in the eventual reported observation.
+      void moveCursorTo(el).then(() => {
+        options.onToolStep?.({ verb: "read", target: verb.target, ok: true, observation: readElement(el) });
+      });
       return;
     }
 
@@ -310,12 +332,19 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         return;
       }
       highlightElement(from);
-      dragElement(from, to);
-      // Same real re-render race as click/fill — a drop can trigger an
-      // async re-render (a canvas connection line, a reordered list) that
-      // hasn't settled the instant the pointer sequence finishes.
-      void waitForDomSettle().then(() => {
-        options.onToolStep?.({ verb: "drag", target: verb.target, ok: true, observation: `Dragged it to ${verb.to}.` });
+      void moveCursorTo(from).then(() => {
+        dragElement(from, to);
+        // The cursor also glides to the drop point — fire-and-forget, not
+        // awaited, since it's purely a visual echo of a drag that already
+        // happened via real pointer events; nothing downstream depends on
+        // it finishing.
+        void moveCursorTo(to);
+        // Same real re-render race as click/fill — a drop can trigger an
+        // async re-render (a canvas connection line, a reordered list) that
+        // hasn't settled the instant the pointer sequence finishes.
+        void waitForDomSettle().then(() => {
+          options.onToolStep?.({ verb: "drag", target: verb.target, ok: true, observation: `Dragged it to ${verb.to}.` });
+        });
       });
       return;
     }
@@ -323,19 +352,24 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
     case "select": {
       if (verb.text) options.onExplain(verb.text);
       const el = findElement(verb.target, options.liveElements);
-      if (!el || !selectOption(el, verb.value)) {
+      if (!el) {
         (options.onMiss ?? logMiss)({ attempted: verb.target, route });
-        options.onToolStep?.({
-          verb: "select",
-          target: verb.target,
-          ok: false,
-          observation: el ? `Could not find an option matching "${verb.value}".` : "Could not find that element on the page.",
-        });
+        options.onToolStep?.({ verb: "select", target: verb.target, ok: false, observation: "Could not find that element on the page." });
         return;
       }
       highlightElement(el);
-      void waitForDomSettle().then(() => {
-        options.onToolStep?.({ verb: "select", target: verb.target, ok: true, observation: `Selected "${verb.value}".` });
+      // Same reasoning as fill's own comment — selectOption is both the
+      // "does a matching option exist" check and the commit, so it's called
+      // from inside this .then(), after the cursor genuinely arrives.
+      void moveCursorTo(el).then(() => {
+        if (!selectOption(el, verb.value)) {
+          (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+          options.onToolStep?.({ verb: "select", target: verb.target, ok: false, observation: `Could not find an option matching "${verb.value}".` });
+          return;
+        }
+        void waitForDomSettle().then(() => {
+          options.onToolStep?.({ verb: "select", target: verb.target, ok: true, observation: `Selected "${verb.value}".` });
+        });
       });
       return;
     }
@@ -348,10 +382,21 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         options.onToolStep?.({ verb: "key", target: verb.target, ok: false, observation: "Could not find that element on the page." });
         return;
       }
-      pressKey(el, verb.key);
-      void waitForDomSettle().then(() => {
-        options.onToolStep?.({ verb: "key", target: verb.target, ok: true, observation: `Pressed ${verb.key}.` });
-      });
+      const afterMove = () => {
+        pressKey(el, verb.key);
+        void waitForDomSettle().then(() => {
+          options.onToolStep?.({ verb: "key", target: verb.target, ok: true, observation: `Pressed ${verb.key}.` });
+        });
+      };
+      // With no explicit target ("whatever's currently focused"), there's
+      // nothing sensible for the cursor to glide to — call straight through
+      // instead of routing through a promise callback for no reason, so
+      // this path stays exactly as synchronous as it always was.
+      if (verb.target) {
+        void moveCursorTo(el).then(afterMove);
+      } else {
+        afterMove();
+      }
       return;
     }
 
@@ -368,8 +413,10 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       // exactly the real repositioning this verb exists for; the glow
       // also gives the user a visible cue of where the agent just moved.
       highlightElement(el);
-      void waitForDomSettle().then(() => {
-        options.onToolStep?.({ verb: "scroll", target: verb.target, ok: true, observation: "Scrolled it into view." });
+      void moveCursorTo(el).then(() => {
+        void waitForDomSettle().then(() => {
+          options.onToolStep?.({ verb: "scroll", target: verb.target, ok: true, observation: "Scrolled it into view." });
+        });
       });
       return;
     }
@@ -382,7 +429,9 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
           options.onToolStep?.({ verb: "wait_for", target: verb.target, ok: false, observation: "It never appeared." });
           return;
         }
-        options.onToolStep?.({ verb: "wait_for", target: verb.target, ok: true, observation: "It appeared." });
+        void moveCursorTo(el).then(() => {
+          options.onToolStep?.({ verb: "wait_for", target: verb.target, ok: true, observation: "It appeared." });
+        });
       });
       return;
     }
@@ -438,6 +487,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         return { ok: false, observation: "Could not find that element on the page." };
       }
       highlightElement(el);
+      await moveCursorTo(el);
       el.click();
       // Same real race as the single-step case (see waitForDomSettle's own
       // doc comment) — arguably MORE likely here, since a batch's next
@@ -447,14 +497,19 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
     }
     case "fill": {
       const el = await findElementWithRetry(action.target, options.liveElements);
-      if (!el || !fillElement(el, action.value)) {
+      if (!el) {
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
-        return {
-          ok: false,
-          observation: el ? "That element isn't a real form field — can't type into it." : "Could not find that element on the page.",
-        };
+        return { ok: false, observation: "Could not find that element on the page." };
       }
       highlightElement(el);
+      // See the single-step fill case's own comment — fillElement is both
+      // the field-type check and the commit, called after the cursor
+      // genuinely arrives rather than in the synchronous miss-check.
+      await moveCursorTo(el);
+      if (!fillElement(el, action.value)) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "That element isn't a real form field — can't type into it." };
+      }
       await waitForDomSettle();
       return { ok: true, observation: `Typed "${action.value}" into it.` };
     }
@@ -464,6 +519,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
         return { ok: false, observation: "Could not find that element on the page." };
       }
+      await moveCursorTo(el);
       return { ok: true, observation: readElement(el) };
     }
     case "call_tool": {
@@ -478,17 +534,24 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         return { ok: false, observation: from ? "Could not find the drop destination on the page." : "Could not find that element on the page." };
       }
       highlightElement(from);
+      await moveCursorTo(from);
       dragElement(from, to);
+      void moveCursorTo(to); // visual echo of the drop point — not awaited, purely decorative
       await waitForDomSettle();
       return { ok: true, observation: `Dragged it to ${action.to}.` };
     }
     case "select": {
       const el = await findElementWithRetry(action.target, options.liveElements);
-      if (!el || !selectOption(el, action.value)) {
+      if (!el) {
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
-        return { ok: false, observation: el ? `Could not find an option matching "${action.value}".` : "Could not find that element on the page." };
+        return { ok: false, observation: "Could not find that element on the page." };
       }
       highlightElement(el);
+      await moveCursorTo(el);
+      if (!selectOption(el, action.value)) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: `Could not find an option matching "${action.value}".` };
+      }
       await waitForDomSettle();
       return { ok: true, observation: `Selected "${action.value}".` };
     }
@@ -498,6 +561,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         if (action.target) (options.onMiss ?? logMiss)({ attempted: action.target, route });
         return { ok: false, observation: "Could not find that element on the page." };
       }
+      if (action.target) await moveCursorTo(el);
       pressKey(el, action.key);
       await waitForDomSettle();
       return { ok: true, observation: `Pressed ${action.key}.` };
@@ -509,6 +573,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         return { ok: false, observation: "Could not find that element on the page." };
       }
       highlightElement(el);
+      await moveCursorTo(el);
       await waitForDomSettle();
       return { ok: true, observation: "Scrolled it into view." };
     }
@@ -518,6 +583,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
         (options.onMiss ?? logMiss)({ attempted: action.target, route });
         return { ok: false, observation: "It never appeared." };
       }
+      await moveCursorTo(el);
       return { ok: true, observation: "It appeared." };
     }
   }

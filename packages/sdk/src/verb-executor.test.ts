@@ -198,14 +198,18 @@ describe("executeVerbResponse", () => {
     }
   }
 
-  it("open: clicks the resolved target, not just highlights it", () => {
+  it("open: clicks the resolved target, not just highlights it", async () => {
+    const opts = makeOptions();
+    const el = fakeElement();
+    const liveElements = new Map([["sessions-tab", el]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const el = fakeElement();
-      const liveElements = new Map([["sessions-tab", el]]);
       executeVerbResponse({ verb: "open", target: "sessions-tab" }, "/admin", { ...opts, liveElements });
-      expect(el.click).toHaveBeenCalledTimes(1);
     });
+    // The click now fires after moveCursorTo's own promise resolves
+    // (cursor-overlay.ts) — a real microtask hop even on its "no
+    // getBoundingClientRect on this fake element" immediate-resolve path,
+    // not a synchronous call anymore.
+    await vi.waitFor(() => expect(el.click).toHaveBeenCalledTimes(1));
   });
 
   it("highlight: does NOT click, unlike open", () => {
@@ -236,9 +240,9 @@ describe("executeVerbResponse", () => {
         "/invoices",
         { ...opts, liveElements },
       );
-      expect(el.click).toHaveBeenCalledTimes(1);
-      // Give any stray microtask a chance to run — the apiCall path must never fire.
-      await Promise.resolve();
+      // The click now fires after moveCursorTo's own promise resolves — see
+      // the "open" test's own comment.
+      await vi.waitFor(() => expect(el.click).toHaveBeenCalledTimes(1));
       expect(fetchMock).not.toHaveBeenCalled();
       expect(opts.onDo).not.toHaveBeenCalled();
     } finally {
@@ -246,15 +250,15 @@ describe("executeVerbResponse", () => {
     }
   });
 
-  it("do: target names a real element that just reveals UI, no apiCall at all — still clicks it for real (the 'New Agent' case)", () => {
+  it("do: target names a real element that just reveals UI, no apiCall at all — still clicks it for real (the 'New Agent' case)", async () => {
+    const opts = makeOptions();
+    const el = fakeElement();
+    const liveElements = new Map([["new-agent-button", el]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const el = fakeElement();
-      const liveElements = new Map([["new-agent-button", el]]);
       executeVerbResponse({ verb: "do", action: "create-agent", target: "new-agent-button" }, "/agents", { ...opts, liveElements });
-      expect(el.click).toHaveBeenCalledTimes(1);
-      expect(opts.onExplain).not.toHaveBeenCalledWith("That action isn't available here.");
     });
+    await vi.waitFor(() => expect(el.click).toHaveBeenCalledTimes(1));
+    expect(opts.onExplain).not.toHaveBeenCalledWith("That action isn't available here.");
   });
 
   it("do: target can't be resolved live — falls back to firing apiCall directly", async () => {
@@ -282,13 +286,13 @@ describe("executeVerbResponse", () => {
     withWindowStub(() => {
       executeVerbResponse({ verb: "click", target: "sessions-tab" }, "/admin", { ...opts, liveElements });
     });
-    expect(el.click).toHaveBeenCalledTimes(1);
-    // onToolStep now fires after waitForDomSettle's own promise resolves
-    // (element-ladder.ts) — a real microtask hop even on its "no document,
-    // resolve immediately" fast path, not a synchronous call anymore.
+    // click() itself now also waits on moveCursorTo's own promise first —
+    // see the "open" test's own comment — so this is folded into the same
+    // eventual wait as onToolStep below rather than asserted separately.
     // window is already unstubbed by here, but nothing past this point
     // needs it — highlightElement's window.setTimeout already ran above.
     await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "click", target: "sessions-tab", ok: true, observation: "Clicked it." }));
+    expect(el.click).toHaveBeenCalledTimes(1);
   });
 
   it("click (agent loop): a miss reports a failed observation instead of a silent no-op", () => {
@@ -326,9 +330,9 @@ describe("executeVerbResponse", () => {
     withWindowStub(() => {
       executeVerbResponse({ verb: "fill", target: "client-name", value: "Acme Co." }, "/invoices", { ...opts, liveElements });
     });
-    expect(input.value).toBe("Acme Co.");
-    // See the click test's own comment — onToolStep is a microtask hop
-    // away now (waitForDomSettle), not synchronous.
+    // fillElement itself now also waits on moveCursorTo's own promise first
+    // (verb-executor.ts's own comment on why) — see the click test's own
+    // comment for the general "no longer synchronous" reasoning.
     await vi.waitFor(() =>
       expect(opts.onToolStep).toHaveBeenCalledWith({
         verb: "fill",
@@ -337,21 +341,24 @@ describe("executeVerbResponse", () => {
         observation: 'Typed "Acme Co." into it.',
       }),
     );
+    expect(input.value).toBe("Acme Co.");
   });
 
-  it("fill (agent loop): rejects a target that resolves but isn't a real form field", () => {
+  it("fill (agent loop): rejects a target that resolves but isn't a real form field", async () => {
+    const opts = makeOptions();
+    const el = fakeElement(); // a plain button-shaped fake, not an HTMLInputElement
+    const liveElements = new Map([["not-an-input", el]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const el = fakeElement(); // a plain button-shaped fake, not an HTMLInputElement
-      const liveElements = new Map([["not-an-input", el]]);
       executeVerbResponse({ verb: "fill", target: "not-an-input", value: "hi" }, "/invoices", { ...opts, liveElements });
+    });
+    await vi.waitFor(() =>
       expect(opts.onToolStep).toHaveBeenCalledWith({
         verb: "fill",
         target: "not-an-input",
         ok: false,
         observation: "That element isn't a real form field — can't type into it.",
-      });
-    });
+      }),
+    );
   });
 
   it("read (agent loop): a miss reports a failed observation", () => {
@@ -404,8 +411,10 @@ describe("executeVerbResponse", () => {
         ["node-b", to],
       ]);
       executeVerbResponse({ verb: "drag", target: "node-a", to: "node-b" }, "/canvas", { ...opts, liveElements });
-      expect((from.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.some((c) => (c[0] as FakeMouseEvent).type === "mousedown")).toBe(true);
+      // dragElement() itself now also waits on moveCursorTo's own promise
+      // first — folded into the same eventual wait as onToolStep below.
       await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "drag", target: "node-a", ok: true, observation: "Dragged it to node-b." }));
+      expect((from.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.some((c) => (c[0] as FakeMouseEvent).type === "mousedown")).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -440,42 +449,50 @@ describe("executeVerbResponse", () => {
   }
 
   it("select (agent loop): chooses the real option by its visible text and reports the value back", async () => {
+    const opts = makeOptions();
+    const select = fakeSelect([
+      { text: "Paid", value: "PAID" },
+      { text: "Overdue", value: "OVERDUE" },
+    ]);
+    const liveElements = new Map([["status-dropdown", select]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const select = fakeSelect([
-        { text: "Paid", value: "PAID" },
-        { text: "Overdue", value: "OVERDUE" },
-      ]);
-      const liveElements = new Map([["status-dropdown", select]]);
       executeVerbResponse({ verb: "select", target: "status-dropdown", value: "Overdue" }, "/invoices", { ...opts, liveElements });
-      expect(select.value).toBe("OVERDUE");
     });
+    // selectOption itself now also waits on moveCursorTo's own promise
+    // first — see the fill test's own comment for why.
+    await vi.waitFor(() => expect(select.value).toBe("OVERDUE"));
   });
 
-  it("select (agent loop): no matching option reports a failed observation instead of guessing", () => {
+  it("select (agent loop): no matching option reports a failed observation instead of guessing", async () => {
+    const opts = makeOptions();
+    const select = fakeSelect([{ text: "Paid", value: "PAID" }]);
+    const liveElements = new Map([["status-dropdown", select]]);
     withWindowStub(() => {
-      const opts = makeOptions();
-      const select = fakeSelect([{ text: "Paid", value: "PAID" }]);
-      const liveElements = new Map([["status-dropdown", select]]);
       executeVerbResponse({ verb: "select", target: "status-dropdown", value: "Cancelled" }, "/invoices", { ...opts, liveElements });
+    });
+    await vi.waitFor(() =>
       expect(opts.onToolStep).toHaveBeenCalledWith({
         verb: "select",
         target: "status-dropdown",
         ok: false,
         observation: 'Could not find an option matching "Cancelled".',
-      });
-    });
+      }),
+    );
   });
 
-  it("key (agent loop): presses the key on the resolved target and reports it", () => {
+  it("key (agent loop): presses the key on the resolved target and reports it", async () => {
     vi.stubGlobal("KeyboardEvent", FakeKeyboardEvent);
     try {
       const opts = makeOptions();
       const input = fakeInput();
       const liveElements = new Map([["search-box", input]]);
       executeVerbResponse({ verb: "key", target: "search-box", key: "Enter" }, "/invoices", { ...opts, liveElements });
-      const events = (input.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as FakeKeyboardEvent).type);
-      expect(events).toEqual(["keydown", "keypress", "keyup"]);
+      // pressKey itself now also waits on moveCursorTo's own promise first
+      // (a real target was given) — see the click test's own comment.
+      await vi.waitFor(() => {
+        const events = (input.dispatchEvent as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as FakeKeyboardEvent).type);
+        expect(events).toEqual(["keydown", "keypress", "keyup"]);
+      });
     } finally {
       vi.unstubAllGlobals();
     }
@@ -488,6 +505,9 @@ describe("executeVerbResponse", () => {
     try {
       const opts = makeOptions();
       executeVerbResponse({ verb: "key", key: "Escape" }, "/invoices", opts);
+      // No target at all means moveCursorTo is skipped entirely (verb-
+      // executor.ts's own "nothing sensible to glide to" comment) — this
+      // path stays genuinely synchronous, exactly as it always was.
       expect(activeElement.focus).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();

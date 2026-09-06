@@ -24,6 +24,7 @@
 import type { HistoryTurn as HistoryEntry, TourStep } from "@cairnvibe/core";
 import { collectVisible } from "./context-collector";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
+import { hideCursor } from "./cursor-overlay";
 import { executeVerbResponse } from "./verb-executor";
 import { createBargeInGate, createVadDetector } from "./vad";
 
@@ -56,9 +57,13 @@ const STYLES = `
   0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
   70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
 }
-@keyframes cairn-pulse-indigo {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
-  70% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+@keyframes cairn-pulse-ember {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 122, 63, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(224, 122, 63, 0); }
+}
+@keyframes cairn-cursor-arrive {
+  0% { box-shadow: 0 0 0 0 rgba(224, 122, 63, 0.55); }
+  100% { box-shadow: 0 0 0 9px rgba(224, 122, 63, 0); }
 }
 @keyframes cairn-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes cairn-rt-dot {
@@ -75,7 +80,7 @@ const STYLES = `
 }
 @keyframes cairn-word-sweep {
   0% { opacity: 0.35; text-shadow: none; }
-  35% { opacity: 1; color: #4f46e5; text-shadow: 0 0 10px rgba(99, 102, 241, 0.45); }
+  35% { opacity: 1; color: #E07A3F; text-shadow: 0 0 10px rgba(224, 122, 63, 0.45); }
   100% { opacity: 1; color: inherit; text-shadow: none; }
 }
 @keyframes cairn-thinking-bounce {
@@ -83,14 +88,15 @@ const STYLES = `
   40% { opacity: 0.9; transform: translateY(-3px); }
 }
 .cairn-glow {
-  animation: cairn-pulse-indigo 1.1s ease-out 2;
-  outline: 2px solid #6366f1;
+  animation: cairn-pulse-ember 1.1s ease-out 2;
+  outline: 2px solid #E07A3F;
   outline-offset: 3px;
   border-radius: 8px;
 }
 .cairn-spin { animation: cairn-spin 0.8s linear infinite; }
+.cairn-cursor-hover { animation: cairn-cursor-arrive 0.3s ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot {
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, #cairn-cursor {
     animation: none !important;
     transition: none !important;
   }
@@ -381,6 +387,7 @@ export class CairnWidgetElement extends HTMLElement {
   // in parallel with whatever comes next.
   disconnectedCallback() {
     if (this.rtSocket || this.rtCleanup) this.endRealtime();
+    hideCursor();
   }
 
   // --- attributes -----------------------------------------------------
@@ -561,6 +568,7 @@ export class CairnWidgetElement extends HTMLElement {
     this.fab.innerHTML = this.isOpen ? CLOSE_ICON : MARK_ICON;
     this.fab.setAttribute("aria-label", this.isOpen ? `Close ${this.persona} help` : `Open ${this.persona} help`);
     if (this.isOpen && !this.realtimeActive) this.inputEl.focus();
+    if (!this.isOpen) hideCursor();
   }
 
   // --- rendering ------------------------------------------------------
