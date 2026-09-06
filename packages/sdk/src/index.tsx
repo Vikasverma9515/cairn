@@ -1594,6 +1594,22 @@ export function Copilot({
             // to keep it fast.
             setAnswer(summarizeVerbForHistory(msg.verb));
             setLoopWorking(true);
+            // Real, live-found bug: armThinkingWatchdog() only ever fired
+            // once, on the turn's own "final" message, giving the WHOLE
+            // multi-step turn one shared 20s budget — Executor + Planner +
+            // Critic for step 1, then the same again for step 2, and so
+            // on. Directly measured live: one single non-terminal step's
+            // own Executor+Planner+Critic chain alone took ~14s (11.5s +
+            // 1.5s + 1.1s) — a real, multi-step goal needing two or three
+            // such steps blows straight through 20s even though each
+            // individual step is proof of genuine progress, not a stall.
+            // Re-arming here — once per continuing step, not once per
+            // turn — gives every step its own fresh budget, so the
+            // watchdog only ever fires on a step that's ACTUALLY stuck
+            // (no verb/final/speaking_start arriving at all), matching
+            // what its own fallback message ("taking longer than
+            // expected") is supposed to mean.
+            armThinkingWatchdog();
             // A FRESH scan, not the turn's starting liveMapRef snapshot —
             // real, live-found bug: a step in THIS SAME multi-step turn
             // (a "click New Agent" that opens a modal) can reveal DOM a

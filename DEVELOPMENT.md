@@ -6914,6 +6914,117 @@ handled it correctly), not a new failure introduced by this entry's edits.
 
 ---
 
+### "Its not able to create agent" — three real, distinct findings, only one of them a code bug
+
+Direct report: repeated "That's taking longer than expected — try asking
+again" (the realtime relay's 20s watchdog) while trying to create a voice
+agent on `/agents`, plus the direct question "did you re-embed the whole
+system with the new files and the architecture changed we did." Live-
+investigated end to end rather than guessed — three separate, real causes
+found, not one:
+
+**1. The user's own dev server process was stale (an operational finding,
+not a code bug).** Found port 3000 already held by a long-running
+`next-server` process (PID 76950), a child of `realtime-cli.js` (PID
+76946) — this had been running continuously, serving whatever
+`@cairnvibe/sdk` build existed when IT started, not any of today's later
+rebuilds. `lib/groq-llm.ts`'s `verbLLM`/`planLLM`/`criticLLM` are
+deliberately module-scope singletons (see the earlier key-rotation entry)
+— exactly the design that makes dead-key memory persist across requests
+also means a running process never picks up a *newer* `@cairnvibe/sdk`
+build without an actual restart; Next.js dev's Fast Refresh watches the
+app's own files, not a workspace dependency's compiled `dist/`. Killed
+the stale process, restarted clean: the exact same "create a new agent"
+request that had hung past 20s completed in 2.4s. Direct answer to "did
+you re-embed the whole system": the *package* was rebuilt correctly every
+time (confirmed via `grep` against `dist/`), but a running dev server
+needs restarting too — rebuilding the dependency alone was never enough.
+**How to apply**: after any `@cairnvibe/core`/`@cairnvibe/sdk` change,
+restart the demo app's dev server, not just `npm run build`.
+
+**2. A real code bug: `armThinkingWatchdog()` covered a whole multi-step
+turn with one shared 20s budget instead of resetting per step.** Traced
+in `packages/sdk/src/index.tsx`: the watchdog arms once, on the turn's
+"final" (transcript) message, and only disarms on a terminal verb or
+`speaking_start` — a CONTINUING step (e.g. "click New Agent" then "fill
+the name field") never re-armed it, so the entire turn's Executor +
+Planner + Critic chain, across however many steps the goal needed, shared
+one fixed clock. Directly measured live: one single non-terminal step's
+own Executor+Planner+Critic chain alone took ~14s (11.5s + 1.5s + 1.1s) —
+a real multi-step goal needing two or three such steps blows straight
+through 20s even though each step is proof of real progress, not a stall.
+**Fixed**: `armThinkingWatchdog()` now also fires when a continuing
+"verb" step message arrives, giving every step its own fresh budget — the
+watchdog now only fires on a step that's genuinely stuck (nothing
+arriving at all), matching what its own fallback text is supposed to
+mean. Full repo `npx vitest run`: 739/739 passing (no new tests needed —
+prompt/timing-only change, no new logic branch to unit-test in isolation
+from a real timer). Full `npm run typecheck` clean, `npm run build -w
+@cairnvibe/sdk` rebuilt cleanly.
+
+**3. Real, external Groq rate-limit exhaustion — confirmed directly, not
+assumed.** While live-verifying fix #2, hit a genuine total failure (an
+uncaught 401 after supposedly retrying across all 6 configured keys) even
+though a direct, isolated Node script confirmed 4 of the 6 keys work
+fine. Added temporary debug logging to `KeyRotator.take()` and the
+`GroqVerbLLM.respond` catch block (removed before committing — this repo
+has no trace of it) to see the REAL classification of each retry's
+failure, not guess from the final error alone. Result: 3 of the 4
+supposedly-good keys were failing with real `429 rate_limit_exceeded`
+errors — `isRateLimitError`'s branch retries silently, with no log line
+at all, which is exactly why this looked like a mystery from the outside.
+The actual Groq error messages named the organization each key belongs
+to, and they were THREE DIFFERENT organization ids — ruling out "one
+shared account's limit" and confirming instead that this session's own
+cumulative testing volume today (many dozens of real live-verification
+rounds, across this whole marathon session) has run multiple independent
+Groq accounts low on their own rate budget at the same time. This is a
+real capacity fact, not a bug: the retry logic is doing exactly what it's
+designed to do (silently retry a 429 on a different key, bounded to the
+configured key count); it just has nowhere left to go when the accounts
+behind ALL configured keys are simultaneously under pressure.
+**Not fixed, deliberately** — there is no code change that manufactures
+API capacity that genuinely isn't there right now. **Pending, real, and
+worth doing later**: currently there is zero delay between a 429 retry
+and the next attempt (by design, for the tool-call-failure case — see its
+own comment on why immediate retry is right there) — a short, bounded
+backoff specifically on the rate-limit branch (not the tool-call-failure
+branch) could help the bursty case (6 attempts in under a second hitting
+a per-second cap) without meaningfully hurting the deeper case (an
+account already near its daily quota, which no backoff fixes). Not
+implemented here — no clear evidence yet on which kind of limit is
+actually driving this, and guessing would risk adding real latency for an
+uncertain win.
+
+**Also found, unresolved, out of scope for this pass**: a realtime
+WebSocket connection to `ws://localhost:3010` opened on its own during
+plain typed-path testing, with no explicit "start realtime" click on
+either open browser tab (confirmed via each tab's own console log, which
+consistently reported "no realtime call active, using the typed speak()
+HTTP path" even while the server logged a connection open/close and a
+Deepgram STT timeout). Reproduced twice, not once. Root cause not found —
+ruled out: demo-app's own `CopilotWithActions.tsx` (just passes
+`realtimeUrl` as a prop, no auto-start logic), client-side WebSocket
+reconnect logic (none exists in `index.tsx`), and the realtime relay
+self-testing on boot (no connection logged at server start, only after
+some later interaction). Real, and worth its own investigation, but not
+chased further here since it didn't block the three findings above.
+
+**Concrete, actionable advice given to the user**: two of six configured
+`GROQ_API_KEYS` (ending `6Whv` and `0d7U`) are permanently, confirmedly
+invalid (`401 invalid_api_key`, consistent across every test today) —
+worth removing/replacing, since they're pure dead weight in the rotation.
+The rate-limit exhaustion should ease as this session's own testing
+volume lets up; there's nothing to "fix" about that beyond waiting or
+spreading real usage across more separate accounts.
+
+**Failed:** nothing shipped — the two shipped fixes (stale-server
+awareness communicated to the user; the watchdog per-step reset) are both
+real and verified; the rate-limit finding is a genuine external condition
+correctly diagnosed, not a failed fix attempt.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
