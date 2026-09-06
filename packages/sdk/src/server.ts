@@ -851,7 +851,19 @@ export class GroqVerbLLM implements VerbLLM {
     private keys: KeyRotator,
     private model: string,
     private toolSchema: Record<string, unknown>,
-    private clientFactory: (apiKey: string) => GroqLikeClient = (apiKey) => new Groq({ apiKey }),
+    // maxRetries: 0 — real, live-found latency bug this closes: the Groq
+    // SDK's own default (2 automatic retries with exponential backoff) ran
+    // UNDERNEATH respond()'s own key-rotation retry loop, so a single 429
+    // key attempt could silently eat several real seconds of SDK-internal
+    // backoff before respond() ever saw the rejection and moved on to a
+    // DIFFERENT key. With several keys in rotation genuinely rate-limited
+    // at once (the common case this closes for), that compounded into a
+    // real, live-reported multi-second-to-a-minute hang with no visible
+    // progress — worse than useless, since respond()'s own retry already
+    // tries a different key/quota entirely, which the SDK's blind same-key
+    // backoff can never fix. respond() is the sole source of retry policy
+    // here now.
+    private clientFactory: (apiKey: string) => GroqLikeClient = (apiKey) => new Groq({ apiKey, maxRetries: 0 }),
     private toolName: string = VERB_TOOL_NAME,
     private toolDescription: string = VERB_TOOL_DESCRIPTION,
   ) {}
@@ -991,7 +1003,13 @@ export class GroqStreamingTextLLM implements StreamingTextLLM {
   constructor(
     private keys: KeyRotator,
     private model: string,
-    private clientFactory: (apiKey: string) => GroqLikeStreamingClient = (apiKey) => new Groq({ apiKey }),
+    // maxRetries: 0 — same real latency bug as GroqVerbLLM's own
+    // clientFactory default; see its doc comment for the full reasoning.
+    // respondStreamed below already has its own key-rotation retry loop
+    // (maxAttempts bounded by keys.size), which makes the SDK's blind
+    // same-key backoff redundant AND a source of silent multi-second
+    // delay stacked underneath it.
+    private clientFactory: (apiKey: string) => GroqLikeStreamingClient = (apiKey) => new Groq({ apiKey, maxRetries: 0 }),
   ) {}
 
   async respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string> {
