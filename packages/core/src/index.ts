@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 
-export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch", "drag", "select", "key"] as const;
+export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch", "drag", "select", "key", "scroll", "wait_for"] as const;
 export type Verb = (typeof VERBS)[number];
 
 /**
@@ -21,7 +21,13 @@ export type Verb = (typeof VERBS)[number];
  * (canvas nodes, kanban cards, sortable lists) that click/fill can't reach,
  * select chooses a real dropdown/listbox option by its visible text, and
  * key sends one real keypress (Escape/Enter/Tab/arrows) to a target or the
- * currently focused element.
+ * currently focused element. scroll brings an already-known element into
+ * view without acting on it (e.g. before a drag that needs the element in
+ * a stable viewport position, or to reveal something for the user before
+ * narrating it). wait_for explicitly pauses until a real element appears/
+ * becomes findable, for a step that KNOWS something should show up after
+ * an earlier action (an async panel, a toast) instead of guessing at a
+ * fixed delay or hoping waitForDomSettle's own implicit wait was enough.
  *
  * `navigate` is the one real exception to "verb type alone decides" — see
  * `isTerminalVerb` below, which is what every real caller should use
@@ -325,6 +331,8 @@ export const BatchActionSchema = z.discriminatedUnion("verb", [
       key: z.string().min(1),
     })
     .strict(),
+  z.object({ ...BATCH_ACTION_COMPANION_FIELDS, verb: z.literal("scroll"), target: z.string().min(1) }).strict(),
+  z.object({ ...BATCH_ACTION_COMPANION_FIELDS, verb: z.literal("wait_for"), target: z.string().min(1) }).strict(),
 ]);
 export type BatchAction = z.infer<typeof BatchActionSchema>;
 
@@ -475,6 +483,22 @@ export const VerbResponseSchema = z.discriminatedUnion("verb", [
       target: optionalString(),
       /** A real key name — Escape, Enter, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight. */
       key: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("scroll"),
+      /** A real, already-known element to bring into view — never a coordinate or a not-yet-discovered element. */
+      target: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...COMPANION_FIELDS,
+      verb: z.literal("wait_for"),
+      /** A real, already-known element expected to appear/become findable — the same id ladder every other verb uses, checked with real retries instead of a fixed guess. */
+      target: z.string().min(1),
     })
     .strict(),
   z

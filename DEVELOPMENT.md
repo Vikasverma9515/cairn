@@ -6361,6 +6361,74 @@ is built, tested, and live-verified against real infrastructure.
 
 ---
 
+### Completing the pending, continued: Pillar 1's remaining `scroll`/`wait_for` verbs
+
+The last concrete, buildable item from the original 6-pillar plan's own
+Pillar 1 scope (`upload` stays deferred — it still needs its own design
+pass for the "real native picker only" constraint; the Scout role stays
+deferred for the reasons already stated in the Pillar 6 entry above).
+
+`scroll` and `wait_for` round out the richer action vocabulary with two
+real, distinct capabilities neither click/fill nor the existing drag/
+select/key cover: bringing an already-known element into view without
+acting on it, and explicitly pausing until something expected actually
+shows up instead of guessing that enough time has passed.
+
+**Built**:
+- `packages/core/src/index.ts` — `VERBS` gained `"scroll"` and
+  `"wait_for"`, both `{ target: string }` — a real, already-known element,
+  never a coordinate or something not yet discovered (the same invariant
+  every other verb holds). Matching `BatchActionSchema` variants so both
+  can appear inside a batch too. Neither added to `TERMINAL_VERBS` —
+  continuing steps, same as click/fill/drag/select/key.
+- `packages/sdk/src/verb-executor.ts` — `scroll` resolves the target via
+  the element ladder and calls `highlightElement` (its own
+  `scrollIntoView` is exactly the real repositioning this verb exists
+  for; the glow doubles as a visible cue of where the agent just moved) —
+  no click, no read, just visibility. `wait_for` calls
+  `findElementWithRetry` with its own real, bounded retry budget
+  (`WAIT_FOR_ATTEMPTS = 6`, `WAIT_FOR_DELAY_MS = 500` — up to ~2.5s,
+  deliberately longer than `findElementWithRetry`'s own default 2-attempt/
+  300ms budget meant for incidental transient-miss recovery, not "wait for
+  an async panel to open") and reports whether the element genuinely
+  appeared. Both wired into single-step dispatch and
+  `executeOneBatchAction`.
+- `packages/sdk/src/server.ts` — `resolveVerb`'s "must name something
+  real" gate extended to both; `buildVerbToolSchema`'s target description,
+  batch verb enum, and system prompt gained real bullets explaining each
+  (scroll: "bring a real, already-known element into view... without
+  clicking or reading it"; wait_for: "explicitly pause until a real,
+  already-known element appears or becomes findable... instead of
+  guessing that enough time has passed").
+
+**Tests**: `packages/core/src/index.test.ts` — 3 new tests (accepts both
+shapes and requires a real target; both are non-terminal; batch accepts
+both). `packages/sdk/src/server.test.ts` — 5 new/updated tests
+(`resolveVerb`'s real-vs-invented gate for each verb individually and in
+a batch, the flat companion-null round-trip, and the pre-existing batch-
+enum test updated to include both new verbs — a real, expected
+consequence of extending the enum, not a regression).
+`packages/sdk/src/verb-executor.test.ts` — 5 new tests (scroll success +
+miss, wait_for success + a real bounded-retry failure case using fake
+timers to stay fast and deterministic, plus 1 batch test exercising both
+together). 13 new tests total. Full repo `npx vitest run`: 693/693
+passing, zero regressions. Full `npm run typecheck` clean across all 6
+workspaces. `npm run build -w @cairnvibe/core -w @cairnvibe/sdk` rebuilt
+cleanly.
+
+**Live-verified**: demo app rebuilt and restarted cleanly on the new
+builds, zero server/console errors.
+
+**Pending**: `upload` (Pillar 1's one remaining verb, still deliberately
+deferred) and the Scout role (Pillar 6, also still deliberately deferred)
+— both for the same reasons already stated in their own earlier entries.
+A real live-model check of the model actually choosing scroll/wait_for in
+practice, once a working API key exists.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

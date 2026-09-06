@@ -17,11 +17,20 @@ import { executeWebMcpTool } from "./webmcp-client";
  * finalizeTurn for the realtime one — this module only ever executes one
  * step (or one batch of steps) at a time. */
 export interface ToolStepResult {
-  verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate" | "drag" | "select" | "key";
+  verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate" | "drag" | "select" | "key" | "scroll" | "wait_for";
   target?: string;
   ok: boolean;
   observation: string;
 }
+
+// wait_for's own real, bounded retry budget — longer than
+// findElementWithRetry's own default (2 attempts, 300ms apart, ~300ms
+// total), since this verb exists specifically for "I know something
+// async should show up" — a toast, a panel appearing after a click — not
+// the incidental transient-miss recovery findElementWithRetry's default
+// already covers for click/fill/batch steps.
+const WAIT_FOR_ATTEMPTS = 6;
+const WAIT_FOR_DELAY_MS = 500;
 
 /**
  * Promise wrapper around executeVerbResponse for a continuing verb
@@ -346,6 +355,38 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
       return;
     }
 
+    case "scroll": {
+      if (verb.text) options.onExplain(verb.text);
+      const el = findElement(verb.target, options.liveElements);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+        options.onToolStep?.({ verb: "scroll", target: verb.target, ok: false, observation: "Could not find that element on the page." });
+        return;
+      }
+      // A real, already-known element (never a coordinate or something
+      // not yet discovered) — highlightElement's own scrollIntoView is
+      // exactly the real repositioning this verb exists for; the glow
+      // also gives the user a visible cue of where the agent just moved.
+      highlightElement(el);
+      void waitForDomSettle().then(() => {
+        options.onToolStep?.({ verb: "scroll", target: verb.target, ok: true, observation: "Scrolled it into view." });
+      });
+      return;
+    }
+
+    case "wait_for": {
+      if (verb.text) options.onExplain(verb.text);
+      void findElementWithRetry(verb.target, options.liveElements, WAIT_FOR_ATTEMPTS, WAIT_FOR_DELAY_MS).then((el) => {
+        if (!el) {
+          (options.onMiss ?? logMiss)({ attempted: verb.target, route });
+          options.onToolStep?.({ verb: "wait_for", target: verb.target, ok: false, observation: "It never appeared." });
+          return;
+        }
+        options.onToolStep?.({ verb: "wait_for", target: verb.target, ok: true, observation: "It appeared." });
+      });
+      return;
+    }
+
     // Several click/fill/read/call_tool steps in one round trip instead of
     // one each — server.ts's resolveVerb already validated every action's
     // target/name against real state before this ever arrived. Runs in
@@ -460,6 +501,24 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       pressKey(el, action.key);
       await waitForDomSettle();
       return { ok: true, observation: `Pressed ${action.key}.` };
+    }
+    case "scroll": {
+      const el = await findElementWithRetry(action.target, options.liveElements);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "Could not find that element on the page." };
+      }
+      highlightElement(el);
+      await waitForDomSettle();
+      return { ok: true, observation: "Scrolled it into view." };
+    }
+    case "wait_for": {
+      const el = await findElementWithRetry(action.target, options.liveElements, WAIT_FOR_ATTEMPTS, WAIT_FOR_DELAY_MS);
+      if (!el) {
+        (options.onMiss ?? logMiss)({ attempted: action.target, route });
+        return { ok: false, observation: "It never appeared." };
+      }
+      return { ok: true, observation: "It appeared." };
     }
   }
 }

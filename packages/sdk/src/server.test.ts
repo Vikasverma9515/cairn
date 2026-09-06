@@ -405,6 +405,26 @@ describe("createCopilotHandlerWithLLM", () => {
     expect((badResult.body as { verb: string }).verb).toBe("explain");
   });
 
+  it("scroll: a real target passes through; an unknown one is refused", async () => {
+    const okHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "scroll", target: "create-invoice" }));
+    const okResult = await okHandler({ route: "/invoices", question: "scroll to it", visible: [] });
+    expect(okResult.body).toEqual({ verb: "scroll", target: "create-invoice" });
+
+    const badHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "scroll", target: "made-up-id" }));
+    const badResult = await badHandler({ route: "/invoices", question: "scroll to it", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("wait_for: a real target passes through; an unknown one is refused", async () => {
+    const okHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "wait_for", target: "create-invoice" }));
+    const okResult = await okHandler({ route: "/invoices", question: "wait for it", visible: [] });
+    expect(okResult.body).toEqual({ verb: "wait_for", target: "create-invoice" });
+
+    const badHandler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "wait_for", target: "made-up-id" }));
+    const badResult = await badHandler({ route: "/invoices", question: "wait for it", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
   it("call_tool: a real WebMCP tool name from this exact request passes through", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,
@@ -503,6 +523,34 @@ describe("createCopilotHandlerWithLLM", () => {
         actions: [
           { verb: "drag", target: "create-invoice", to: "made-up-id" },
           { verb: "select", target: "create-invoice", value: "Overdue" },
+        ],
+      }),
+    );
+    const badResult = await badHandler({ route: "/invoices", question: "do the sequence", visible: [] });
+    expect((badResult.body as { verb: string }).verb).toBe("explain");
+  });
+
+  it("batch: scroll/wait_for steps are validated the same real way as click/fill/read", async () => {
+    const okHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "scroll", target: "create-invoice" },
+          { verb: "wait_for", target: "start-call" },
+        ],
+      }),
+    );
+    const okResult = await okHandler({ route: "/invoices", question: "do the sequence", visible: [] });
+    expect((okResult.body as { verb: string }).verb).toBe("batch");
+
+    const badHandler = createCopilotHandlerWithLLM(
+      manifest,
+      fakeLLMReturning({
+        verb: "batch",
+        actions: [
+          { verb: "scroll", target: "create-invoice" },
+          { verb: "wait_for", target: "made-up-id" },
         ],
       }),
     );
@@ -1516,11 +1564,11 @@ describe("buildVerbToolSchema", () => {
     expect(schema.properties.key.type).toEqual(["string", "null"]);
   });
 
-  it("the batch actions enum includes drag/select/key alongside the original four, with 'to'/'key' properties declared", () => {
+  it("the batch actions enum includes drag/select/key/scroll/wait_for alongside the original four, with 'to'/'key' properties declared", () => {
     const schema = buildVerbToolSchema([]) as {
       properties: { actions: { items: { properties: { verb: { enum: string[] }; to: { type: unknown }; key: { type: unknown } } } } };
     };
-    expect(schema.properties.actions.items.properties.verb.enum).toEqual(["click", "fill", "read", "call_tool", "drag", "select", "key"]);
+    expect(schema.properties.actions.items.properties.verb.enum).toEqual(["click", "fill", "read", "call_tool", "drag", "select", "key", "scroll", "wait_for"]);
     expect(schema.properties.actions.items.properties.to.type).toEqual(["string", "null"]);
     expect(schema.properties.actions.items.properties.key.type).toEqual(["string", "null"]);
   });
@@ -1534,6 +1582,14 @@ describe("buildVerbToolSchema", () => {
 
     const flatKey = { verb: "key", key: "Enter", target: null, text: null, route: null, action: null, value: null, name: null, args: null, steps: null, to: null };
     expect(VerbResponseSchema.safeParse(flatKey)).toEqual({ success: true, data: { verb: "key", key: "Enter" } });
+  });
+
+  it("a flat scroll/wait_for response round-trips through VerbResponseSchema, same companion-null treatment as every other verb", () => {
+    const flatScroll = { verb: "scroll", target: "results-section", text: null, route: null, action: null, value: null, name: null, args: null, steps: null, to: null, key: null };
+    expect(VerbResponseSchema.safeParse(flatScroll)).toEqual({ success: true, data: { verb: "scroll", target: "results-section" } });
+
+    const flatWaitFor = { verb: "wait_for", target: "success-toast", text: null, route: null, action: null, value: null, name: null, args: null, steps: null, to: null, key: null };
+    expect(VerbResponseSchema.safeParse(flatWaitFor)).toEqual({ success: true, data: { verb: "wait_for", target: "success-toast" } });
   });
 
   it("a flat navigate response with continueAfter: true round-trips through VerbResponseSchema", () => {

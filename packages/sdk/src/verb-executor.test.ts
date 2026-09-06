@@ -500,6 +500,45 @@ describe("executeVerbResponse", () => {
     expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "key", target: "does-not-exist", ok: false, observation: "Could not find that element on the page." });
   });
 
+  it("scroll (agent loop): scrolls the resolved target into view and reports a real observation", async () => {
+    const opts = makeOptions();
+    const el = fakeElement();
+    const liveElements = new Map([["results-section", el]]);
+    withWindowStub(() => {
+      executeVerbResponse({ verb: "scroll", target: "results-section" }, "/invoices", { ...opts, liveElements });
+    });
+    expect(el.scrollIntoView).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "scroll", target: "results-section", ok: true, observation: "Scrolled it into view." }));
+  });
+
+  it("scroll (agent loop): a miss reports a failed observation instead of a silent no-op", () => {
+    const opts = makeOptions();
+    executeVerbResponse({ verb: "scroll", target: "does-not-exist" }, "/invoices", opts);
+    expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "scroll", target: "does-not-exist", ok: false, observation: "Could not find that element on the page." });
+    expect(opts.onMiss).toHaveBeenCalledWith({ attempted: "does-not-exist", route: "/invoices" });
+  });
+
+  it("wait_for (agent loop): reports success once the target is found", async () => {
+    const opts = makeOptions();
+    const el = fakeElement();
+    const liveElements = new Map([["success-toast", el]]);
+    executeVerbResponse({ verb: "wait_for", target: "success-toast" }, "/invoices", { ...opts, liveElements });
+    await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "wait_for", target: "success-toast", ok: true, observation: "It appeared." }));
+  });
+
+  it("wait_for (agent loop): reports a real failed observation after its own bounded retries when the target never appears", async () => {
+    vi.useFakeTimers();
+    try {
+      const opts = makeOptions();
+      executeVerbResponse({ verb: "wait_for", target: "does-not-exist" }, "/invoices", opts);
+      await vi.advanceTimersByTimeAsync(3000); // comfortably covers wait_for's own real retry budget
+      expect(opts.onToolStep).toHaveBeenCalledWith({ verb: "wait_for", target: "does-not-exist", ok: false, observation: "It never appeared." });
+      expect(opts.onMiss).toHaveBeenCalledWith({ attempted: "does-not-exist", route: "/invoices" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("call_tool (agent loop): calls the real WebMCP tool and reports its result", async () => {
     const executeTool = vi.fn().mockResolvedValue("3 overdue invoices");
     const tool = { name: "count-overdue-invoices" };
@@ -694,6 +733,39 @@ describe("executeVerbResponse", () => {
       expect(result.observation).toContain("Dragged it to node-b.");
       expect(result.observation).toContain('Selected "Overdue".');
       expect(result.observation).toContain("Pressed Enter.");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("batch: scroll/wait_for steps run in order alongside the other verbs", async () => {
+    vi.stubGlobal("window", { setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms) });
+    try {
+      const opts = makeOptions();
+      const section = fakeElement();
+      const toast = fakeElement();
+      const liveElements = new Map<string, any>([
+        ["results-section", section],
+        ["success-toast", toast],
+      ]);
+      executeVerbResponse(
+        {
+          verb: "batch",
+          actions: [
+            { verb: "scroll", target: "results-section" },
+            { verb: "wait_for", target: "success-toast" },
+          ],
+        },
+        "/invoices",
+        { ...opts, liveElements },
+      );
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      expect(section.scrollIntoView).toHaveBeenCalledTimes(1);
+      const result = opts.onToolStep.mock.calls[0][0];
+      expect(result.verb).toBe("batch");
+      expect(result.ok).toBe(true);
+      expect(result.observation).toContain("Scrolled it into view.");
+      expect(result.observation).toContain("It appeared.");
     } finally {
       vi.unstubAllGlobals();
     }

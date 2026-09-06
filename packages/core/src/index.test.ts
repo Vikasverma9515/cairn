@@ -193,6 +193,37 @@ describe("safeParseVerbResponse", () => {
     });
   });
 
+  it("accepts scroll and wait_for, both requiring a real target id", () => {
+    expect(safeParseVerbResponse({ verb: "scroll", target: "results-section" })).toEqual({ verb: "scroll", target: "results-section" });
+    expect(safeParseVerbResponse({ verb: "wait_for", target: "success-toast" })).toEqual({ verb: "wait_for", target: "success-toast" });
+    expect(safeParseVerbResponse({ verb: "scroll" })).toBeNull();
+    expect(safeParseVerbResponse({ verb: "wait_for" })).toBeNull();
+  });
+
+  it("scroll/wait_for are continuing steps, not terminal", () => {
+    expect(TERMINAL_VERBS.has("scroll")).toBe(false);
+    expect(TERMINAL_VERBS.has("wait_for")).toBe(false);
+    expect(isTerminalVerb({ verb: "scroll", target: "x" })).toBe(false);
+    expect(isTerminalVerb({ verb: "wait_for", target: "x" })).toBe(false);
+  });
+
+  it("batch accepts scroll/wait_for steps too", () => {
+    const parsed = safeParseVerbResponse({
+      verb: "batch",
+      actions: [
+        { verb: "scroll", target: "results-section" },
+        { verb: "wait_for", target: "success-toast" },
+      ],
+    });
+    expect(parsed).toEqual({
+      verb: "batch",
+      actions: [
+        { verb: "scroll", target: "results-section" },
+        { verb: "wait_for", target: "success-toast" },
+      ],
+    });
+  });
+
   it("accepts a batch of 2-5 steps, rejects fewer than 2 or more than 5", () => {
     const twoSteps = safeParseVerbResponse({
       verb: "batch",
