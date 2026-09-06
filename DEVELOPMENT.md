@@ -7218,6 +7218,75 @@ caught before landing, not after.
 
 ---
 
+### "Why is it still showing failed response when working keys are there" — a real inefficiency fixed, and the actual root cause found by instrumenting live, not guessed
+
+Direct ask, after the previous entry's live-testing burned through two of
+`examples/demo-app`'s six configured Groq keys: even with 4 of 6 keys
+confirmed genuinely healthy (checked directly against Groq's API, not
+inferred from app logs), the widget kept returning "Something went wrong
+on my end." Two separate things were true at once here, and only one of
+them was a real code bug — worth being precise about which, since
+conflating them would have meant "fixing" the wrong thing.
+
+**Built — a real, general fix**: `createVerbLLM`, `createPlanLLM`, and
+`createCriticLLM` (`packages/sdk/src/server.ts`) each independently
+called `createToolLLM`, which built its own fresh `KeyRotator` from
+`GROQ_API_KEYS` — three separate rotator instances, one per LLM role, each
+with its own `deadKeys` set. A key one of them confirmed dead via a real
+401 stayed invisible to the other two, which went on rediscovering the
+exact same dead key from scratch on every one of their own calls, wasting
+real round trips. Fix: a new `keyRotator?: KeyRotator` field on
+`CreateCopilotHandlerOptions`, preferred over `apiKeys`/`apiKey`/env when
+present; `KeyRotator` is now exported from `server.ts` so a caller can
+build one and share it. `examples/demo-app/lib/groq-llm.ts` now builds
+ONE rotator at module scope and passes it to all three `createXLLM`
+calls, matching the exact pattern that file's own doc comment already
+used to justify hoisting the LLMs themselves to module scope (this closes
+the same class of gap, one level deeper).
+
+**Investigated, not guessed — the actual proximate cause of the
+still-failing requests**: rather than assume "must still be a rotation
+bug" after shipping the fix above, added temporary attempt-by-attempt
+instrumentation to the retry loop, rebuilt, and drove one real request
+through the live widget. The instrumented log showed the retry loop
+doing exactly what it's supposed to: trying **all 6 configured keys**, in
+order, correctly distinguishing 401 (dead, permanently excluded) from 429
+(rate-limited, retried) — key 1 (401, dead), keys 2-5 (429 — Groq's own
+error body: "Rate limit reached ... on tokens per day (TPD): Limit
+200000, Used ~197000" for each, and each error naming a genuinely
+DIFFERENT `org_...` id, ruling out a shared-account theory), key 6 (401,
+dead) — then correctly threw only after every single key was exhausted.
+Confirmed independently via direct `curl` calls straight to Groq's API
+(bypassing the app entirely) at three points across this investigation:
+all 4 non-dead keys were genuinely healthy minutes earlier, and each was
+independently confirmed to be near its own **200,000-token daily quota**
+by the time of the failing request — this session's own cumulative
+testing (this entry's instrumentation run included) was what consumed
+it, not a code defect. The retry/rotation logic itself was correct
+throughout; there was nothing left to fix here, and removed the temporary
+instrumentation once this was confirmed rather than leaving debug
+logging shipped.
+
+**Tests**: full `packages/sdk` suite re-run after both the fix and the
+instrumentation revert — 433/433 passing. `npm run typecheck -w
+@cairnvibe/sdk` clean.
+
+**Pending**: two of the six `GROQ_API_KEYS` in `examples/demo-app/.env`
+are permanently dead (real 401s, not quota) and worth swapping for fresh
+ones next time there's Groq console access; the daily-quota exhaustion on
+the other four self-resolves on Groq's own schedule (each 429 response
+names its own reset time, ~17-27 minutes out at the time this was
+checked) and needs no code change.
+
+**Failed:** nothing shipped incorrectly. The one real risk avoided: after
+finding the shared-rotator inefficiency, the instinct was to assume that
+alone explained the continued failures and declare it fixed without
+checking further — instrumenting and observing a real request instead of
+stopping at a plausible-sounding first fix is what actually found the
+true cause.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

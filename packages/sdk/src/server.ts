@@ -34,6 +34,7 @@ import {
 } from "@cairnvibe/core";
 import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+export { KeyRotator } from "./key-rotator";
 import { KeyRotator } from "./key-rotator";
 import type { SkillStore } from "./skill-store";
 
@@ -67,6 +68,22 @@ export interface CreateCopilotHandlerOptions {
   /** Single API key. For groq, prefer `apiKeys` to round-robin; falls back to GROQ_API_KEYS env. */
   apiKey?: string;
   apiKeys?: string[];
+  /**
+   * A pre-built rotator to share across multiple LLM roles (verb, plan,
+   * critic) instead of each one building its own from `apiKeys`/`apiKey`/
+   * env. Real, live-found gap this closes: createVerbLLM/createPlanLLM/
+   * createCriticLLM each called createToolLLM independently, and each one
+   * built a BRAND NEW KeyRotator from the same GROQ_API_KEYS list — so a
+   * key one of them confirmed dead via a real 401 (KeyRotator.markDead)
+   * stayed invisible to the other two, which went on rediscovering the
+   * exact same dead key from scratch on every one of their own calls,
+   * wasting real round trips and, worse, stacking up wasted attempts
+   * against the SAME small number of retries each call is bounded to.
+   * Takes precedence over `apiKeys`/`apiKey`/env when provided. See
+   * groq-llm.ts in examples/demo-app for the intended usage: build one
+   * KeyRotator at module scope, pass it to all three createXLLM calls.
+   */
+  keyRotator?: KeyRotator;
   model?: string;
   /** Action ids this deployment actually supports. "do" is refused for anything else. */
   registeredActions?: string[];
@@ -498,11 +515,12 @@ function createToolLLM(options: CreateCopilotHandlerOptions, toolSchema: Record<
   const provider = options.provider ?? "anthropic";
 
   if (provider === "groq") {
-    const rotator = options.apiKeys
-      ? new KeyRotator(options.apiKeys)
-      : options.apiKey
-        ? new KeyRotator([options.apiKey])
-        : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
+    const rotator = options.keyRotator
+      ?? (options.apiKeys
+        ? new KeyRotator(options.apiKeys)
+        : options.apiKey
+          ? new KeyRotator([options.apiKey])
+          : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS));
     if (!rotator) {
       throw new Error("createToolLLM: provider 'groq' needs apiKey(s), or GROQ_API_KEYS in env");
     }

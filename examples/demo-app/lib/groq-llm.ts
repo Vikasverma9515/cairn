@@ -19,7 +19,7 @@
 // reload is unaffected — that still happens per-request in each route's
 // own loadManifest() call, a genuinely separate concern from which LLM
 // object answers the question.
-import { createCriticLLM, createPlanLLM, createVerbLLM } from "@cairnvibe/sdk/server";
+import { createCriticLLM, createPlanLLM, createVerbLLM, KeyRotator } from "@cairnvibe/sdk/server";
 
 const provider = process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq";
 // The single source of truth for this deployment's registered actions —
@@ -29,6 +29,14 @@ const provider = process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic
 // here rather than each hard-coding their own copy.
 export const registeredActions = ["archiveInvoice"];
 
-export const verbLLM = createVerbLLM({ provider, registeredActions });
-export const planLLM = createPlanLLM({ provider });
-export const criticLLM = createCriticLLM({ provider });
+// One shared rotator across all three LLM roles (verb, plan, critic) —
+// see CreateCopilotHandlerOptions.keyRotator's own doc comment for the
+// real gap this closes: without this, each createXLLM below built its
+// OWN KeyRotator from the same GROQ_API_KEYS list, so a key one of them
+// confirmed dead stayed invisible to the other two, which kept
+// rediscovering it fresh on every call instead of learning it once.
+const keyRotator = provider === "groq" ? KeyRotator.fromEnvList(process.env.GROQ_API_KEYS) ?? undefined : undefined;
+
+export const verbLLM = createVerbLLM({ provider, registeredActions, keyRotator });
+export const planLLM = createPlanLLM({ provider, keyRotator });
+export const criticLLM = createCriticLLM({ provider, keyRotator });
