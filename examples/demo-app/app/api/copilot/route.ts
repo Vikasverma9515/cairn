@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { createCopilotHandler } from "@cairnvibe/sdk/server";
+import { createCopilotHandlerWithLLM } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 import { memory } from "../../../lib/agent-memory";
+import { registeredActions, verbLLM } from "../../../lib/groq-llm";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");
@@ -29,12 +30,14 @@ function loadManifest(): Manifest {
 export async function POST(request: Request) {
   // Re-read per request (it's a small local file) rather than caching at
   // module load — a `cairn build` while the dev server is running should
-  // take effect on the next question, not require a restart.
-  const handler = createCopilotHandler(loadManifest(), {
-    // Defaults to Groq since that's what this demo ships configured with
-    // (GROQ_API_KEYS in .env) — set CAIRN_RUNTIME_PROVIDER=anthropic to switch.
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
-    registeredActions: ["archiveInvoice"],
+  // take effect on the next question, not require a restart. The LLM
+  // itself (verbLLM) is a DIFFERENT concern, deliberately hoisted to
+  // module scope in lib/groq-llm.ts — see that file's own doc comment for
+  // why: rebuilding it fresh per request also rebuilt its KeyRotator from
+  // scratch every time, silently forgetting any key already confirmed
+  // dead by a real 401 the moment the request that discovered it finished.
+  const handler = createCopilotHandlerWithLLM(loadManifest(), verbLLM, {
+    registeredActions,
     // "act" lets it run the registered action above. "guide" or "explain"
     // would restrict it to moving the user around / just talking, even
     // though archiveInvoice stays registered — the two checks are independent.

@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { createPlanHandler } from "@cairnvibe/sdk/server";
+import { createPlanHandlerWithLLM } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 import { skills, SKILLS_SCOPE_ID } from "../../../../lib/agent-memory";
+import { planLLM, registeredActions } from "../../../../lib/groq-llm";
 
 function loadManifest(): Manifest {
   const manifestPath = path.join(process.cwd(), "ui-manifest.json");
@@ -23,9 +24,12 @@ function loadManifest(): Manifest {
 }
 
 export async function POST(request: Request) {
-  const handler = createPlanHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
-    registeredActions: ["archiveInvoice"],
+  // planLLM is a module-scope singleton (lib/groq-llm.ts) — see
+  // /api/copilot/route.ts's own comment for why: rebuilding it fresh per
+  // request also rebuilt its KeyRotator's dead-key memory from scratch
+  // every time.
+  const handler = createPlanHandlerWithLLM(loadManifest(), planLLM, {
+    registeredActions,
     skills,
     skillsScopeId: SKILLS_SCOPE_ID,
   });

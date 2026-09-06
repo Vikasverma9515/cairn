@@ -839,7 +839,17 @@ export class GroqVerbLLM implements VerbLLM {
   ) {}
 
   async respond(systemPrompt: string, userMessage: string): Promise<unknown> {
-    // Two independent, real retry policies, combined in one loop:
+    // Three independent, real retry policies, combined in one loop:
+    //  - Invalid key (401): the key itself is confirmed dead (see
+    //    isInvalidKeyError/KeyRotator.markDead) — excluded from rotation
+    //    for the rest of this process's life, then retried on a
+    //    DIFFERENT configured key, same bound as rate-limit retries
+    //    below. Real, live-found gap this closes: before this existed, a
+    //    single expired/invalid key in the rotation silently sabotaged
+    //    roughly (dead keys / total keys) of every real request forever
+    //    — GroqVerbLLM only ever retried a 429, never a 401, so hitting a
+    //    dead key on the rotation just failed the whole turn outright
+    //    even when other, genuinely working keys were configured.
     //  - Rate-limit (429): retried on a DIFFERENT configured key, up to
     //    once per distinct key. Found live — a Groq account's own daily
     //    token quota exhausting mid-session doesn't mean every OTHER
@@ -850,16 +860,25 @@ export class GroqVerbLLM implements VerbLLM {
     //    before this existed.
     //  - Tool-call failure (see below): exactly one retry, regardless of
     //    key count — unrelated to which key was used.
-    const maxRateLimitAttempts = Math.max(this.keys.size, 1);
-    let rateLimitAttempts = 0;
+    const maxKeyAttempts = Math.max(this.keys.size, 1);
+    let keyAttempts = 0;
     let usedToolCallRetry = false;
 
     for (;;) {
+      const key = this.keys.take();
       try {
-        return await this.attemptRespond(systemPrompt, userMessage);
+        return await this.attemptRespond(key, systemPrompt, userMessage);
       } catch (err) {
-        if (isRateLimitError(err) && rateLimitAttempts < maxRateLimitAttempts - 1) {
-          rateLimitAttempts++;
+        if (isInvalidKeyError(err)) {
+          this.keys.markDead(key);
+          if (keyAttempts < maxKeyAttempts - 1) {
+            keyAttempts++;
+            continue;
+          }
+          throw err;
+        }
+        if (isRateLimitError(err) && keyAttempts < maxKeyAttempts - 1) {
+          keyAttempts++;
           continue;
         }
         // Real, live bugs, not theoretical — two distinct non-deterministic
@@ -890,8 +909,8 @@ export class GroqVerbLLM implements VerbLLM {
     }
   }
 
-  private async attemptRespond(systemPrompt: string, userMessage: string): Promise<unknown> {
-    const client = this.clientFactory(this.keys.take());
+  private async attemptRespond(apiKey: string, systemPrompt: string, userMessage: string): Promise<unknown> {
+    const client = this.clientFactory(apiKey);
     const completion = await client.chat.completions.create({
       model: this.model,
       messages: [
@@ -940,20 +959,23 @@ export class GroqStreamingTextLLM implements StreamingTextLLM {
   ) {}
 
   async respondStreamed(systemPrompt: string, userMessage: string, onChunk: (delta: string) => void): Promise<string> {
-    // Same rate-limit-retries-on-a-different-key policy as GroqVerbLLM.respond
-    // (see its own doc comment). The one thing this path has to guard against
+    // Same rate-limit/invalid-key-retries-on-a-different-key policy as
+    // GroqVerbLLM.respond (see its own doc comment, including the real,
+    // live-found "a dead key sabotages roughly 1/N of every request"
+    // gap markDead closes). The one thing this path has to guard against
     // that the non-streaming call doesn't: a real chunk already having
-    // reached the caller via onChunk before something fails mid-stream — a
-    // 429 always arrives on the initial request, before any chunk streams,
-    // so retrying is only ever attempted when nothing has been emitted yet;
-    // a genuinely different mid-stream failure is never retried, since doing
-    // so would duplicate output already sent.
+    // reached the caller via onChunk before something fails mid-stream —
+    // both a 429 and a 401 always arrive on the initial request, before
+    // any chunk streams, so retrying is only ever attempted when nothing
+    // has been emitted yet; a genuinely different mid-stream failure is
+    // never retried, since doing so would duplicate output already sent.
     const maxAttempts = Math.max(this.keys.size, 1);
     let lastErr: unknown;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let emittedAnyChunk = false;
+      const key = this.keys.take();
       try {
-        const client = this.clientFactory(this.keys.take());
+        const client = this.clientFactory(key);
         const stream = await client.chat.completions.create({
           model: this.model,
           stream: true,
@@ -975,7 +997,9 @@ export class GroqStreamingTextLLM implements StreamingTextLLM {
         return full;
       } catch (err) {
         lastErr = err;
-        if (!emittedAnyChunk && isRateLimitError(err) && attempt < maxAttempts - 1) continue;
+        if (emittedAnyChunk) throw err;
+        if (isInvalidKeyError(err)) this.keys.markDead(key);
+        if ((isInvalidKeyError(err) || isRateLimitError(err)) && attempt < maxAttempts - 1) continue;
         throw err;
       }
     }
@@ -1030,6 +1054,26 @@ function isRateLimitError(err: unknown): boolean {
   if (code === "rate_limit_exceeded") return true;
   const message = typeof e.message === "string" ? e.message : "";
   return message.includes("rate_limit_exceeded") || message.includes("Rate limit reached");
+}
+
+/**
+ * Same defensive-shape-checking approach as isRateLimitError — the real
+ * error was checked directly against the live Groq API before writing
+ * this (not guessed): a real 401 from an invalid/expired key throws with
+ * `.status === 401` and the SAME doubly-nested `.error.error.code ===
+ * "invalid_api_key"` shape isRateLimitError already has to check for its
+ * own 429 case, confirmed via `Groq({apiKey}).chat.completions.create(...)`
+ * against a genuinely dead key and inspecting the thrown error's own
+ * `.status`/`.error`/`.message` fields directly.
+ */
+function isInvalidKeyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; code?: unknown; error?: { code?: unknown; error?: { code?: unknown } }; message?: unknown };
+  if (e.status === 401) return true;
+  const code = e.code ?? e.error?.code ?? e.error?.error?.code;
+  if (code === "invalid_api_key") return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("invalid_api_key") || message.includes("Invalid API Key");
 }
 
 // ---------------------------------------------------------------------------

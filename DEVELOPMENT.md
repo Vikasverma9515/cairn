@@ -6429,6 +6429,131 @@ practice, once a working API key exists.
 
 ---
 
+### A real, session-aware dead-key system for Groq's key rotation — closing a genuine "one bad key sabotages every Nth request forever" bug
+
+Found live, not theoretical: asked directly, "are all the keys exhausted?"
+— checked all 6 configured `GROQ_API_KEYS` against the real Groq API
+directly (`curl`, then the real `groq-sdk` client) and found only 2 of 6
+were actually dead (`401 Invalid API Key`); the other 4 authenticated and
+answered a real chat completion correctly. This meant the demo app's own
+generic "Something went wrong on my end" fallback — assumed all session
+to be total key exhaustion — was actually `KeyRotator` handing out a
+confirmed-dead key on roughly 1 in 3 real requests, forever, with zero
+memory that it had already failed the exact same way moments before.
+
+**The real, root-cause bug**: `GroqVerbLLM.respond`'s own retry loop only
+ever retried a 429 (rate limit) on a different key — never a 401 (a
+genuinely dead/expired key). Hitting a dead key on the rotation just
+failed the WHOLE turn outright, even with other, real, working keys
+configured right next to it.
+
+**Built**:
+- `packages/sdk/src/key-rotator.ts` (and its mirror,
+  `packages/indexer/src/key-rotator.ts`) — `KeyRotator` gained
+  `markDead(key)` (excludes a confirmed-invalid key from `take()`'s
+  rotation for the rest of this process's life, logging once per key —
+  only its last 4 characters, never the real secret) and `liveSize`. A
+  real, honest fallback if EVERY key is ever marked dead: `take()` still
+  returns something (the full original list) rather than permanently
+  breaking the process — a bounded retry loop still needs something real
+  to try.
+- `packages/sdk/src/server.ts` — new `isInvalidKeyError(err)`, checked
+  against the REAL error shape (not guessed): directly ran
+  `new Groq({apiKey}).chat.completions.create(...)` against one of the
+  genuinely dead keys and inspected the thrown error — `.status === 401`,
+  doubly-nested `.error.error.code === "invalid_api_key"`, matching
+  `isRateLimitError`'s own established shape-checking depth.
+  `GroqVerbLLM.respond` and `GroqStreamingTextLLM.respondStreamed` both
+  restructured so the key used for each attempt is known to the catch
+  block (not buried inside a private helper) — a 401 now marks that key
+  dead and retries on a different one, bounded by the real configured key
+  count, same as the existing 429 policy.
+- `packages/indexer/src/llm.ts` — `GroqDescribeClient.describePage` (the
+  `cairn build` L3 describe pass) gained the identical fix: its own
+  bounded retry loop over live keys, separate from (and orthogonal to)
+  `concurrency.ts`'s `withRetry` (which still handles 429/5xx backoff at
+  the caller — a 401 isn't a transient condition backing off helps with,
+  it's a permanent fact about that one key, so this retries immediately on
+  a different key instead of waiting). Also gained a client-factory
+  constructor parameter (mirroring `GroqVerbLLM`'s own shape) specifically
+  so this — previously completely untested — class could finally get real
+  test coverage without a live API key.
+- **The deeper fix, found while live-verifying the first one**:
+  `examples/demo-app/app/api/copilot/route.ts` (and its `plan`/`critic`
+  siblings) rebuilt a brand-new `GroqVerbLLM`/`KeyRotator` from scratch on
+  EVERY single request — deliberate, for real manifest hot-reload — which
+  meant `markDead`'s own memory got thrown away the instant the request
+  that discovered it finished; the very next question rediscovered the
+  exact same dead key was dead all over again. Fixed with a new
+  `examples/demo-app/lib/groq-llm.ts`: `verbLLM`/`planLLM`/`criticLLM`
+  built ONCE at module load (persisting for the life of the server
+  process — the real "session" the question that started this was asking
+  about), same established pattern `speak/route.ts`'s own handler already
+  used. The three routes now call the `*WithLLM` handler variants against
+  these shared singletons instead of rebuilding a fresh LLM (and
+  therefore a fresh, amnesiac `KeyRotator`) on every request. Manifest
+  hot-reload is untouched — that's a genuinely separate concern, still
+  re-read per request in each route's own `loadManifest()`.
+
+**A real bug found and fixed while writing the tests, not after**: the
+first version of `describePage`'s retry loop called
+`this.clientFactory(key)` OUTSIDE its own `try` block — harmless against
+the real Groq SDK (which never throws at client construction, only at the
+actual request), but a genuine inconsistency against `GroqVerbLLM`'s own
+established pattern, and it silently broke the very test written to
+exercise the retry path (the fake client factory threw before the retry
+logic could ever see it). Fixed by moving construction inside the `try`,
+matching `GroqVerbLLM.attemptRespond`'s own shape exactly.
+
+**Tests**: `packages/sdk/src/key-rotator.test.ts` (new) — 13 tests:
+round-robin ordering, `fromEnvList` parsing, `size`/`liveSize`,
+`markDead`'s exclusion behavior, the total-outage fallback, and the
+once-per-key/last-4-characters-only logging discipline.
+`packages/indexer/src/key-rotator.test.ts` (new) — 9 tests, the same
+coverage for the mirrored copy. `packages/sdk/src/server.test.ts` — 4 new
+tests on `GroqVerbLLM`/`GroqStreamingTextLLM`: a 401 retries on a
+different key and succeeds, a key marked dead on one call is never handed
+out again on a LATER, separate call, persistent 401s exhaust every
+configured key before throwing, and the streaming path's own equivalent.
+`packages/indexer/src/llm.test.ts` (new) — 6 tests: a real tool-call
+description, the 401-retries-on-a-different-key case, the
+never-handed-out-again-on-a-later-page case, exhausting every key,
+confirming a 429 is deliberately NOT retried internally (that stays
+`withRetry`'s own job), and the no-tool-call error case. 32 new tests
+total. Full repo `npx vitest run`: 725/725 passing, zero regressions.
+Full `npm run typecheck` clean across all 6 workspaces (including
+`demo-app`, which now imports the new `*WithLLM` handler variants and the
+new `lib/groq-llm.ts` singleton module). `npm run build -w
+@cairnvibe/core -w @cairnvibe/sdk` rebuilt cleanly.
+
+**Live-verified — end to end, against the real, actually-dead keys, not
+a simulation**: restarted the demo app fresh and asked three separate
+real questions through the actual widget. First question: server logs
+showed `[cairn] API key ending in "6Whv" is invalid... excluded... 5 of 6
+configured key(s) remain` exactly once, and the widget still answered
+correctly ("This Invoices page lists every invoice you've sent...") —
+proving the retry-on-a-different-key path works for real. Asked a
+follow-up requiring the Critic ("archive the invoice for Acme Co") and
+watched the log count go from 2 to 3 (verbLLM's and planLLM's rotators
+had already independently learned the dead key; criticLLM's rotator hit
+it for the first time here) — then asked a THIRD question and confirmed
+the count stayed at 3, never growing again, proving the per-rotator dead-
+key memory genuinely persists across requests now instead of being
+silently rebuilt and forgotten every time. This is the first real, live,
+correctly-answered model response of this entire session — every prior
+"Something went wrong on my end" this session hit was this exact bug,
+not a genuine full account exhaustion.
+
+**Pending**: nothing structural — this closes a real, previously-
+misdiagnosed root cause. The Anthropic provider path (`AnthropicVerbLLM`)
+has no `KeyRotator`/multi-key concept at all (single `apiKey`, matching
+`createToolLLM`'s own branching) so this fix is Groq-specific by design,
+not a gap.
+
+**Failed:** nothing.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

@@ -170,11 +170,39 @@ export class AnthropicDescribeClient implements DescribeClient {
 // while building this; check that endpoint again if this starts 404ing.
 const GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b";
 
+/**
+ * Same defensive-shape-checking approach as concurrency.ts's own
+ * error-inspection helpers — checked directly against the real Groq API
+ * before writing this (not guessed): a real 401 from an invalid/expired
+ * key throws with `.status === 401` and a doubly-nested
+ * `.error.error.code === "invalid_api_key"`.
+ */
+function isInvalidKeyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; code?: unknown; error?: { code?: unknown; error?: { code?: unknown } }; message?: unknown };
+  if (e.status === 401) return true;
+  const code = e.code ?? e.error?.code ?? e.error?.error?.code;
+  if (code === "invalid_api_key") return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("invalid_api_key") || message.includes("Invalid API Key");
+}
+
+/** Minimal shape GroqDescribeClient needs — narrow enough to fake in tests, same pattern as packages/sdk/src/server.ts's own GroqLikeClient. */
+export interface GroqLikeClient {
+  chat: {
+    completions: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      create: (params: any) => Promise<{ choices: any[] }>;
+    };
+  };
+}
+
 export class GroqDescribeClient implements DescribeClient {
   private keys: KeyRotator;
   private model: string;
+  private clientFactory: (apiKey: string) => GroqLikeClient;
 
-  constructor(options?: { apiKeys?: string[]; model?: string }) {
+  constructor(options?: { apiKeys?: string[]; model?: string }, clientFactory: (apiKey: string) => GroqLikeClient = (apiKey) => new Groq({ apiKey })) {
     const rotator = options?.apiKeys
       ? new KeyRotator(options.apiKeys)
       : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS);
@@ -183,36 +211,58 @@ export class GroqDescribeClient implements DescribeClient {
     }
     this.keys = rotator;
     this.model = options?.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
+    this.clientFactory = clientFactory;
   }
 
   async describePage(input: DescribeInput): Promise<PageDescription> {
-    const client = new Groq({ apiKey: this.keys.take() });
     const userContent = buildUserContent(input);
+    // Real, live-found gap this closes: a genuinely dead/expired key used
+    // to just throw straight out of this method on every page that
+    // happened to land on it via round-robin, for the entire build —
+    // wasting a real API round trip on a key already proven dead, over
+    // and over. A bounded loop over the real configured key count,
+    // separate from (and orthogonal to) withRetry's own 429/5xx backoff
+    // retries at the caller — an invalid key isn't a transient condition
+    // that backing off helps with, it's a permanent fact about that one
+    // key, so this retries IMMEDIATELY on a different key instead of
+    // waiting. See KeyRotator.markDead's own doc comment.
+    const maxKeyAttempts = Math.max(this.keys.size, 1);
+    for (let attempt = 0; ; attempt++) {
+      const key = this.keys.take();
+      try {
+        const client = this.clientFactory(key);
+        const completion = await client.chat.completions.create({
+          model: this.model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userContent },
+          ],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: DESCRIBE_TOOL_NAME,
+                description: DESCRIBE_TOOL.description,
+                parameters: DESCRIBE_TOOL.input_schema,
+              },
+            },
+          ],
+          tool_choice: { type: "function", function: { name: DESCRIBE_TOOL_NAME } },
+        });
 
-    const completion = await client.chat.completions.create({
-      model: this.model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent },
-      ],
-      tools: [
-        {
-          type: "function",
-          function: {
-            name: DESCRIBE_TOOL_NAME,
-            description: DESCRIBE_TOOL.description,
-            parameters: DESCRIBE_TOOL.input_schema,
-          },
-        },
-      ],
-      tool_choice: { type: "function", function: { name: DESCRIBE_TOOL_NAME } },
-    });
+        const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
+        if (!toolCall) {
+          throw new Error(`L3 describe (groq): no tool call in response for ${input.route}`);
+        }
 
-    const toolCall = completion.choices[0]?.message?.tool_calls?.[0];
-    if (!toolCall) {
-      throw new Error(`L3 describe (groq): no tool call in response for ${input.route}`);
+        return toPageDescription(JSON.parse(toolCall.function.arguments) as RawDescribeResult);
+      } catch (err) {
+        if (isInvalidKeyError(err)) {
+          this.keys.markDead(key);
+          if (attempt < maxKeyAttempts - 1) continue;
+        }
+        throw err;
+      }
     }
-
-    return toPageDescription(JSON.parse(toolCall.function.arguments) as RawDescribeResult);
   }
 }

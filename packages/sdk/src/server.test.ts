@@ -1204,6 +1204,81 @@ describe("GroqVerbLLM", () => {
     expect(attempts).toBe(3);
   });
 
+  it("real, live-found fix: retries a 401 (invalid key) on a different configured key, same as a 429", async () => {
+    const seenKeys: string[] = [];
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { tool_calls: [{ function: { name: "x", arguments: JSON.stringify({ verb: "explain", text: "ok" }) } }] } }],
+          }),
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["key-a", "key-b"]), "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      if (key === "key-a") {
+        const err: any = new Error("401");
+        err.status = 401;
+        err.error = { error: { message: "Invalid API Key", type: "invalid_request_error", code: "invalid_api_key" } };
+        throw err;
+      }
+      return fakeClient;
+    });
+    await expect(llm.respond("s", "u")).resolves.toEqual({ verb: "explain", text: "ok" });
+    expect(seenKeys).toEqual(["key-a", "key-b"]);
+  });
+
+  it("a key confirmed dead by a 401 is never handed out again on a LATER call — the real point of markDead", async () => {
+    const seenKeys: string[] = [];
+    const rotator = new KeyRotator(["key-a", "key-b"]);
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { tool_calls: [{ function: { name: "x", arguments: JSON.stringify({ verb: "explain", text: "ok" }) } }] } }],
+          }),
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(rotator, "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      if (key === "key-a") {
+        const err: any = new Error("401");
+        err.status = 401;
+        throw err;
+      }
+      return fakeClient;
+    });
+    await llm.respond("s", "u"); // key-a fails and gets marked dead, key-b succeeds
+    await llm.respond("s", "u"); // a later, separate turn
+    await llm.respond("s", "u");
+    // key-a is never seen again after the first call proved it dead — every
+    // later call goes straight to key-b, not wasting a real request on a
+    // key already known to be invalid.
+    expect(seenKeys).toEqual(["key-a", "key-b", "key-b", "key-b"]);
+    expect(rotator.liveSize).toBe(1);
+  });
+
+  it("exhausts every configured key on persistent invalid-key failures, then throws the last error — never retries more times than there are keys", async () => {
+    let attempts = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempts++;
+            const err: any = new Error("401");
+            err.status = 401;
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["key-a", "key-b", "key-c"]), "m", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("s", "u")).rejects.toThrow("401");
+    expect(attempts).toBe(3);
+  });
+
   it("round-robins across multiple keys", async () => {
     const seenKeys: string[] = [];
     const fakeClient: GroqLikeClient = {
@@ -1358,6 +1433,36 @@ describe("GroqStreamingTextLLM", () => {
     expect(seenKeys).toEqual(["key-a", "key-b"]);
     expect(full).toBe("recovered");
     expect(chunks).toEqual(["recovered"]);
+  });
+
+  it("real, live-found fix: an invalid-key (401) error on the request itself retries on the next configured key, marking the dead one so it's excluded from future calls", async () => {
+    const seenKeys: string[] = [];
+    const rotator = new KeyRotator(["key-a", "key-b"]);
+    async function* fakeChunks() {
+      yield { choices: [{ delta: { content: "recovered" } }] };
+    }
+    const llm = new GroqStreamingTextLLM(rotator, "m", (key) => {
+      seenKeys.push(key);
+      return {
+        chat: {
+          completions: {
+            create: async () => {
+              if (key === "key-a") {
+                const err: any = new Error("401");
+                err.status = 401;
+                throw err;
+              }
+              return fakeChunks();
+            },
+          },
+        },
+      };
+    });
+    const chunks: string[] = [];
+    const full = await llm.respondStreamed("s", "u", (d) => chunks.push(d));
+    expect(seenKeys).toEqual(["key-a", "key-b"]);
+    expect(full).toBe("recovered");
+    expect(rotator.liveSize).toBe(1); // key-a marked dead for the rest of this session
   });
 
   it("never retries a mid-stream failure — even a rate-limit-shaped one — once a real chunk already reached the caller, so output is never duplicated", async () => {
