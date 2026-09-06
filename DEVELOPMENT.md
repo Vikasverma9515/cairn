@@ -7287,6 +7287,56 @@ true cause.
 
 ---
 
+### The same shared-KeyRotator gap, in the realtime voice transport this time — live-reported after the previous fix only covered the typed/HTTP path
+
+Direct follow-up: a live screenshot of the voice widget ("Listening…")
+still showing "Something went wrong on my end" after the previous entry's
+fix and a fresh 7th key had been added. The previous fix only edited
+`examples/demo-app/lib/groq-llm.ts` — the typed/HTTP `/api/copilot`
+route's own LLM wiring. `createRealtimeServer`
+(`packages/sdk/src/realtime-server.ts`) is a genuinely separate code path
+— it runs as its own Node process (`cairn-realtime`, started alongside
+`next dev` by the demo app's own `dev` script, per that file's own header
+comment), and it independently calls `createVerbLLM(options)` /
+`createPlanLLM(options)` / `createCriticLLM(options)` with no rotator
+sharing at all — the exact same gap `CreateCopilotHandlerOptions.keyRotator`
+was built to close, just never wired in here.
+
+**Built — fixed at the source, not patched in the demo app**: `createRealtimeServer`
+now builds ONE shared `KeyRotator` (only for `provider: "groq"` — the
+anthropic path ignores `keyRotator` entirely, so building one there would
+be dead work) — reusing `options.keyRotator` if a caller already supplied
+one (e.g. sharing it with a typed/HTTP handler running in the same
+process), otherwise built fresh from `options.apiKeys`/`apiKey`/env,
+mirroring `createToolLLM`'s own fallback order exactly. That resolved
+rotator is threaded through to all three `createXLLM` calls via one
+`sharedOptions` object, so a key any one of verb/plan/critic confirms
+dead during a live voice call is immediately known-dead to the other two
+for the rest of that process's life — not per-request, since this is a
+long-lived process, not per-request like the Next.js route handlers.
+
+**Tests**: `npm run typecheck -w @cairnvibe/sdk` clean; full
+`packages/sdk` suite re-run — 433/433 passing, no regressions from
+threading `sharedOptions` through.
+
+**Not live-verified against a real voice call**: deliberately held off —
+the daily-quota keys from the previous entry may not have fully reset
+yet, and a real voice call is one of the more token-expensive things to
+test with. The fix is verified by direct code inspection (the exact same
+pattern, in the exact same file, that was already confirmed correct for
+the typed/HTTP path) plus a clean typecheck/test run, not by a live call.
+
+**Pending**: a live voice-call check once quota headroom is comfortable
+again — restart `examples/demo-app`'s dev server (which restarts
+`cairn-realtime` too, since it's started by that same `dev` script) to
+pick this rebuild up.
+
+**Failed:** nothing shipped incorrectly — this is a direct, narrowly-
+scoped continuation of the previous entry's fix into the one transport it
+didn't yet cover, not a new mistake.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

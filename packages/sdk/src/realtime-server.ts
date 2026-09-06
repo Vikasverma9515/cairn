@@ -42,6 +42,7 @@ import {
   resolveCritic,
   resolvePlan,
   resolveVerb,
+  KeyRotator,
   type CapabilityTier,
   type CreateCopilotHandlerOptions,
 } from "./server";
@@ -175,11 +176,23 @@ export { seedHistoryFromMemory, formatRememberedFacts };
 export function createRealtimeServer(options: CreateRealtimeServerOptions): http.Server {
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
-  const llm = createVerbLLM(options);
+  // One shared rotator across all three LLM roles — see
+  // CreateCopilotHandlerOptions.keyRotator's own doc comment for the real
+  // gap this closes (a key one role confirmed dead used to stay invisible
+  // to the other two, which kept rediscovering it fresh on every call).
+  // Only built for groq — anthropic's createXLLM calls ignore keyRotator
+  // entirely, so building one for it would be dead work. Respects a
+  // caller-supplied options.keyRotator (e.g. shared with the typed/HTTP
+  // transport in the same process) instead of always building a fresh one.
+  const sharedOptions: CreateRealtimeServerOptions =
+    options.provider === "groq" && !options.keyRotator
+      ? { ...options, keyRotator: options.apiKeys ? new KeyRotator(options.apiKeys) : options.apiKey ? new KeyRotator([options.apiKey]) : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS) ?? undefined }
+      : options;
+  const llm = createVerbLLM(sharedOptions);
   // Phase 3 steps 2-3 — real, separately-configured Planner/Critic LLMs.
   // See finalizeTurn's own doc comment for how they're actually used.
-  const planLLM = createPlanLLM(options);
-  const criticLLM = createCriticLLM(options);
+  const planLLM = createPlanLLM(sharedOptions);
+  const criticLLM = createCriticLLM(sharedOptions);
   // "text" is optional on highlight/open/navigate/do in the base prompt —
   // fine for the typed/HTTP path, which always has a visible answer area,
   // but silence reads as broken in a live voice conversation (the client
