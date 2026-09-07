@@ -7337,6 +7337,79 @@ didn't yet cover, not a new mistake.
 
 ---
 
+### "It's not a key problem, it's doing the work" — trimming the per-call token cost, live-diagnosed from a real, multi-page usage session
+
+Direct ask, from a long live-driven walkthrough (Board → Shop → Sessions →
+Agents → Workflows) that hit "Something went wrong" repeatedly despite
+working keys: figure out the REAL cause, not just "buy more keys" again.
+
+**Root cause, confirmed from the pasted logs, not guessed**: every single
+429 in the session showed `Limit 8000` (Groq's per-minute TPM ceiling)
+with `Requested` values of 6,200-7,500 tokens — meaning ONE verb-
+resolution call alone was consuming 80-95% of an entire minute's budget.
+Researched whether Groq's prompt caching (confirmed via its own docs:
+automatic, no code changes, applies to `openai/gpt-oss-120b`, covers tool/
+function-calling requests) would fix this on its own — it doesn't: Groq's
+own documentation states cached tokens are credited back to your budget
+only AFTER a request completes, so a single request's OWN admission check
+still evaluates its full, pre-cache size against the CURRENT remaining
+budget. With `driveAgentLoop` making several `resolveVerb` calls per
+single user utterance (act → observe → think → act again), each one
+still pays close to the full cost on arrival — caching helps amortize
+cost/quota ACROSS calls over time, not the size of any one call in the
+moment it's rate-limit-checked.
+
+**Built**: measured the actual static system prompt
+(`buildSystemPrompt`) at ~4,086 tokens for a small manifest — the
+dominant, 100%-avoidable cost, since it's byte-identical on every single
+call regardless of what was asked. Tightened it to ~3,438 tokens (~16%
+cut, ~650 tokens saved per call) by rewriting ONLY the mechanical,
+non-behavioral parts — the five-field context-payload explanation
+(`currentPageElements`/`liveElements`/`webMcpTools`/
+`currentPageDataShapes`/`suggestedApproach`) and the verb-list prose
+(`navigate`/`tour`/`do`/`batch`) — condensing repeated phrasing while
+keeping every field name and behavioral fact intact. Deliberately did
+NOT touch the tone/brevity/hesitation section or the internal-id-leak
+carve-out — both were hardened earlier this session against real,
+live-found regressions, and cutting hard-won behavioral tuning to save a
+few hundred tokens would be a bad trade.
+
+**Failed, then fixed, before it shipped**: the rewrite of the
+`currentPageDataShapes` bullet accidentally put `"Paid" | "Overdue" |
+"Archived"` on one unbroken line, where the ORIGINAL prompt (by pure
+accident of its own line-wrapping — template literals preserve source
+newlines verbatim) had it split across two lines. A real test —
+`"data shapes never leak into the cached, route-independent system
+prompt"` — checks the cached prompt for exactly that contiguous
+substring, and had only ever been passing because of that incidental
+line break, not a deliberate one. Fixed properly, not by re-wrapping
+around the accident: swapped the illustrative example to `Task { status:
+"Todo" | "InProgress" | "Done" }`, so it can never coincidentally collide
+with a real deployment's own enum values the way the original's
+Invoice-shaped example did.
+
+**Tests**: full `packages/sdk` suite re-run after the fix — 433/433
+passing (including the leak test above). `npm run typecheck -w
+@cairnvibe/sdk` clean.
+
+**Honest scope of this fix**: real and measurable, not a full solution.
+A ~16% per-call reduction helps but doesn't remove the fundamental
+constraint — Groq's free tier gives 8,000 tokens/minute, and a genuinely
+agentic loop (plan → act → observe → critic, several round trips per
+single user question) will keep bumping into that ceiling on busy
+sessions regardless of prompt size, especially once several configured
+keys' minute-windows are ALL exhausted at once (confirmed in the same
+logs — four separate Groq orgs each hit their own 8,000 TPM ceiling
+within one conversation). The per-request context payload
+(`currentPageElements`/`liveElements`, scales with real page complexity)
+is untouched and is the next lever if more headroom is needed. The
+durable fix for anyone running this against real traffic is a paid Groq
+tier (raises the TPM ceiling substantially) rather than continued prompt
+trimming, which has diminishing, riskier returns the further it cuts
+into the carefully-tuned instructional text.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
