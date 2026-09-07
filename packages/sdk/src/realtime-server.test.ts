@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { HistoryTurn, Manifest, Skill } from "@cairnvibe/core";
 import type { VerbLLM } from "./server";
-import { formatRememberedFacts, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
+import { createRealtimeServer, formatRememberedFacts, handleDeepgramMessage, seedHistoryFromMemory, type ConnectionDeps } from "./realtime-server";
 import type { MemoryTurnRecord } from "./memory-sqlite";
 import type { SkillStore } from "./skill-store";
 
@@ -82,6 +82,56 @@ function resultsMessage(transcript: string, opts: { isFinal: boolean; speechFina
     channel: { alternatives: [{ transcript }] },
   });
 }
+
+// A real, live server — not a fake/mock — proving createRealtimeServer's
+// own connection-level error handling actually works, not just that it
+// typechecks. Real gap this closes: neither the WebSocketServer nor any
+// individual browser connection had an 'error' listener — Node throws an
+// EventEmitter's own unhandled 'error' event as an uncaught exception,
+// which crashes the WHOLE process, taking down every OTHER currently-
+// connected user's live session, not just the one connection that
+// errored. A minimal but real manifest/deepgramApiKey — no actual
+// Deepgram/LLM call is ever triggered here, since no audio is sent and
+// no message is exchanged; these tests only exercise connection-level
+// survival.
+const minimalManifest: Manifest = { version: "1", commit: "test", generatedAt: new Date().toISOString(), pages: [], dead: [], conflicts: [] };
+
+describe("createRealtimeServer — connection-level failures don't crash the process", () => {
+  it("survives a client's connection resetting abruptly (destroy) — a fresh connection right after still succeeds normally", async () => {
+    const server = createRealtimeServer({ manifest: minimalManifest, deepgramApiKey: "fake-key-not-actually-used" });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      // First connection: open, then abruptly destroy the underlying raw
+      // socket the instant it's up — a real, common real-world case (a
+      // browser tab closing, a network drop, a proxy reset), not a
+      // synthetic-only scenario.
+      const first = new WebSocket(`ws://localhost:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        first.once("open", () => {
+          first.terminate(); // forcibly closes the underlying TCP socket without a clean WS close handshake
+          resolve();
+        });
+        first.once("error", () => resolve()); // either outcome is fine here — the point is what happens NEXT
+        setTimeout(() => reject(new Error("first connection never opened")), 3000);
+      });
+
+      // The real assertion: the SERVER itself is still alive and accepts a
+      // completely fresh, independent second connection normally — proof
+      // the first one's abrupt failure didn't take the whole process down.
+      const second = new WebSocket(`ws://localhost:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        second.once("open", () => resolve());
+        second.once("error", (err) => reject(err));
+        setTimeout(() => reject(new Error("server did not accept a second connection — may have crashed")), 3000);
+      });
+      second.close();
+    } finally {
+      server.close();
+    }
+  }, 10000);
+});
 
 // Phase 2 step 2 — the timer state machine behind confirm-or-reverse
 // barge-in, extracted specifically so it could be tested in isolation

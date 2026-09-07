@@ -213,6 +213,20 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
     res.end("cairn realtime relay\n");
   });
   const wss = new WebSocketServer({ server: httpServer });
+  // Real crash risk this closes: an EventEmitter's own 'error' event, if
+  // nothing is listening for it, is thrown as an uncaught exception —
+  // Node's default behavior, not something try/catch anywhere else in
+  // this file catches. Neither the WebSocketServer itself nor (below) any
+  // individual browser connection had one, meaning a single malformed
+  // frame or network-level hiccup from ANY ONE connection could crash the
+  // WHOLE process — taking down every other currently-connected user's
+  // live voice session, not just the one that errored. Both are genuinely
+  // possible in normal operation (a client's connection dropping mid-TCP-
+  // handshake, a proxy/load-balancer resetting a connection), not just a
+  // theoretical edge case.
+  wss.on("error", (err) => {
+    console.error("[cairn realtime] WebSocketServer error:", err);
+  });
 
   // Real, server-side visibility into how many browser tabs/connections
   // are actually live at once — added specifically to answer, with real
@@ -232,6 +246,18 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
     const connectionId = nextConnectionId++;
     activeConnections++;
     console.log(`[cairn realtime] connection ${connectionId} opened — ${activeConnections} active`);
+    // Same real crash risk as the WebSocketServer's own 'error' handler
+    // above, one level down — this ONE browser connection's own error
+    // (a dropped TCP connection, a proxy reset, a malformed frame) is
+    // just as capable of crashing the entire process for every other
+    // connected user if nothing listens for it. Log-only, deliberately:
+    // 'close' still fires separately afterward in the normal case and
+    // already owns the real cleanup (activeConnections--, the log line
+    // below) — duplicating that here risks double-decrementing if a
+    // connection that errors ALSO closes, which it normally does.
+    client.on("error", (err) => {
+      console.error(`[cairn realtime] connection ${connectionId} socket error:`, err);
+    });
     client.on("close", () => {
       activeConnections--;
       console.log(`[cairn realtime] connection ${connectionId} closed — ${activeConnections} active`);

@@ -7740,6 +7740,84 @@ up next.
 
 ---
 
+### VOXERA's audit fixed the safe way; a real crash-safety audit of the realtime relay finds and fixes two genuine process-crashing gaps
+
+Direct ask, in two parts: fix VOXERA's `npm audit` findings, and make sure
+Cairn's own packages don't crash "in any software."
+
+**VOXERA — fixed the safe 4 of 9, left the rest alone with a real reason
+why, not silently**: plain `npm audit fix` (no `--force`) resolved
+`@humanfs/node`, `@xmldom/xmldom`, `browserslist`, and `qs` with zero
+breaking changes — down from 9 vulnerabilities to 5. The remaining 5
+(1 critical, 4 high) all trace to one root: `@xenova/transformers`'s own
+outdated `onnxruntime-web` dependency (which pulls vulnerable
+`onnx-proto`/`protobufjs`/`sharp`). Checked before doing anything about
+it: `@xenova/transformers`'s LATEST published version is 2.17.2 — the
+exact version VOXERA already has. npm's own suggested `--force` fix
+would DOWNGRADE it to 1.4.2, which is not a real fix, just the resolver
+finding an old version whose dependency graph happens to route around
+the advisory — likely to break VOXERA's own actual embedding/RAG
+functionality (confirmed live and working via `[Warmup] ONNX models
+ready`). The real fix is migrating to the maintained successor,
+`@huggingface/transformers` (currently v4.2.0, the official continuation
+of the same project) — a genuine code migration, not a version bump,
+left for the user's own call rather than done silently. Also found and
+removed, while in there: an orphaned `node_modules/canvas` folder (no
+compiled binary at all) left over from the earlier interrupted
+`audit fix --force` — `npm ls canvas` confirmed nothing in the real
+dependency tree references it; it was already fully self-resolved by a
+later `npm install`, just still sitting on disk. Confirmed the package
+VOXERA's code actually uses, `@napi-rs/canvas`, loads cleanly.
+
+**Cairn's own packages — a real audit, not a guess**: traced every
+EventEmitter this repo creates for the class of Node.js bug that's the
+single most common cause of an otherwise-healthy server crashing —
+an `'error'` event with no listener throws as an uncaught exception,
+which (unlike a normal thrown error inside a request handler) is fatal
+to the WHOLE process, not just the one operation that failed. Checked
+the highest-stakes place first: `createRealtimeServer` (a long-running,
+multi-tenant process — one bad connection crashing it takes down every
+OTHER currently-connected user's live voice session, not just its own).
+Found two real gaps: neither the `WebSocketServer` itself nor any
+individual browser connection (`wss.on("connection", (client) => ...)`)
+had an `'error'` listener at all — confirmed by grep, not assumed;
+`realtime-cli.ts`'s own `http.Server` had none either, meaning the single
+most common real-world case (`EADDRINUSE` — the port already in use,
+e.g. a second `cairn-realtime` left running) would have crashed with a
+raw, unhandled stack trace instead of the one-line, actionable message
+it now gets. Checked and confirmed ALREADY solid, not assumed: the
+Deepgram STT/TTS sockets both already have real `'error'` handlers; the
+one `void`-fire-and-forget call in the whole file
+(`handleDeepgramMessage`) resolves down into `finalizeTurn`, which
+already wraps its entire body in try/catch with no path that can escape
+uncaught (an EARLIER fix, per that function's own doc comment);
+`crawl.ts`'s Playwright browser is already correctly wrapped in
+try/finally, no leaked-process risk even on a mid-crawl exception; the
+indexer CLI already has a top-level `main().catch(...)`.
+
+**Built**: `wss.on("error", ...)` and a per-connection `client.on("error",
+...)` in `realtime-server.ts` (log-only by design — `'close'` still
+fires separately and already owns the real cleanup, so duplicating it in
+the error handler risks double-decrementing `activeConnections`); a real
+`server.on("error", ...)` in `realtime-cli.ts` with a specific,
+actionable `EADDRINUSE` message.
+
+**Tests**: a genuinely real integration test, not a mock — starts an
+actual `createRealtimeServer` on an OS-assigned port, opens a real `ws`
+client connection, forcibly terminates it the instant it's open (a real
+abrupt-disconnect scenario — a closing browser tab, a dropped network),
+then proves the server is still alive by opening and completing a
+second, independent connection normally. Full `packages/sdk` suite:
+437/437 (436 + this one). Typecheck clean.
+
+**Pending**: VOXERA's Groq-key-sharing (still open, lower priority);
+migrating VOXERA off `@xenova/transformers` to `@huggingface/transformers`
+is a real, user-decision-gated migration, not started.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

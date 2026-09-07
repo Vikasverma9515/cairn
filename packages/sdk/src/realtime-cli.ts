@@ -149,6 +149,20 @@ function main(): void {
   const skillsScopeId = process.env.CAIRN_SKILLS_SCOPE_ID || undefined;
 
   const server = createRealtimeServer({ manifest, provider, deepgramApiKey, registeredActions, capability, persona, memory, skills, skillsScopeId });
+  // Real crash risk this closes: an http.Server's own 'error' event (most
+  // commonly EADDRINUSE — this exact port already bound, e.g. a second
+  // `cairn-realtime` left running, or the port genuinely taken by
+  // something else entirely) throws as an uncaught exception with no
+  // listener, killing the whole process with a raw stack trace instead
+  // of the one-line, actionable message this deserves.
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`cairn-realtime: port ${port} is already in use — stop whatever's using it, or pass --port <other-port>.`);
+    } else {
+      console.error("cairn-realtime: failed to start:", err);
+    }
+    process.exit(1);
+  });
   server.listen(port, () => {
     console.error(`cairn-realtime: listening on ws://localhost:${port} (provider: ${provider})`);
     if (withCommand) spawnCompanion(withCommand);
