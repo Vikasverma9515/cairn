@@ -19,8 +19,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
-    "@cairnvibe/core": "^0.1.0",
-    "@cairnvibe/sdk": "^0.2.0",
+    "@cairnvibe/core": "^0.1.8",
+    "@cairnvibe/sdk": "^0.4.4",
     "better-sqlite3": "^13.0.3",
     "playwright": "^1.62.1",
     "ws": "^8.21.3"
