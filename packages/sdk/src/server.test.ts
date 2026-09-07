@@ -812,6 +812,50 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(parsed.currentPageDataShapes).toBe("none");
   });
 
+  // A genuinely never-`cairn build`-scanned platform (an app Cairn doesn't
+  // own the source of — n8n, e.g.) has EVERY route missing from the
+  // manifest, not just one — an empty manifest (0 pages), not a populated
+  // one with a single gap. isKnownTarget (resolveVerb's own validation,
+  // right below where these run) already checks liveElements independent
+  // of manifest coverage — these tests lock that in as a real, verified
+  // guarantee instead of something only incidentally true. liveElements
+  // itself comes from the browser's own live DOM scan (runtime-scan.ts),
+  // which runs regardless of whether the app has ever been indexed.
+  describe("a platform with zero manifest coverage — liveElements alone is enough to act on", () => {
+    const emptyManifest: Manifest = { version: "1", commit: "unbuilt", generatedAt: new Date().toISOString(), pages: [], dead: [], conflicts: [] };
+    const liveOnly = [{ id: "live-save-btn", role: "button", label: "Save changes" }];
+
+    it("do: a liveElements-only target is accepted with zero manifest coverage, not refused", async () => {
+      const { llm, calls } = capturingFakeLLM({ verb: "do", target: "live-save-btn", action: "Save the form" });
+      const handler = createCopilotHandlerWithLLM(emptyManifest, llm);
+
+      const result = await handler({ route: "/some/never-scanned/page", question: "save this", visible: [], liveElements: liveOnly });
+
+      expect(result.body).toMatchObject({ verb: "do", target: "live-save-btn" });
+      const parsed = JSON.parse(calls[0].userMessage);
+      expect(parsed.currentPageElements).toMatch(/no manifest entry/); // confirms this really is the zero-coverage case, not accidentally matching something in the fixture manifest
+    });
+
+    it("click: same — a real liveElements id is a real, actionable target even with no manifest at all", async () => {
+      const { llm } = capturingFakeLLM({ verb: "click", target: "live-save-btn" });
+      const handler = createCopilotHandlerWithLLM(emptyManifest, llm);
+
+      const result = await handler({ route: "/some/never-scanned/page", question: "click save", visible: [], liveElements: liveOnly });
+
+      expect(result.body).toMatchObject({ verb: "click", target: "live-save-btn" });
+    });
+
+    it("still correctly refuses a target that ISN'T real, even with zero manifest coverage — liveElements-only doesn't mean unvalidated", async () => {
+      const { llm } = capturingFakeLLM({ verb: "click", target: "invented-id-not-on-screen" });
+      const handler = createCopilotHandlerWithLLM(emptyManifest, llm);
+
+      const result = await handler({ route: "/some/never-scanned/page", question: "click it", visible: [], liveElements: liveOnly });
+
+      expect(result.body).toMatchObject({ verb: "explain" });
+      expect((result.body as { text?: string }).text).toMatch(/don't see that/);
+    });
+  });
+
   it("data shapes never leak into the cached, route-independent system prompt", async () => {
     const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
     const handler = createCopilotHandlerWithLLM(manifest, llm);

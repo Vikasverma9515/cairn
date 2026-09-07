@@ -7671,6 +7671,75 @@ Groq-key-sharing — separate, VOXERA-side items, not this repo's.
 
 ---
 
+### Clearing the pending list, part 2: "operate a platform Cairn's never scanned" — found already mostly built, locked it in as a tested guarantee, closed the one real remaining gap
+
+Direct continuation of the pending list, the big item: the "how does
+Cairn compare to Operator/Astra, and how do we get there" discussion
+concluded the gap wasn't the loop architecture, it was needing
+`cairn build` to have scanned an app before Cairn could operate it —
+structurally impossible for a platform Cairn doesn't own the source of.
+
+**Investigated before writing anything**: traced `resolveVerb`'s own
+validation logic (`isKnownTarget`, `server.ts`) rather than assuming a
+rewrite was needed. Real finding: `do`/`click`/`fill`/`read`/`select`/
+`scroll`/`wait_for`/`drag`/`key`/`call_tool` ALL already validate a
+target against `liveElements` fully independent of manifest coverage —
+`isKnownTarget` checks `pageElements.some(...) || liveElements.some(...)`,
+an OR, not an AND. `liveElements` itself comes from the browser's own
+live DOM scan (`runtime-scan.ts`), which runs regardless of whether the
+app has ever been indexed. Mechanically, "act on a page Cairn's never
+seen" was ALREADY built — just never verified as a real, deliberate
+guarantee, and the system prompt's own wording could read as
+discouraging a model from trusting it with confidence.
+
+**Built — locked the mechanism in as a real, tested contract**: three
+new tests in `server.test.ts`, using a genuinely EMPTY manifest (0
+pages — the real "never scanned at all" case, not one gap in an
+otherwise-populated one) plus a populated `liveElements` array: a `do`
+targeting a liveElements-only id is accepted; a `click` on the same is
+accepted; an INVENTED id (not in liveElements) is still correctly
+refused — proving the zero-manifest path isn't accidentally
+unvalidated, just correctly independent of manifest coverage.
+
+**Built — closed the one real, remaining gap: prompt confidence, not
+mechanism**. Two additions to `buildSystemPrompt`: (1) made explicit
+that a page with no `currentPageElements` entry ("no manifest entry" —
+unscanned) is not a dead end — `liveElements` is independently real and
+sufficient to act on with full confidence, not a fallback of last
+resort; (2) `navigate` (which genuinely does need a manifest route to
+target BY NAME) now explicitly tells the model that a missing route
+directory isn't a dead end either — use `do`/`click` on a real, visible
+nav link instead of needing to know the route name in advance. Neither
+changes what's ALLOWED (the same real-element-only validation applies
+regardless) — both just stop the model from hesitating when it already
+has everything it needs.
+
+**Honest scope**: this closes the gap for a page Cairn CAN currently
+reach — an app it's embedded in (via `cairn setup`/`init`) but never
+ran a build-time scan against. It does NOT solve "embed Cairn into a
+third-party app you don't control the source of at all" (n8n, e.g.) —
+that's a different, bigger problem (the widget has to be part of the
+target app's own deployed frontend to render), not something a prompt
+change or validation-logic change touches. `cairn build <url>` (crawl
+mode) is the closest existing mechanism for building understanding of
+an app without its source, but it produces a manifest for a SEPARATE
+deployment to use, not live operation embedded in someone else's
+already-running page.
+
+**Tests**: 150/150 `server.test.ts` (147 + 3 new). Full `packages/sdk`
+suite: 436/436. Typecheck clean. Not live-smoke-tested against a real
+LLM (deliberately — the validation logic itself is what was being
+proven, and it's fully covered by direct, precise unit tests; a live
+call would spend real quota proving something already proven).
+
+**Pending, from the pending list**: VOXERA's own `canvas`/`pkg-config`
+build issue and Groq-key-sharing — separate, VOXERA-side items, taken
+up next.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

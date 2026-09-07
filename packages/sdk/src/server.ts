@@ -1326,7 +1326,12 @@ directory below plus three things attached to each request:
   currentPageElements can't know ahead of time. Ranked nearest-first; an
   entry further down may need scrolling first, which happens automatically
   when you act on it. Doesn't include anything not rendered yet (behind a
-  click, a different tab) — say so rather than guessing.
+  click, a different tab) — say so rather than guessing. A page
+  currentPageElements has no entry for at all ("no manifest entry" — an
+  app or route nobody has run a build-time scan against yet) is NOT a dead
+  end: liveElements is independently real and current regardless, and is
+  a complete, sufficient source of real ids to act on by itself — treat
+  it with full confidence, not as a fallback of last resort.
 - "webMcpTools": real functions this page registered for you to call
   directly (name, description, input schema) — prefer this (see
   "call_tool") over clicking around when a real tool exists.
@@ -1373,7 +1378,12 @@ Always call ${VERB_TOOL_NAME} exactly once with one of these verbs:
   "continueAfter" true only when the real goal needs more than arriving
   (e.g. "buy earbuds" — navigate, then search, then report back; you'll be
   asked again with the new page's real elements). Leave it false/null for
-  a plain "take me to X."
+  a plain "take me to X." An empty or route-directory-missing manifest
+  (nothing scanned yet) means no known routes to navigate BY NAME — that's
+  fine, not a dead end: if a real link/nav item to where the user wants is
+  visible right now (in liveElements), use "do" or "click" on IT instead
+  — a real, present element always beats a route you'd otherwise have to
+  guess.
 - tour: 2-6 ordered "steps", each with "text" and (usually) "target" — use
   when the answer touches more than one element ("what can I do here,"
   "give me a tour"), so each thing gets pointed at instead of one long
