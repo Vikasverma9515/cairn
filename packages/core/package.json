@@ -23,7 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && echo '{\"type\":\"commonjs\"}' > dist/package.json",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit"
   },
