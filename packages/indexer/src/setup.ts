@@ -1,6 +1,6 @@
 // `cairn setup` — the one-command onboarding path: install what's
 // needed, ask only for what's actually optional (skippable, and picked
-// from a real numbered menu rather than typed free text), scaffold the
+// from a real interactive menu rather than typed free text), scaffold the
 // backend, wire the widget into the real layout file, build the
 // manifest once now, and leave a `prebuild` hook so it rebuilds itself
 // on every future `npm run build` without another manual step.
@@ -11,6 +11,23 @@
 // prompts); `setup` is the opinionated wizard built from those same
 // primitives plus the things `init` intentionally doesn't do: install
 // dependencies, edit an existing layout file, and actually build.
+//
+// UI layer: @clack/prompts (see clack.ts's own doc comment for why a
+// dynamic-import bridge is needed to use a pure-ESM package from this
+// CommonJS-compiled CLI) — real research behind this choice, not a
+// guess: it's the current, widely-used default for polished interactive
+// CLI installers (create-t3-app, create-next-app, and most modern
+// scaffolding tools use it or a close relative). Three concrete,
+// previously-real gaps this closes, not just a reskin:
+//   1. API keys were typed in PLAIN TEXT (askOptional/readline) — now
+//      masked via password().
+//   2. `npm install` failing had NO retry path at all — straight to
+//      "install these yourself and re-run," even for a transient
+//      network blip. Now the same real retry loop the manifest build
+//      already had.
+//   3. Every long-running step (install, build) now shows a real
+//      animated spinner with live status text instead of a static
+//      "Installing..." line that gives no sign anything is happening.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -18,16 +35,16 @@ import { execSync } from "node:child_process";
 import { runInit } from "./init";
 import { injectWidget } from "./inject-widget";
 import { ensureTranspilePackages } from "./ensure-transpile";
-import { askOptional, closePrompts, selectFromList } from "./prompt";
 import { scanL1 } from "./l1-scan";
 import { computeL2 } from "./l2-reachability";
 import { describeAll } from "./l3-describe";
 import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { ManifestSchema } from "@cairnvibe/core";
-import { Spinner, bold, classifyError, dim, green, red, yellow } from "./ui";
+import { classifyError } from "./ui";
 import { manifestWritePath } from "./cairn-dir";
 import { writeInstallManifest, type InstallManifest } from "./install-manifest";
+import { clack } from "./clack";
 
 const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexer"];
 
@@ -56,32 +73,51 @@ function alreadyInstalled(pkg: Record<string, any> | null): boolean {
   return PACKAGES.every((p) => !!deps[p]);
 }
 
-/** One build attempt — spinner-driven, quiet on individual retries (they
- * update the same line instead of scrolling the terminal), and honest
- * about failure instead of throwing a raw stack trace at the user. */
-async function attemptBuild(dir: string, provider: Provider, key: string): Promise<{ ok: true; pageCount: number } | { ok: false; error: unknown }> {
+/** Every clack prompt returns `Value | symbol` — a real, distinct symbol
+ * sentinel when the user cancels (Ctrl+C), checked via `isCancel`. This
+ * is the one place that check happens: every prompt call site pipes its
+ * result through here, so a cancel always exits the same clean way
+ * instead of needing the same three lines repeated at every call site,
+ * or (worse) risking a raw symbol leaking into code that expects a
+ * string. */
+async function checkCancel<T>(value: T | symbol, p: Awaited<ReturnType<typeof clack>>): Promise<T> {
+  if (p.isCancel(value)) {
+    p.cancel("Setup cancelled.");
+    process.exit(0);
+  }
+  return value as T;
+}
+
+/** One build attempt — spinner-driven, with the rate-limit/retry status
+ * updating the SAME spinner line (clack's `.message()`) rather than
+ * scrolling the terminal, and honest about failure instead of throwing a
+ * raw stack trace at the user. */
+async function attemptBuild(
+  dir: string,
+  provider: Provider,
+  key: string,
+  p: Awaited<ReturnType<typeof clack>>,
+): Promise<{ ok: true; pageCount: number } | { ok: false; error: unknown }> {
   if (provider === "anthropic") process.env.ANTHROPIC_API_KEY = key;
   if (provider === "groq") process.env.GROQ_API_KEYS = key;
 
-  const spinner = new Spinner(`Building the manifest (${provider}) ...`);
-  spinner.start();
+  const s = p.spinner();
+  s.start(`Building the manifest (${provider})`);
   try {
     const client = provider === "anthropic" ? new AnthropicDescribeClient() : new GroqDescribeClient();
     const facts = scanL1(dir);
     const l2 = computeL2(dir, facts);
     const l3 = await describeAll(dir, facts, client, SETUP_BUILD_CONCURRENCY, (info) => {
-      spinner.update(
-        `Building the manifest (${provider}) ... rate-limited, retrying in ${Math.round(info.delayMs / 1000)}s (attempt ${info.attempt}/${info.maxAttempts})`,
-      );
+      s.message(`Building the manifest (${provider}) — rate-limited, retrying in ${Math.round(info.delayMs / 1000)}s (attempt ${info.attempt}/${info.maxAttempts})`);
     });
     const manifest = ManifestSchema.parse(assembleManifest(dir, facts, l2, l3));
     const outPath = manifestWritePath(path.resolve(dir));
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2) + "\n");
-    spinner.stop(green(`✓ wrote ui-manifest.json (${manifest.pages.length} page(s))`));
+    s.stop(`Wrote ui-manifest.json (${manifest.pages.length} page(s))`);
     return { ok: true, pageCount: manifest.pages.length };
   } catch (err) {
-    spinner.stop(red("✗ build failed"));
+    s.error("Build failed");
     return { ok: false, error: err };
   }
 }
@@ -95,151 +131,191 @@ async function recoverFromBuildFailure(
   provider: Provider,
   key: string,
   err: unknown,
+  p: Awaited<ReturnType<typeof clack>>,
 ): Promise<{ provider: Provider; key: string } | null> {
   const classified = classifyError(err);
-  console.log("");
-  console.log(yellow(`Here's what happened: ${classified.summary}`));
+  p.log.warn(`Here's what happened: ${classified.summary}`);
 
   const options =
     classified.kind === "rate_limit"
       ? [
-          { label: "Try again in a bit (same provider)", value: "retry" },
-          { label: "Switch to the other provider and try that instead", value: "switch" },
-          { label: "Skip for now — I'll run `npx cairn build .` later", value: "skip" },
+          { value: "retry", label: "Try again in a bit (same provider)" },
+          { value: "switch", label: "Switch to the other provider and try that instead" },
+          { value: "skip", label: "Skip for now — I'll run `npx cairn build .` later" },
         ]
       : classified.kind === "auth"
         ? [
-            { label: "Paste the key again (I probably mistyped it)", value: "rekey" },
-            { label: "Switch to the other provider instead", value: "switch" },
-            { label: "Skip for now — I'll run `npx cairn build .` later", value: "skip" },
+            { value: "rekey", label: "Paste the key again (I probably mistyped it)" },
+            { value: "switch", label: "Switch to the other provider instead" },
+            { value: "skip", label: "Skip for now — I'll run `npx cairn build .` later" },
           ]
         : [
-            { label: "Try again", value: "retry" },
-            { label: "Switch to the other provider instead", value: "switch" },
-            { label: "Skip for now — I'll run `npx cairn build .` later", value: "skip" },
+            { value: "retry", label: "Try again" },
+            { value: "switch", label: "Switch to the other provider instead" },
+            { value: "skip", label: "Skip for now — I'll run `npx cairn build .` later" },
           ];
 
   for (;;) {
-    const choice = await selectFromList("What do you want to do?", options, 0);
+    const choice = await checkCancel(await p.select({ message: "What do you want to do?", options }), p);
 
     if (choice === "skip") return null;
 
     let nextProvider = provider;
     let nextKey = key;
 
-    if (choice === "switch") {
-      nextProvider = provider === "anthropic" ? "groq" : "anthropic";
-      const pasted = await askOptional(nextProvider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ");
+    if (choice === "switch" || choice === "rekey") {
+      if (choice === "switch") nextProvider = provider === "anthropic" ? "groq" : "anthropic";
+      const pasted = await checkCancel(
+        await p.password({ message: nextProvider === "anthropic" ? "Paste your ANTHROPIC_API_KEY" : "Paste your GROQ_API_KEYS" }),
+        p,
+      );
       if (!pasted) {
-        console.log(dim("No key given — back to the menu."));
-        continue;
-      }
-      nextKey = pasted;
-    } else if (choice === "rekey") {
-      const pasted = await askOptional(provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ");
-      if (!pasted) {
-        console.log(dim("No key given — back to the menu."));
+        p.log.message("No key given — back to the menu.");
         continue;
       }
       nextKey = pasted;
     }
     // choice === "retry" falls through with the same provider/key.
 
-    const result = await attemptBuild(dir, nextProvider, nextKey);
+    const result = await attemptBuild(dir, nextProvider, nextKey, p);
     if (result.ok) return { provider: nextProvider, key: nextKey };
 
-    console.log("");
-    console.log(yellow(`Still failing: ${classifyError(result.error).summary}`));
+    p.log.warn(`Still failing: ${classifyError(result.error).summary}`);
     // loop back to the menu rather than recursing — keeps this one flat retry
     // loop instead of a call stack that grows with every attempt
   }
 }
 
+/** `npm install` retry loop — the real gap this whole redesign was
+ * prompted by: a transient network blip or registry hiccup used to be a
+ * dead end ("install these yourself and re-run"), even though the SAME
+ * command usually just works a moment later. Mirrors
+ * recoverFromBuildFailure's own shape (classify, offer real choices,
+ * loop until resolved or skipped) rather than inventing a different
+ * pattern for what's the same real problem. */
+async function installDependencies(absDir: string, p: Awaited<ReturnType<typeof clack>>): Promise<boolean> {
+  for (;;) {
+    const s = p.spinner();
+    s.start(`Installing ${PACKAGES.join(", ")}`);
+    try {
+      execSync(`npm install ${PACKAGES.join(" ")}`, { cwd: absDir, stdio: "pipe" });
+      s.stop(`Installed ${PACKAGES.join(", ")}`);
+      return true;
+    } catch (err) {
+      s.error("npm install failed");
+      // Real, live-found bug this closes: `catch {}` (no bound error) used to
+      // throw away npm's own stderr — the ONE thing that actually explains
+      // why it failed (a real registry error, an ERESOLVE conflict, a
+      // permissions problem, no network) — leaving a user with nothing but
+      // "failed, try again," which just fails the same way for the same
+      // unknown reason. execSync's thrown error carries the captured output
+      // on `.stderr`/`.stdout` (Buffers, from the `stdio: "pipe"` above)
+      // even though the command itself never printed anything to this
+      // process's own stderr — surface it instead of discarding it.
+      const e = err as { stderr?: Buffer; stdout?: Buffer };
+      const detail = (e.stderr?.toString().trim() || e.stdout?.toString().trim() || "").trim();
+      if (detail) p.log.error(detail);
+
+      const choice = await checkCancel(
+        await p.select({
+          message: "What do you want to do?",
+          options: [
+            { value: "retry", label: "Try again" },
+            { value: "skip", label: "Skip — I'll install these myself" },
+          ],
+        }),
+        p,
+      );
+      if (choice === "skip") {
+        p.log.message(`Install these yourself and re-run \`cairn setup\`:\n  npm install ${PACKAGES.join(" ")}`);
+        return false;
+      }
+      // choice === "retry" loops back to the top and tries again.
+    }
+  }
+}
+
 export async function runSetup(dir: string): Promise<void> {
   const absDir = path.resolve(dir);
-  console.log(`${bold("cairn setup")} — looking at ${absDir}\n`);
+  const p = await clack();
+  p.intro("cairn setup");
+  p.log.step(`Looking at ${absDir}`);
 
   // 1. Scaffold what init already safely can — framework detection, the
   // backend route, .env.example. Never overwrites anything that exists.
   const init = runInit(dir);
-  console.log(`Detected: ${bold(init.framework)}`);
-  for (const f of init.filesWritten) console.log(`  wrote   ${path.relative(absDir, f) || f}`);
-  for (const f of init.filesSkipped) console.log(`  skipped ${path.relative(absDir, f) || f} (already exists)`);
-  console.log("");
+  const scaffoldLines = [
+    `Detected: ${init.framework}`,
+    ...init.filesWritten.map((f) => `wrote   ${path.relative(absDir, f) || f}`),
+    ...init.filesSkipped.map((f) => `skipped ${path.relative(absDir, f) || f} (already exists)`),
+  ];
+  p.log.info(scaffoldLines.join("\n"));
 
   if (init.framework === "other") {
     // A generic backend needs a real framework decision (Express? Fastify? something
     // else?) this wizard shouldn't guess at — print init's own manual steps instead
     // of half-automating something it can't verify is right.
-    console.log("Not a detected Next.js project — falling back to the manual steps:\n");
-    for (const step of init.nextSteps) console.log(`  ${step}`);
+    p.note(init.nextSteps.join("\n"), "Not a detected Next.js project — manual steps");
+    p.outro("Done.");
     return;
   }
 
   // 2. Install what's needed — the actual "one command" part. Skips
   // cleanly if already present (e.g. re-running setup after a partial run).
   const pkg = readPackageJson(absDir);
-  if (!alreadyInstalled(pkg)) {
-    const spinner = new Spinner(`Installing ${PACKAGES.join(", ")} ...`);
-    spinner.start();
-    try {
-      execSync(`npm install ${PACKAGES.join(" ")}`, { cwd: absDir, stdio: "pipe" });
-      spinner.stop(green(`✓ installed ${PACKAGES.join(", ")}`));
-    } catch (err) {
-      spinner.stop(red("✗ npm install failed"));
-      // Real, live-found bug this closes: `catch {}` (no bound error) threw
-      // away npm's own stderr — the ONE thing that actually explains why it
-      // failed (a real registry error, an ERESOLVE conflict, a permissions
-      // problem, no network) — leaving a user with nothing but "failed, try
-      // again," which just fails the same way for the same unknown reason.
-      // execSync's thrown error carries the captured output on
-      // `.stderr`/`.stdout` (Buffers, from the `stdio: "pipe"` above) even
-      // though the command itself never printed anything to this process's
-      // own stderr — surface it instead of discarding it.
-      const e = err as { stderr?: Buffer; stdout?: Buffer };
-      const detail = (e.stderr?.toString().trim() || e.stdout?.toString().trim() || "").trim();
-      if (detail) console.error(`\n${detail}\n`);
-      console.error(`Install these yourself and re-run \`cairn setup\`:\n  npm install ${PACKAGES.join(" ")}`);
+  const alreadyHadDeps = alreadyInstalled(pkg);
+  if (!alreadyHadDeps) {
+    const installed = await installDependencies(absDir, p);
+    if (!installed) {
+      p.outro("Stopped — re-run `cairn setup` once dependencies are installed.");
       return;
     }
   } else {
-    console.log(dim("Dependencies already installed — skipping."));
+    p.log.message("Dependencies already installed — skipping.");
   }
 
   // 3. Ask only what's actually needed, everything skippable, picked from a
-  // real menu rather than typed free text.
-  console.log(`\n${bold("A couple of quick questions")} — press enter to skip anything you'll add later.\n`);
-
+  // real interactive menu. API keys are masked (password()) — never
+  // echoed in plain text to a terminal that might be recorded/shared.
   let provider: Provider | null = null;
   let providerKey: string | null = null;
-  const llmChoice = await selectFromList(
-    "Set up an LLM provider now? (needed for the agent to actually answer anything)",
-    [
-      { label: "Anthropic (Claude)", value: "anthropic" },
-      { label: "Groq", value: "groq" },
-      { label: "Skip — I'll add one to .env later", value: "skip" },
-    ],
-    0,
+  const llmChoice = await checkCancel(
+    await p.select({
+      message: "Set up an LLM provider now? (needed for the agent to actually answer anything)",
+      options: [
+        { value: "anthropic", label: "Anthropic (Claude)" },
+        { value: "groq", label: "Groq" },
+        { value: "skip", label: "Skip — I'll add one to .env later" },
+      ],
+      initialValue: "anthropic",
+    }),
+    p,
   );
   if (llmChoice !== "skip") {
     provider = llmChoice as Provider;
-    providerKey = await askOptional(provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY: " : "Paste your GROQ_API_KEYS: ");
+    const pasted = await checkCancel(
+      await p.password({ message: provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY (or press enter to skip)" : "Paste your GROQ_API_KEYS (or press enter to skip)" }),
+      p,
+    );
+    providerKey = pasted || null;
   }
 
   // Honest about what's actually implemented here — Deepgram is the only
   // voice provider this SDK wires up today, so this is "on or off," not a
   // real multi-provider menu dressed up as one.
-  const voiceChoice = await selectFromList(
-    "Set up voice now?",
-    [
-      { label: "Deepgram (speech in + out)", value: "deepgram" },
-      { label: "Skip — no voice for now", value: "skip" },
-    ],
-    1,
+  const voiceChoice = await checkCancel(
+    await p.select({
+      message: "Set up voice now?",
+      options: [
+        { value: "deepgram", label: "Deepgram (speech in + out)" },
+        { value: "skip", label: "Skip — no voice for now" },
+      ],
+      initialValue: "skip",
+    }),
+    p,
   );
-  const deepgramKey = voiceChoice === "deepgram" ? await askOptional("Paste your DEEPGRAM_API_KEY: ") : null;
-
-  closePrompts();
+  const deepgramKey =
+    voiceChoice === "deepgram" ? (await checkCancel(await p.password({ message: "Paste your DEEPGRAM_API_KEY (or press enter to skip)" }), p)) || null : null;
 
   // 3b. Scaffold the speak/transcribe backend routes now that we know
   // whether voice was actually chosen — runInit is idempotent (never
@@ -252,7 +328,7 @@ export async function runSetup(dir: string): Promise<void> {
   if (wantsVoice) {
     const voiceInit = runInit(dir, { voice: true });
     voiceFilesWritten = voiceInit.filesWritten;
-    for (const f of voiceInit.filesWritten) console.log(`  wrote   ${path.relative(absDir, f) || f}`);
+    if (voiceFilesWritten.length) p.log.info(voiceFilesWritten.map((f) => `wrote   ${path.relative(absDir, f) || f}`).join("\n"));
   }
 
   // 4. Write a real .env (not just .env.example) with whatever was actually given.
@@ -264,9 +340,9 @@ export async function runSetup(dir: string): Promise<void> {
   const envPath = path.join(absDir, ".env");
   if (!fs.existsSync(envPath)) {
     fs.writeFileSync(envPath, envLines.join("\n") + "\n");
-    console.log(`\nwrote ${path.relative(absDir, envPath)}`);
+    p.log.success(`wrote ${path.relative(absDir, envPath)}`);
   } else {
-    console.log(`\n${path.relative(absDir, envPath)} already exists — not overwriting; add keys there yourself if you skipped any above.`);
+    p.log.message(`${path.relative(absDir, envPath)} already exists — not overwriting; add keys there yourself if you skipped any above.`);
   }
 
   // 5. Wire the widget into the real layout file — the one thing `init`
@@ -276,12 +352,16 @@ export async function runSetup(dir: string): Promise<void> {
   const inject = injectWidget(dir, framework, { voice: wantsVoice });
   if (inject.injected) {
     const voiceNote = wantsVoice ? " — wired for voice (speak + transcribe)" : "";
-    console.log(green(`✓ wired the widget into ${path.relative(absDir, inject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)${voiceNote}`));
+    p.log.success(`wired the widget into ${path.relative(absDir, inject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)${voiceNote}`);
   } else {
-    console.log(`\nWidget not auto-wired (${inject.reason}). Add it yourself:`);
-    console.log('  import { Copilot } from "@cairnvibe/sdk";');
-    console.log("  <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />");
-    console.log("  (in a \"use client\" component — see examples/demo-app/components/CopilotWithActions.tsx for why)");
+    p.log.warn(
+      [
+        `Widget not auto-wired (${inject.reason}). Add it yourself:`,
+        `  import { Copilot } from "@cairnvibe/sdk";`,
+        `  <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />`,
+        `  (in a "use client" component — see examples/demo-app/components/CopilotWithActions.tsx for why)`,
+      ].join("\n"),
+    );
   }
 
   // 5b. @cairnvibe/sdk and @cairnvibe/core ship raw TS/TSX as their main
@@ -291,13 +371,9 @@ export async function runSetup(dir: string): Promise<void> {
   // would ever surface (this repo's own next.config.js already has it).
   const transpile = ensureTranspilePackages(dir);
   if (transpile.ok) {
-    console.log(
-      green(
-        `✓ ${transpile.created ? "created" : "updated"} ${path.relative(absDir, transpile.filePath!)} with transpilePackages`,
-      ),
-    );
+    p.log.success(`${transpile.created ? "created" : "updated"} ${path.relative(absDir, transpile.filePath!)} with transpilePackages`);
   } else {
-    console.log(`\ntranspilePackages not auto-added (${transpile.reason})`);
+    p.log.message(`transpilePackages not auto-added (${transpile.reason})`);
   }
 
   // 6. Build the manifest once now, if we actually have a usable key — no
@@ -305,10 +381,9 @@ export async function runSetup(dir: string): Promise<void> {
   // don't just print a stack trace and give up: classify what went wrong
   // and offer real next steps (retry / switch provider / skip).
   if (provider && providerKey) {
-    console.log("");
-    let result = await attemptBuild(dir, provider, providerKey);
+    let result = await attemptBuild(dir, provider, providerKey, p);
     if (!result.ok) {
-      const recovered = await recoverFromBuildFailure(dir, provider, providerKey, result.error);
+      const recovered = await recoverFromBuildFailure(dir, provider, providerKey, result.error, p);
       if (recovered) {
         provider = recovered.provider;
         providerKey = recovered.key;
@@ -318,7 +393,7 @@ export async function runSetup(dir: string): Promise<void> {
       // simply not written yet.
     }
   } else {
-    console.log("\nNo key given yet — skipping the first build. Run `npx cairn build .` once you've added one to .env.");
+    p.log.message("No key given yet — skipping the first build. Run `npx cairn build .` once you've added one to .env.");
   }
 
   // 7. Wire a prebuild hook so this stays current on every future build/deploy —
@@ -341,9 +416,7 @@ export async function runSetup(dir: string): Promise<void> {
       ? `${fresh.scripts.prebuild} && cairn build . --provider ${providerFlag} --if-configured`
       : `cairn build . --provider ${providerFlag} --if-configured`;
     fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
-    console.log('\nadded a "prebuild" script — the manifest regenerates automatically on every `npm run build`.');
-    console.log(dim("(--if-configured means a build with no key set yet skips this step instead of failing the whole build —"));
-    console.log(dim(" set the same key as an environment variable on whatever platform you deploy to.)"));
+    p.log.success('added a "prebuild" script — the manifest regenerates automatically on every `npm run build`.');
   }
 
   // 8. Wire the realtime voice relay into the normal dev workflow — the
@@ -363,8 +436,7 @@ export async function runSetup(dir: string): Promise<void> {
     originalDevScript = fresh.scripts.dev as string;
     fresh.scripts.dev = `cairn-realtime --port 3010 --with ${JSON.stringify(originalDevScript)}`;
     fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
-    console.log(green('✓ wired the realtime voice relay into `npm run dev` — it now starts alongside your app automatically.'));
-    console.log(dim("(a missing/invalid Deepgram key skips voice only, never blocks your app's own dev server from starting.)"));
+    p.log.success("wired the realtime voice relay into `npm run dev` — it now starts alongside your app automatically.");
   }
 
   // 9. Record exactly what this run touched — the ONE thing that makes
@@ -391,6 +463,9 @@ export async function runSetup(dir: string): Promise<void> {
   };
   writeInstallManifest(absDir, installManifest);
 
-  console.log(`\n${bold("Done.")} \`npm run dev\` and ask it something.`);
-  console.log(dim(`(everything this generated is tracked in .cairn/ — \`cairn remove\` undoes it in one command.)`));
+  p.note(
+    ["`npm run dev`, then ask it something.", "", "Everything this generated is tracked in .cairn/ —", "`cairn remove` undoes it in one command."].join("\n"),
+    "Next steps",
+  );
+  p.outro("Done.");
 }

@@ -23,6 +23,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@cairnvibe/core": "^0.1.0",
+    "@clack/prompts": "^1.7.0",
     "groq-sdk": "^1.6.0",
     "playwright": "^1.62.1",
     "ts-morph": "^23.0.0"

@@ -7511,6 +7511,108 @@ mistake above was caught and corrected before landing, not after.
 
 ---
 
+### A real installer UI — `@clack/prompts`, researched before adopted, plus a genuine CJS/pure-ESM compatibility problem found and fixed
+
+Direct ask: make `cairn setup`'s interactive UI actually good — proper
+loading states, a real retry system on errors even though things were
+technically working, "research how people make their CLI installers
+good and do that." Researched rather than assumed: confirmed
+`@clack/prompts` is the current, widely-used default for polished
+interactive installers (create-t3-app, create-next-app, and most modern
+scaffolding tools use it or a close relative) via live web search, then
+verified its ACTUAL current API (v1.7.0 — `intro`/`outro`/`note`/
+`select`/`text`/`password`/`spinner`/`log.*`/`isCancel`/`cancel`) by
+installing it and reading its real, live type declarations rather than
+recalling training data.
+
+**Real problem found and solved before writing a line of setup.ts**:
+`@clack/prompts` ships PURE ESM only (no CJS build at all), but this
+whole package compiles to CommonJS (`tsconfig.build.json` sets `module:
+"CommonJS"`, and `dist/package.json` is force-set to `type: "commonjs"`
+so `cairn` stays a plain, widely-compatible CLI). A plain `await
+import("@clack/prompts")` looks like it should bridge that, but
+TypeScript's CommonJS transform silently downlevels EVERY dynamic
+import — even one written as `import()` — into `Promise.resolve().then(()
+=> require(...))`, which is still a real `require()` under the hood and
+fails on a package with no CJS entry point exactly like a static import
+would have. Confirmed live: compiled the exact pattern, inspected the
+emitted JS, watched it fail, before reaching for a fix. The fix
+(`clack.ts`, new) is the standard, well-established workaround for
+exactly this — `new Function("specifier", "return import(specifier)")`
+hides the import from TypeScript's compiler entirely, so what actually
+runs is a genuine dynamic `import()` — verified by compiling THIS
+pattern too, running the output against a real `npm install`ed copy of
+the package, and only then wiring it into the real CLI.
+
+**Built — `setup.ts` fully rewritten on `@clack/prompts`**, three
+concrete, previously-real gaps closed, not just a reskin:
+1. API keys were typed in PLAIN TEXT (the old hand-rolled
+   `readline`-based `askOptional`) — now masked via `password()`.
+2. `npm install` failing had NO retry path at all — straight to
+   "install these yourself and re-run," even for a transient network
+   blip. New `installDependencies()` gives it the same real retry loop
+   `attemptBuild`'s manifest step already had (`recoverFromBuildFailure`,
+   itself reskinned onto `select()`).
+3. Every long-running step (install, build) now shows a real animated
+   spinner with live-updating status text (`spinner().message()` — a
+   rate-limit retry countdown updates the SAME line instead of
+   scrolling the terminal) instead of a static line with no sign
+   anything is happening.
+Also: `note()` for a real boxed "Next steps" summary at the end, and a
+`checkCancel()` helper so Ctrl+C is handled the same clean way
+(`cancel()` + exit) at every one of the ~8 prompt call sites instead of
+needing the same three lines repeated or, worse, a raw cancel symbol
+leaking into code expecting a string.
+
+**Built — `remove.ts` reskinned to match**: the same `intro`/`outro`/
+`log.*`/`note`/`spinner` language, including a real spinner around the
+`npm uninstall` step (previously a silent multi-second pause). A
+polished installer next to a plain-text uninstaller would've read as
+unfinished — they're a matched pair.
+
+**Retired**: `prompt.ts` (the hand-rolled readline menu/text-input
+module) — deleted outright, nothing else imported it. `ui.ts`'s
+hand-rolled `Spinner` class and ANSI color helpers (`bold`/`dim`/
+`green`/`red`/`yellow`/`cyan`) — removed once every real call site moved
+to clack's own more polished versions of the same things; kept
+`classifyError`, which is real provider-agnostic logic unrelated to how
+it's rendered, still used by both retry flows.
+
+**A second real bug found and fixed while verifying, not assumed
+away**: the `new Function` dynamic-import bridge, confirmed working in
+plain Node, throws `ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` under
+Vitest — Vitest runs test modules inside Node's own `vm` machinery,
+which requires an explicit `importModuleDynamic` callback for any
+dynamic import, including one constructed via `new Function` (it
+bypasses Vitest's transform pipeline entirely, so Vitest never gets the
+chance to supply one). Fixed the same way `remove.test.ts` already
+mocked `execSync` — `vi.mock("./clack", ...)` returns a plain no-op
+stand-in matching the real API shape, which is also the more correct
+level to test at: these tests exercise `runRemove`'s own file/config
+reversal logic, not `@clack/prompts`' real terminal rendering.
+
+**Tests**: `remove.test.ts`'s existing 12 tests updated for the new
+mock, all still passing (they assert on file-system/npm-uninstall side
+effects, never on exact console text, so the rendering swap needed no
+test-logic changes). Full `packages/indexer` suite: 179/187 (the 8
+Playwright-environment failures are the same pre-existing, unrelated
+issue from earlier this session). Both `runSetup` and `runRemove`
+smoke-tested live against real scratch-directory fixtures (not just
+typechecked) — confirmed the actual rendered output: boxed intro/outro,
+grouped file-written/skipped log lines, a real animated spinner
+(cursor-hide sequence observed), and a correctly-boxed `note()` summary,
+all matching the real create-t3-app-style aesthetic this was modeled on.
+
+**Pending**: not yet version-bumped/published to npm.
+
+**Failed:** nothing shipped incorrectly — both real compatibility
+problems (TypeScript's dynamic-import downleveling, Vitest's `vm`
+dynamic-import requirement) were found and fixed by actually compiling
+and running the code at each step, before they could have shipped
+broken.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

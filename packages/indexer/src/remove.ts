@@ -5,6 +5,10 @@
 // credentials (.env/.env.local — reported, not deleted) and anything the
 // install-manifest itself doesn't list, since that means either this ran
 // before that thing existed or a user created it themselves after setup.
+//
+// Same @clack/prompts visual language as setup.ts, for the same reason —
+// the two are a matched pair (install/uninstall), and a polished install
+// wizard next to a plain-text uninstaller would read as unfinished.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -13,7 +17,7 @@ import { readInstallManifest } from "./install-manifest";
 import { removeWidget } from "./inject-widget";
 import { removeTranspilePackages } from "./ensure-transpile";
 import { CAIRN_DIR } from "./cairn-dir";
-import { bold, dim, green, red, yellow } from "./ui";
+import { clack } from "./clack";
 
 function removeFileIfPresent(absPath: string): boolean {
   if (!fs.existsSync(absPath)) return false;
@@ -41,25 +45,35 @@ function listConfiguredEnvKeys(absDir: string): string[] {
 
 export async function runRemove(dir: string): Promise<void> {
   const absDir = path.resolve(dir);
-  console.log(`${bold("cairn remove")} — looking at ${absDir}\n`);
+  const p = await clack();
+  p.intro("cairn remove");
+  p.log.step(`Looking at ${absDir}`);
 
   const manifest = readInstallManifest(absDir);
   if (!manifest) {
-    console.log(
-      `No ${CAIRN_DIR}/install-manifest.json here — this doesn't look like a ` +
-        `\`cairn setup\`-managed install (or it predates this command). Nothing removed.`,
+    p.note(
+      [
+        `No ${CAIRN_DIR}/install-manifest.json here — this doesn't look like a`,
+        "`cairn setup`-managed install (or it predates this command). Nothing removed.",
+        "",
+        "If Cairn was installed by hand, remove it yourself:",
+        "  npm uninstall @cairnvibe/core @cairnvibe/sdk @cairnvibe/indexer",
+      ].join("\n"),
+      "Nothing to do",
     );
-    console.log(dim(`If Cairn was installed by hand, remove @cairnvibe/core, @cairnvibe/sdk, and @cairnvibe/indexer yourself:`));
-    console.log(dim(`  npm uninstall @cairnvibe/core @cairnvibe/sdk @cairnvibe/indexer`));
+    p.outro("Done.");
     return;
   }
 
-  console.log(`Reversing the install from ${manifest.installedAt}\n`);
+  p.log.step(`Reversing the install from ${manifest.installedAt}`);
 
   // 1. Every file cairn setup/init created outright.
-  for (const f of manifest.filesCreated) {
-    const removed = removeFileIfPresent(f);
-    console.log(removed ? `  removed ${path.relative(absDir, f) || f}` : `  skipped ${path.relative(absDir, f) || f} (already gone)`);
+  if (manifest.filesCreated.length > 0) {
+    const lines = manifest.filesCreated.map((f) => {
+      const removed = removeFileIfPresent(f);
+      return removed ? `removed ${path.relative(absDir, f) || f}` : `skipped ${path.relative(absDir, f) || f} (already gone)`;
+    });
+    p.log.info(lines.join("\n"));
   }
 
   // 2. The widget's import + JSX, precisely (never the whole layout file —
@@ -67,9 +81,9 @@ export async function runRemove(dir: string): Promise<void> {
   if (manifest.layoutFile) {
     const result = removeWidget(manifest.layoutFile);
     if (result.removed) {
-      console.log(green(`✓ removed the widget from ${path.relative(absDir, manifest.layoutFile)}`));
+      p.log.success(`removed the widget from ${path.relative(absDir, manifest.layoutFile)}`);
     } else {
-      console.log(yellow(`\ncouldn't auto-remove the widget: ${result.reason}`));
+      p.log.warn(`couldn't auto-remove the widget: ${result.reason}`);
     }
   }
   if (manifest.wrapperFile) removeFileIfPresent(manifest.wrapperFile);
@@ -79,9 +93,9 @@ export async function runRemove(dir: string): Promise<void> {
   if (manifest.configFile) {
     const result = removeTranspilePackages(manifest.configFile.path, manifest.configFile.created);
     if (result.ok) {
-      console.log(green(`✓ cleaned up ${path.relative(absDir, manifest.configFile.path)}`));
+      p.log.success(`cleaned up ${path.relative(absDir, manifest.configFile.path)}`);
     } else {
-      console.log(yellow(`\ncouldn't auto-clean transpilePackages: ${result.reason}`));
+      p.log.warn(`couldn't auto-clean transpilePackages: ${result.reason}`);
     }
   }
 
@@ -93,31 +107,37 @@ export async function runRemove(dir: string): Promise<void> {
     try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
       pkg.scripts = pkg.scripts ?? {};
+      const restored: string[] = [];
       if (manifest.originalDevScript !== null) {
         pkg.scripts.dev = manifest.originalDevScript;
-        console.log(green(`✓ restored the original "dev" script`));
+        restored.push('restored the original "dev" script');
       }
       if (manifest.prebuildScriptAdded) {
         delete pkg.scripts.prebuild;
-        console.log(green(`✓ removed the "prebuild" script`));
+        restored.push('removed the "prebuild" script');
       }
       fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+      for (const line of restored) p.log.success(line);
     } catch (err) {
-      console.log(yellow(`\ncouldn't restore package.json scripts (${(err as Error).message}) — check "dev"/"prebuild" yourself`));
+      p.log.warn(`couldn't restore package.json scripts (${(err as Error).message}) — check "dev"/"prebuild" yourself`);
     }
   }
 
-  // 5. The npm packages themselves.
+  // 5. The npm packages themselves — a real spinner, matching setup's own
+  // polish, instead of a silent multi-second pause with no sign anything
+  // is happening.
   if (manifest.packagesInstalled.length > 0) {
+    const s = p.spinner();
+    s.start(`Uninstalling ${manifest.packagesInstalled.join(", ")}`);
     try {
       execSync(`npm uninstall ${manifest.packagesInstalled.join(" ")}`, { cwd: absDir, stdio: "pipe" });
-      console.log(green(`✓ uninstalled ${manifest.packagesInstalled.join(", ")}`));
+      s.stop(`Uninstalled ${manifest.packagesInstalled.join(", ")}`);
     } catch (err) {
+      s.error("npm uninstall failed");
       const e = err as { stderr?: Buffer; stdout?: Buffer };
       const detail = (e.stderr?.toString().trim() || e.stdout?.toString().trim() || "").trim();
-      console.log(red(`\n✗ npm uninstall failed`));
-      if (detail) console.log(detail);
-      console.log(dim(`Remove these yourself: npm uninstall ${manifest.packagesInstalled.join(" ")}`));
+      if (detail) p.log.error(detail);
+      p.log.message(`Remove these yourself: npm uninstall ${manifest.packagesInstalled.join(" ")}`);
     }
   }
 
@@ -126,7 +146,7 @@ export async function runRemove(dir: string): Promise<void> {
   const cairnDir = path.join(absDir, CAIRN_DIR);
   if (fs.existsSync(cairnDir)) {
     fs.rmSync(cairnDir, { recursive: true, force: true });
-    console.log(green(`✓ removed ${CAIRN_DIR}/`));
+    p.log.success(`removed ${CAIRN_DIR}/`);
   }
 
   // 7. Real credentials are never auto-deleted — report what's still
@@ -134,10 +154,8 @@ export async function runRemove(dir: string): Promise<void> {
   // if they want to.
   const remainingKeys = listConfiguredEnvKeys(absDir);
   if (remainingKeys.length > 0) {
-    console.log(`\n${bold("Left untouched")} — your own .env/.env.local still has:`);
-    for (const key of remainingKeys) console.log(`  ${key}`);
-    console.log(dim("Remove those yourself if you don't need them anymore."));
+    p.note([`Your own .env/.env.local still has:`, "", ...remainingKeys, "", "Remove those yourself if you don't need them anymore."].join("\n"), "Left untouched");
   }
 
-  console.log(`\n${bold("Done.")} Cairn is uninstalled.`);
+  p.outro("Cairn is uninstalled.");
 }

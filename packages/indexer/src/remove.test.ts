@@ -18,6 +18,33 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execSync: vi.fn() };
 });
 
+// clack.ts's dynamic-import bridge (`new Function("specifier", "return
+// import(specifier)")`) is real and confirmed working under plain Node
+// (see clack.ts's own doc comment) but hits a genuine Vitest limitation:
+// Vitest runs test modules inside Node's `vm` machinery, which requires
+// an explicit `importModuleDynamic` callback for ANY dynamic import —
+// including one constructed via `new Function`, since that bypasses
+// Vitest's own transform pipeline entirely. Mocked here the same way
+// execSync is above: these tests are exercising runRemove's own file/
+// config reversal logic, not @clack/prompts' real terminal rendering,
+// so a plain no-op stand-in matching the real API shape is both the fix
+// and the more correct level to test at.
+function fakeSpinner() {
+  return { start: vi.fn(), stop: vi.fn(), error: vi.fn(), message: vi.fn(), cancel: vi.fn(), clear: vi.fn(), isCancelled: false };
+}
+const fakeClackInstance = {
+  intro: vi.fn(),
+  outro: vi.fn(),
+  note: vi.fn(),
+  log: { step: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), message: vi.fn() },
+  spinner: vi.fn(fakeSpinner),
+  select: vi.fn(),
+  password: vi.fn(),
+  isCancel: vi.fn(() => false),
+  cancel: vi.fn(),
+};
+vi.mock("./clack", () => ({ clack: async () => fakeClackInstance }));
+
 describe("runRemove", () => {
   let tmpDir: string;
 

@@ -75,11 +75,13 @@ One command, in an existing Next.js app:
 npx @cairnvibe/indexer setup
 ```
 
-This installs the three packages, asks a couple of quick
-yes/skippable questions from a real numbered menu (which LLM provider
-and key — or skip and add one later; voice, on request), scaffolds the
-backend route, generates a small `components/CairnCopilot.tsx` "use
-client" wrapper and wires it into your real `app/layout.tsx` or
+This installs the three packages (with a real retry prompt if that
+fails, not a dead end), asks a couple of quick skippable questions
+through a polished interactive UI (`@clack/prompts` — the same one
+create-t3-app and create-next-app use) — which LLM provider, its key
+(masked as you type, never echoed in plain text), voice on request —
+scaffolds the backend route, generates a small `components/CairnCopilot.tsx`
+"use client" wrapper and wires it into your real `app/layout.tsx` or
 `pages/_app.tsx` automatically (a real AST edit, not a blind string
 splice — it never touches a file it can't confidently parse, and falls
 back to printing the manual instructions instead of guessing), adds
