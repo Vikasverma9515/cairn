@@ -16,6 +16,7 @@ import { runInit } from "./init";
 import { runSetup } from "./setup";
 import { runRemove } from "./remove";
 import { manifestReadPath, manifestWritePath } from "./cairn-dir";
+import { clack } from "./clack";
 
 /**
  * A local `cairn build`/`npx cairn build` run (as opposed to a hosting
@@ -71,6 +72,12 @@ async function main(): Promise<void> {
   const { positional, flags } = parseArgs(rest);
   const dir = positional[0] ?? ".";
   loadDotEnv(dir);
+  // Same visual language as setup/remove, for consistency — but only for
+  // status/progress lines. `scan`'s and `diff`'s own output is real DATA
+  // a script may pipe (a manifest's raw facts, a diff report) — never
+  // routed through clack's own stdout-writing log helpers, which could
+  // interleave a symbol/color code into what's meant to be clean output.
+  const p = await clack();
 
   if (command === "scan") {
     const facts = scanL1(dir);
@@ -87,15 +94,15 @@ async function main(): Promise<void> {
       // set yet (e.g. the very first one, before env vars are configured on the
       // hosting platform) skips this step instead of failing the whole build —
       // the app still builds and runs, just without an updated manifest.
-      console.error(`cairn build --if-configured: no key set for ${provider} — skipping, leaving any existing ui-manifest.json as-is.`);
+      p.log.message(`cairn build --if-configured: no key set for ${provider} — skipping, leaving any existing ui-manifest.json as-is.`);
       return;
     }
     if (provider === "anthropic" && keyMissing) {
-      console.error("cairn build: ANTHROPIC_API_KEY is not set. Export it, or pass --provider groq, and re-run.");
+      p.log.error("cairn build: ANTHROPIC_API_KEY is not set. Export it, or pass --provider groq, and re-run.");
       process.exit(1);
     }
     if (provider === "groq" && keyMissing) {
-      console.error("cairn build --provider groq: GROQ_API_KEYS is not set (comma-separated). Export it and re-run.");
+      p.log.error("cairn build --provider groq: GROQ_API_KEYS is not set (comma-separated). Export it and re-run.");
       process.exit(1);
     }
 
@@ -110,15 +117,19 @@ async function main(): Promise<void> {
     const isCrawl = flags.mode === "crawl" || /^https?:\/\//.test(dir);
     if (isCrawl) {
       const outDir = flags.out ?? ".";
-      if (flags["storage-state"]) {
-        console.error(`cairn build --mode=crawl: replaying saved session from ${flags["storage-state"]}`);
-      }
-      console.error(`cairn build --mode=crawl: launching a headless browser against ${dir} ...`);
+      const s = p.spinner();
+      s.start(
+        flags["storage-state"]
+          ? `Crawling ${dir} (replaying saved session from ${flags["storage-state"]})`
+          : `Crawling ${dir}`,
+      );
       const facts = await crawlSite({ startUrl: dir, storageStatePath: flags["storage-state"] });
       if (facts.pages.length === 0) {
-        console.error(`cairn build --mode=crawl: found no reachable pages at ${dir} — is it actually running?`);
+        s.error("No reachable pages found");
+        p.log.error(`cairn build --mode=crawl: found no reachable pages at ${dir} — is it actually running?`);
         process.exit(1);
       }
+      s.message(`Describing ${facts.pages.length} page(s) (${provider})`);
       const l3 = await describeCrawled(outDir, facts, client);
       const manifest = assembleManifest(outDir, facts, { dead: [], conflicts: [] }, l3);
 
@@ -127,17 +138,18 @@ async function main(): Promise<void> {
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
 
-      console.error(
-        `cairn build --mode=crawl (${provider}): ${validated.pages.length} page(s) crawled — ` +
-          `L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss.`,
-      );
-      console.error(`wrote ${outPath}`);
+      s.stop(`${validated.pages.length} page(s) crawled — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss`);
+      p.log.success(`wrote ${outPath}`);
       return;
     }
 
+    const s = p.spinner();
+    s.start(`Building the manifest (${provider})`);
     const facts = scanL1(dir);
     const l2 = computeL2(dir, facts);
-    const l3 = await describeAll(dir, facts, client);
+    const l3 = await describeAll(dir, facts, client, undefined, (info) => {
+      s.message(`Building the manifest (${provider}) — rate-limited, retrying in ${Math.round(info.delayMs / 1000)}s (attempt ${info.attempt}/${info.maxAttempts})`);
+    });
     const manifest = assembleManifest(dir, facts, l2, l3);
 
     const validated = ManifestSchema.parse(manifest);
@@ -145,11 +157,10 @@ async function main(): Promise<void> {
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
 
-    console.error(
-      `cairn build (${provider}): ${validated.pages.length} page(s), ${validated.dead.length} dead file(s), ` +
-        `${validated.conflicts.length} conflict(s) — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss.`,
+    s.stop(
+      `${validated.pages.length} page(s), ${validated.dead.length} dead file(s), ${validated.conflicts.length} conflict(s) — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss`,
     );
-    console.error(`wrote ${outPath}`);
+    p.log.success(`wrote ${outPath}`);
     return;
   }
 
@@ -165,12 +176,13 @@ async function main(): Promise<void> {
 
   if (command === "init") {
     const result = runInit(dir);
-    console.error(`cairn init: detected ${result.framework}.`);
-    for (const f of result.filesWritten) console.error(`  wrote   ${path.relative(process.cwd(), f) || f}`);
-    for (const f of result.filesSkipped) console.error(`  skipped ${path.relative(process.cwd(), f) || f} (already exists)`);
-    console.error("");
-    console.error("Next steps:");
-    for (const step of result.nextSteps) console.error(`  ${step}`);
+    const lines = [
+      `Detected: ${result.framework}`,
+      ...result.filesWritten.map((f) => `wrote   ${path.relative(process.cwd(), f) || f}`),
+      ...result.filesSkipped.map((f) => `skipped ${path.relative(process.cwd(), f) || f} (already exists)`),
+    ];
+    p.log.info(lines.join("\n"));
+    p.note(result.nextSteps.join("\n"), "Next steps");
     return;
   }
 
@@ -189,50 +201,60 @@ async function main(): Promise<void> {
   if (command === "docs") {
     const manifestPath = manifestReadPath(path.resolve(dir));
     if (!fs.existsSync(manifestPath)) {
-      console.error(`cairn docs: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
+      p.log.error(`cairn docs: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
       process.exit(1);
     }
     const manifest = ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
     const outPath = path.join(path.resolve(dir), "CAIRN_DOCS.md");
     fs.writeFileSync(outPath, generateDocsMarkdown(manifest) + "\n");
-    console.error(`wrote ${outPath}`);
+    p.log.success(`wrote ${outPath}`);
     return;
   }
 
   if (command === "webmcp") {
     const manifestPath = manifestReadPath(path.resolve(dir));
     if (!fs.existsSync(manifestPath)) {
-      console.error(`cairn webmcp: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
+      p.log.error(`cairn webmcp: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
       process.exit(1);
     }
     const manifest = ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
     const component = generateWebMcpComponent(manifest);
     if (!component) {
-      console.error("cairn webmcp: no real, traced actions (apiCall-backed elements) found in this manifest — nothing safe to register. Nothing written.");
+      p.log.warn("cairn webmcp: no real, traced actions (apiCall-backed elements) found in this manifest — nothing safe to register. Nothing written.");
       return;
     }
     const outPath = path.join(path.resolve(dir), "components", "CairnWebMcpTools.tsx");
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, component);
-    console.error(`wrote ${outPath}`);
-    console.error("");
-    console.error("Next step: add it once, near your Copilot widget (e.g. app/layout.tsx):");
-    console.error('  import { CairnWebMcpTools } from "./components/CairnWebMcpTools";');
-    console.error("  <CairnWebMcpTools />");
-    console.error("Re-run `cairn webmcp` after a fresh `cairn build` whenever this app's real actions change.");
+    p.log.success(`wrote ${outPath}`);
+    p.note(
+      [
+        "Add it once, near your Copilot widget (e.g. app/layout.tsx):",
+        "",
+        '  import { CairnWebMcpTools } from "./components/CairnWebMcpTools";',
+        "  <CairnWebMcpTools />",
+        "",
+        "Re-run `cairn webmcp` after a fresh `cairn build` whenever this app's real actions change.",
+      ].join("\n"),
+      "Next step",
+    );
     return;
   }
 
-  console.error("usage:");
-  console.error("  cairn setup [dir]   (the one-command path: installs deps, asks for keys — skippable, wires the widget in, builds once, auto-rebuilds on future `npm run build`)");
-  console.error("  cairn remove [dir]   (undoes a `cairn setup` install in one command: the widget, config edits, generated files, the npm packages. Never touches real credentials in .env)");
-  console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)");
-  console.error("  cairn scan <dir>");
-  console.error("  cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)");
-  console.error("  cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   (any framework — crawls a running app; --storage-state replays a saved logged-in session for auth-gated apps)");
-  console.error("  cairn diff <old-manifest.json> <new-manifest.json>");
-  console.error("  cairn docs <dir>   (reads <dir>/ui-manifest.json, writes <dir>/CAIRN_DOCS.md)");
-  console.error("  cairn webmcp <dir>   (reads <dir>/ui-manifest.json, writes <dir>/components/CairnWebMcpTools.tsx — registers this app's real, traced actions as WebMCP tools any agent can call, not just Cairn)");
+  p.note(
+    [
+      "cairn setup [dir]   (the one-command path: installs deps, asks for keys — skippable, wires the widget in, builds once, auto-rebuilds on future `npm run build`)",
+      "cairn remove [dir]   (undoes a `cairn setup` install in one command: the widget, config edits, generated files, the npm packages. Never touches real credentials in .env)",
+      "cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)",
+      "cairn scan <dir>",
+      "cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)",
+      "cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   (any framework — crawls a running app; --storage-state replays a saved logged-in session for auth-gated apps)",
+      "cairn diff <old-manifest.json> <new-manifest.json>",
+      "cairn docs <dir>   (reads <dir>/ui-manifest.json, writes <dir>/CAIRN_DOCS.md)",
+      "cairn webmcp <dir>   (reads <dir>/ui-manifest.json, writes <dir>/components/CairnWebMcpTools.tsx — registers this app's real, traced actions as WebMCP tools any agent can call, not just Cairn)",
+    ].join("\n"),
+    "usage",
+  );
   process.exit(command ? 1 : 0);
 }
 
