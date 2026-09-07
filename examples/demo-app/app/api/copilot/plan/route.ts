@@ -6,8 +6,17 @@ import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 import { skills, SKILLS_SCOPE_ID } from "../../../../lib/agent-memory";
 import { planLLM, registeredActions } from "../../../../lib/groq-llm";
 
+// See ../route.ts's own comment: .cairn/ui-manifest.json is the new default
+// `cairn build` writes to, checked first; the pre-.cairn/ root path is kept
+// as a fallback for installs that predate the .cairn/ consolidation.
+function resolveManifestPath(root: string): string {
+  const modern = path.join(root, ".cairn", "ui-manifest.json");
+  if (fs.existsSync(modern)) return modern;
+  return path.join(root, "ui-manifest.json");
+}
+
 function loadManifest(): Manifest {
-  const manifestPath = path.join(process.cwd(), "ui-manifest.json");
+  const manifestPath = resolveManifestPath(process.cwd());
   if (fs.existsSync(manifestPath)) {
     const raw = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     return ManifestSchema.parse(raw);

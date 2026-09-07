@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "predev": "bash -c 'set -a; [ -f .env ] && . .env; set +a; [ -f ui-manifest.json ] || node ../../packages/indexer/dist/cli.js build . --provider groq || true'",
+    "predev": "bash -c 'set -a; [ -f .env ] && . .env; set +a; [ -f .cairn/ui-manifest.json ] || [ -f ui-manifest.json ] || node ../../packages/indexer/dist/cli.js build . --provider groq || true'",
     "dev": "node ../../packages/sdk/dist/realtime-cli.js --port 3010 --with \"next dev\"",
     "build": "next build",
     "start": "next start",

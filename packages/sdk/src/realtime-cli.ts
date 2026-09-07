@@ -38,6 +38,18 @@ function parseWithFlag(argv: string[]): string | undefined {
   return idx === -1 ? undefined : argv[idx + 1];
 }
 
+// Mirrors packages/indexer/src/cairn-dir.ts's manifestReadPath: prefers the
+// consolidated .cairn/ui-manifest.json, falls back to the pre-.cairn/ root
+// location for older installs. Inlined rather than imported because sdk
+// doesn't (and shouldn't) depend on indexer.
+function resolveManifestPath(root: string): string {
+  const modern = path.join(root, ".cairn", "ui-manifest.json");
+  if (fs.existsSync(modern)) return modern;
+  const legacy = path.join(root, "ui-manifest.json");
+  if (fs.existsSync(legacy)) return legacy;
+  return modern;
+}
+
 /**
  * Real bug this closes: `--with "next dev"` makes this the *first* process
  * `npm run dev` spawns, a sibling of Next.js, not code running inside it —
@@ -103,7 +115,7 @@ function main(): void {
     process.exit(1);
   };
 
-  const manifestPath = path.join(process.cwd(), "ui-manifest.json");
+  const manifestPath = resolveManifestPath(process.cwd());
   if (!fs.existsSync(manifestPath)) return fail(`no ${manifestPath} — run \`cairn build\` first.`);
   const manifest = ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
 
