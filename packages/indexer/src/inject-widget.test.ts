@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { injectWidget } from "./inject-widget";
+import { injectWidget, removeWidget } from "./inject-widget";
 
 describe("injectWidget", () => {
   let tmpDir: string;
@@ -240,5 +240,106 @@ export const notAComponent = 1;
     expect(result.injected).toBe(true);
     expect(result.wrapperPath).toBe(path.join(tmpDir, "components", "CairnCopilot.jsx"));
     expect(fs.existsSync(path.join(tmpDir, "components", "CairnCopilot.jsx"))).toBe(true);
+  });
+});
+
+describe("removeWidget", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cairn-remove-widget-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function write(rel: string, content: string): string {
+    const p = path.join(tmpDir, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  it("is the real inverse of injectWidget — removes exactly what was added, nothing else survives or is lost", () => {
+    const layout = write(
+      "app/layout.tsx",
+      `import { Analytics } from "./analytics";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <Analytics />
+        {children}
+      </body>
+    </html>
+  );
+}
+`,
+    );
+
+    const injected = injectWidget(tmpDir, "next-app-router");
+    expect(injected.injected).toBe(true);
+    expect(fs.readFileSync(layout, "utf8")).toContain("<CairnCopilot />");
+
+    const result = removeWidget(layout);
+
+    expect(result.removed).toBe(true);
+    const text = fs.readFileSync(layout, "utf8");
+    expect(text).not.toContain("CairnCopilot");
+    // everything the layout had BEFORE injection is still fully intact
+    expect(text).toContain('import { Analytics } from "./analytics";');
+    expect(text).toContain("<Analytics />");
+    expect(text).toContain("{children}");
+    expect(text.match(/<html/g)).toHaveLength(1);
+    expect(text.match(/<\/body>/g)).toHaveLength(1);
+  });
+
+  it("unwraps the Pages Router fragment back to a bare <Component .../> instead of leaving an empty <>...</>", () => {
+    const app = write(
+      "pages/_app.tsx",
+      `import type { AppProps } from "next/app";
+
+export default function App({ Component, pageProps }: AppProps) {
+  return <Component {...pageProps} />;
+}
+`,
+    );
+
+    injectWidget(tmpDir, "next-pages-router");
+    expect(fs.readFileSync(app, "utf8")).toContain("<>");
+
+    const result = removeWidget(app);
+
+    expect(result.removed).toBe(true);
+    const text = fs.readFileSync(app, "utf8");
+    expect(text).not.toContain("CairnCopilot");
+    expect(text).toContain("<Component {...pageProps} />");
+    expect(text).not.toContain("<>");
+    expect(text).not.toContain("</>");
+  });
+
+  it("reports why, and touches nothing, when the file has no widget reference to remove", () => {
+    const layout = write(
+      "app/layout.tsx",
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+    );
+    const before = fs.readFileSync(layout, "utf8");
+
+    const result = removeWidget(layout);
+
+    expect(result.removed).toBe(false);
+    expect(result.reason).toMatch(/no CairnCopilot reference/);
+    expect(fs.readFileSync(layout, "utf8")).toBe(before);
+  });
+
+  it("reports why when the file no longer exists", () => {
+    const result = removeWidget(path.join(tmpDir, "app/layout.tsx"));
+    expect(result.removed).toBe(false);
+    expect(result.reason).toMatch(/no longer exists/);
   });
 });

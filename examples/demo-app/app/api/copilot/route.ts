@@ -6,8 +6,23 @@ import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 import { memory } from "../../../lib/agent-memory";
 import { registeredActions, verbLLM } from "../../../lib/groq-llm";
 
+// `.cairn/ui-manifest.json` is the new default `cairn build` writes to
+// (everything generated that isn't Next.js-routing-mandated consolidates
+// into one folder — see README.md's "Install into your own project").
+// This app predates that and had its manifest sitting at the project
+// root — checked SECOND, as a fallback: the new location has to win when
+// both exist (any future `cairn build` here writes there, so preferring
+// the old one would mean silently serving a permanently stale manifest
+// after the very next rebuild), and it degrades correctly today too,
+// before a fresh build has ever written the new file.
+function resolveManifestPath(root: string): string {
+  const modern = path.join(root, ".cairn", "ui-manifest.json");
+  if (fs.existsSync(modern)) return modern;
+  return path.join(root, "ui-manifest.json");
+}
+
 function loadManifest(): Manifest {
-  const manifestPath = path.join(process.cwd(), "ui-manifest.json");
+  const manifestPath = resolveManifestPath(process.cwd());
   if (fs.existsSync(manifestPath)) {
     const raw = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     return ManifestSchema.parse(raw);

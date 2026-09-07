@@ -68,6 +68,61 @@ function findExportedConfigObject(sf: SourceFile): ObjectLiteralExpression | nul
   return null;
 }
 
+export interface RemoveTranspileResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * The reverse of ensureTranspilePackages, called by `cairn remove` with
+ * the exact { path, created } this file's own return value already
+ * recorded. `created: true` means the whole config file was OUR doing —
+ * delete it outright, nothing else in it to preserve. `created: false`
+ * means we edited a config the project already had — surgically remove
+ * just the two entries we added from its transpilePackages array via the
+ * same AST approach ensureTranspilePackages used to add them, leaving
+ * every other entry (and the rest of the file) exactly as the project
+ * had it.
+ */
+export function removeTranspilePackages(configPath: string, created: boolean): RemoveTranspileResult {
+  if (!fs.existsSync(configPath)) return { ok: false, reason: `${configPath} no longer exists — nothing to remove` };
+
+  if (created) {
+    fs.rmSync(configPath);
+    return { ok: true };
+  }
+
+  try {
+    const project = new Project({ useInMemoryFileSystem: false, skipAddingFilesFromTsConfig: true });
+    const sf = project.addSourceFileAtPath(configPath);
+    const configObject = findExportedConfigObject(sf);
+    if (!configObject) {
+      return { ok: false, reason: `couldn't confidently find the config object in ${configPath} — remove ${JSON.stringify(REQUIRED_PACKAGES)} from transpilePackages yourself` };
+    }
+    const existingProp = configObject.getProperty("transpilePackages");
+    if (existingProp?.getKind() !== SyntaxKind.PropertyAssignment) {
+      return { ok: true }; // nothing there to remove — already gone or never confirmed present
+    }
+    const initializer = existingProp.asKindOrThrow(SyntaxKind.PropertyAssignment).getInitializer();
+    if (initializer?.getKind() !== SyntaxKind.ArrayLiteralExpression) return { ok: true };
+    const arr = initializer.asKindOrThrow(SyntaxKind.ArrayLiteralExpression);
+    // Collect indices first, then remove highest-to-lowest — removing
+    // while iterating a live node collection shifts later elements'
+    // indices out from under a forward pass.
+    const indicesToRemove = arr
+      .getElements()
+      .map((el, i) => ({ i, value: el.getText().replace(/^["']|["']$/g, "") }))
+      .filter((e) => REQUIRED_PACKAGES.includes(e.value))
+      .map((e) => e.i)
+      .sort((a, b) => b - a);
+    for (const i of indicesToRemove) arr.removeElement(i);
+    sf.saveSync();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: `couldn't safely edit ${configPath} (${(err as Error).message}) — remove ${JSON.stringify(REQUIRED_PACKAGES)} from transpilePackages yourself` };
+  }
+}
+
 export function ensureTranspilePackages(dir: string): TranspileResult {
   const absDir = path.resolve(dir);
   const existing = findConfigFile(absDir);

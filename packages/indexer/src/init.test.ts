@@ -96,10 +96,13 @@ describe("runInit", () => {
     expect(runInit(tmpDir).framework).toBe("other");
   });
 
-  it("always writes a .env.example, regardless of framework", () => {
+  it("always writes .cairn/.env.example, regardless of framework", () => {
+    // .cairn/ is the one dedicated folder everything cairn setup/init
+    // generates lives in — nothing framework-specific forces this one
+    // anywhere in particular, unlike the API route files.
     const result = runInit(tmpDir);
-    expect(fs.existsSync(path.join(tmpDir, ".env.example"))).toBe(true);
-    expect(result.filesWritten).toContain(path.join(tmpDir, ".env.example"));
+    expect(fs.existsSync(path.join(tmpDir, ".cairn", ".env.example"))).toBe(true);
+    expect(result.filesWritten).toContain(path.join(tmpDir, ".cairn", ".env.example"));
   });
 
   it("never overwrites a file that already exists — reports it as skipped instead", () => {

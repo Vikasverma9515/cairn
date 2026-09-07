@@ -104,6 +104,28 @@ Prefer full manual control instead? `cairn init <dir>` does the
 non-interactive, no-installs, no-prompts version of the same
 scaffolding — see the CLI reference below.
 
+Everything generated that isn't forced to live somewhere specific by
+Next.js's own routing conventions goes into one dedicated `.cairn/`
+folder — `ui-manifest.json`, `.cairn/.env.example`, and a small
+`install-manifest.json` that records exactly what this run touched.
+(Two things genuinely can't move there: the API route file itself, since
+Next.js only treats it as a real endpoint at its conventional path, and
+the one `<CairnCopilot/>` line in your layout, since it has to render
+somewhere real.) That record is what makes uninstalling a real, one-command
+operation instead of hunting down every file and edit by hand:
+
+```bash
+npx cairn remove
+```
+
+Deletes `.cairn/` and everything it generated, removes the widget's
+import/JSX from your layout via the same AST-precise edit that added it,
+strips just the two `transpilePackages` entries it added (or deletes the
+whole config file if it created that too), restores your original `dev`
+script, drops the `prebuild` script it added, and uninstalls the three
+packages. Real API keys in `.env`/`.env.local` are never touched — it
+reports what's still there so you can clean those up yourself.
+
 ## How it works
 
 ```
@@ -202,7 +224,7 @@ npm run build -w @cairnvibe/indexer -w @cairnvibe/sdk   # compiles the cairn CLI
 npm install                                     # re-run once so npm links the `cairn`/`cairn-realtime` bins now that dist/ exists
 cp .env.example .env                            # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
 
-npx cairn build ./examples/demo-app             # writes examples/demo-app/ui-manifest.json
+npx cairn build ./examples/demo-app             # writes examples/demo-app/.cairn/ui-manifest.json
 npx cairn build ./examples/demo-app --provider groq   # or use Groq instead
 
 npm run dev -w demo-app                         # or: cd examples/demo-app && npm run dev
@@ -249,7 +271,7 @@ see "Install into your own project" above.)
 ```ts
 // app/api/copilot/route.ts — your own route, your own API key, your own auth
 import { createCopilotHandler } from "@cairnvibe/sdk/server";
-import manifest from "../../../ui-manifest.json";
+import manifest from "../../../.cairn/ui-manifest.json";
 
 const handler = createCopilotHandler(manifest, {
   provider: "groq", // or "anthropic" (default)
@@ -337,6 +359,7 @@ markdown, never say an internal element id out loud.
 | Command | What it does |
 |---|---|
 | `cairn setup [dir]` | The one-command path — installs dependencies, asks skippable questions, wires the widget into your real layout file, builds once, and sets up auto-rebuild on future builds. |
+| `cairn remove [dir]` | Undoes a `cairn setup` install in one command — the widget, config edits, every generated file, the npm packages. Real credentials in `.env`/`.env.local` are never touched. |
 | `cairn init <dir>` | The manual-control version of the same scaffolding — no prompts, no installs, no file edits beyond new files. Detects your framework, never overwrites existing files. |
 | `cairn scan <dir>` | L1 only, deterministic, no LLM call. |
 | `cairn build <dir>` | Full pipeline against Next.js source. |

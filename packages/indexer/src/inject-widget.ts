@@ -89,6 +89,99 @@ function toPosixRelativeImport(fromFile: string, toFileNoExt: string): string {
   return rel;
 }
 
+export interface RemoveWidgetResult {
+  removed: boolean;
+  reason?: string; // why not, when removed is false
+}
+
+/**
+ * The reverse of injectWidget — real, `cairn remove`'s counterpart to
+ * this file's own AST-precise addition, not a heuristic string search.
+ * Finds and removes exactly the import declaration and JSX element
+ * injectWidget added (by the wrapper component's own name — the ONE
+ * fixed, known thing to search for) and leaves everything else in the
+ * layout file exactly as it was, the same "don't touch what you don't
+ * recognize" discipline injectWidget itself follows. Never touches the
+ * file at all if the wrapper reference isn't found — a layout a user has
+ * since hand-edited (renamed the import, moved the JSX) falls back to
+ * telling them to remove it themselves rather than guessing.
+ */
+export function removeWidget(layoutFilePath: string): RemoveWidgetResult {
+  if (!fs.existsSync(layoutFilePath)) {
+    return { removed: false, reason: `${layoutFilePath} no longer exists — nothing to remove` };
+  }
+
+  try {
+    const project = new Project({
+      useInMemoryFileSystem: false,
+      skipAddingFilesFromTsConfig: true,
+      compilerOptions: { jsx: ts.JsxEmit.ReactJSX, allowJs: true, esModuleInterop: true, target: ts.ScriptTarget.ES2022 },
+    });
+    const sf = project.addSourceFileAtPath(layoutFilePath);
+
+    let removedSomething = false;
+
+    // The self-closing <CairnCopilot /> tag, wherever it ended up.
+    // JsxSelfClosingElement has no .remove() in ts-morph (unlike a
+    // statement/property node) — positional text removal, symmetric to
+    // injectWidget's own positional insertText, is what actually works
+    // here. Swallows the pure-whitespace run around it (the exact
+    // indentation/newline injectWidget itself added) so removal doesn't
+    // leave a blank line behind.
+    const selfClosing = sf
+      .getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement)
+      .find((el) => el.getTagNameNode().getText() === WRAPPER_COMPONENT_NAME);
+    if (selfClosing) {
+      const fullText = sf.getFullText();
+      let start = selfClosing.getStart();
+      let end = selfClosing.getEnd();
+      while (start > 0 && (fullText[start - 1] === " " || fullText[start - 1] === "\t")) start--;
+      while (end < fullText.length && (fullText[end] === " " || fullText[end] === "\t")) end++;
+      if (fullText[end] === "\n") end++;
+      sf.removeText(start, end);
+      removedSomething = true;
+    }
+
+    // The Pages Router path wraps <Component/> in a fragment alongside the
+    // widget (see injectWidget's own "Pages Router" branch) — if that
+    // fragment now has nothing left but the original single child, unwrap
+    // it back to plain `<Component .../>` instead of leaving a pointless
+    // `<>...</>` around one element.
+    const fragments = sf.getDescendantsOfKind(SyntaxKind.JsxFragment);
+    for (const frag of fragments) {
+      const children = frag.getJsxChildren().filter((c) => c.getKind() !== SyntaxKind.JsxText || c.getText().trim() !== "");
+      if (children.length === 1) {
+        frag.replaceWithText(children[0].getText().trim());
+      }
+    }
+
+    // The import declaration for the wrapper — only removed if nothing else
+    // in the file still references it (defensive; the JSX element removed
+    // above should be the only real reference, but never leave a dangling
+    // import if something else genuinely still uses the name).
+    const stillReferenced = sf.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement).some((el) => el.getTagNameNode().getText() === WRAPPER_COMPONENT_NAME) ||
+      sf.getDescendantsOfKind(SyntaxKind.Identifier).some((id) => id.getText() === WRAPPER_COMPONENT_NAME && id.getParent()?.getKind() !== SyntaxKind.ImportSpecifier);
+    if (!stillReferenced) {
+      const importDecl = sf.getImportDeclarations().find((d) => d.getNamedImports().some((n) => n.getName() === WRAPPER_COMPONENT_NAME));
+      if (importDecl) {
+        const onlyImport = importDecl.getNamedImports().length === 1;
+        if (onlyImport) importDecl.remove();
+        else importDecl.getNamedImports().find((n) => n.getName() === WRAPPER_COMPONENT_NAME)?.remove();
+        removedSomething = true;
+      }
+    }
+
+    if (!removedSomething) {
+      return { removed: false, reason: `no ${WRAPPER_COMPONENT_NAME} reference found in ${layoutFilePath} — it may have already been removed, or hand-edited since` };
+    }
+
+    sf.saveSync();
+    return { removed: true };
+  } catch (err) {
+    return { removed: false, reason: `couldn't safely edit ${layoutFilePath} (${(err as Error).message}) — remove the ${WRAPPER_COMPONENT_NAME} import/tag yourself` };
+  }
+}
+
 export function injectWidget(
   dir: string,
   framework: "next-app-router" | "next-pages-router",

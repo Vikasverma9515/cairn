@@ -2,6 +2,7 @@ node_modules
 dist
 *.log
 .cairn-cache
+.cairn/
 ui-manifest.json
 raw-facts.json
 CAIRN_DOCS.md

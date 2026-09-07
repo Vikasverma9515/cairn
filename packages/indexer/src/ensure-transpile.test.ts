@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ensureTranspilePackages } from "./ensure-transpile";
+import { ensureTranspilePackages, removeTranspilePackages } from "./ensure-transpile";
 
 describe("ensureTranspilePackages", () => {
   let tmpDir: string;
@@ -125,5 +125,64 @@ module.exports = withBundleAnalyzer({
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/couldn't confidently find/);
     expect(fs.readFileSync(config, "utf8")).toBe(original); // never guesses, never corrupts
+  });
+});
+
+describe("removeTranspilePackages", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cairn-remove-transpile-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function write(rel: string, content: string): string {
+    const p = path.join(tmpDir, rel);
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  it("deletes the whole file when it was created by ensureTranspilePackages (created: true)", () => {
+    const result = ensureTranspilePackages(tmpDir);
+    expect(result.created).toBe(true);
+    const configPath = result.filePath!;
+    expect(fs.existsSync(configPath)).toBe(true);
+
+    const removed = removeTranspilePackages(configPath, true);
+
+    expect(removed.ok).toBe(true);
+    expect(fs.existsSync(configPath)).toBe(false);
+  });
+
+  it("surgically strips only the two entries it added, leaving a pre-existing config and its other entries fully intact", () => {
+    const config = write(
+      "next.config.js",
+      `module.exports = {
+  reactStrictMode: true,
+  transpilePackages: ["some-other-package"],
+};
+`,
+    );
+    const added = ensureTranspilePackages(tmpDir);
+    expect(added.ok).toBe(true);
+    expect(added.created).toBeFalsy();
+
+    const removed = removeTranspilePackages(config, false);
+
+    expect(removed.ok).toBe(true);
+    const text = fs.readFileSync(config, "utf8");
+    expect(text).not.toContain("@cairnvibe/sdk");
+    expect(text).not.toContain("@cairnvibe/core");
+    expect(text).toContain("some-other-package"); // the project's own entry survives
+    expect(text).toContain("reactStrictMode: true"); // the rest of the config survives
+  });
+
+  it("reports why when the config file no longer exists", () => {
+    const result = removeTranspilePackages(path.join(tmpDir, "next.config.js"), false);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/no longer exists/);
   });
 });

@@ -5,6 +5,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { envExampleWritePath, MANIFEST_LOOKUP_SNIPPET } from "./cairn-dir";
 
 export interface InitResult {
   framework: "next-app-router" | "next-pages-router" | "other";
@@ -86,7 +87,7 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
     nextSteps: [],
   };
 
-  writeIfAbsent(path.join(absDir, ".env.example"), ENV_TEMPLATE, result);
+  writeIfAbsent(envExampleWritePath(absDir), ENV_TEMPLATE, result);
 
   if (result.framework === "next-app-router") {
     writeIfAbsent(path.join(absDir, "app", "api", "copilot", "route.ts"), NEXT_APP_ROUTE, result);
@@ -97,7 +98,7 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
       widgetProps.push('speakEndpoint="/api/copilot/speak"', 'transcribeEndpoint="/api/copilot/transcribe"');
     }
     result.nextSteps.push(
-      "1. cp .env.example .env and fill in your key(s).",
+      "1. cp .cairn/.env.example .env and fill in your key(s).",
       "2. Add the widget to app/layout.tsx:",
       '   import { Copilot } from "@cairnvibe/sdk";',
       `   <Copilot ${widgetProps.join(" ")} />`,
@@ -114,7 +115,7 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
       widgetProps.push('speakEndpoint="/api/copilot/speak"', 'transcribeEndpoint="/api/copilot/transcribe"');
     }
     result.nextSteps.push(
-      "1. cp .env.example .env and fill in your key(s).",
+      "1. cp .cairn/.env.example .env and fill in your key(s).",
       "2. Add the widget to pages/_app.tsx:",
       '   import { Copilot } from "@cairnvibe/sdk";',
       `   <Copilot ${widgetProps.join(" ")} />`,
@@ -125,7 +126,7 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
   } else {
     writeIfAbsent(path.join(absDir, "cairn-server.cjs"), STANDALONE_SERVER, result);
     result.nextSteps.push(
-      "1. cp .env.example .env and fill in your key(s).",
+      "1. cp .cairn/.env.example .env and fill in your key(s).",
       "2. npm install express @cairnvibe/sdk @cairnvibe/core",
       "3. Start your app, then: npx cairn build http://localhost:PORT   (crawls the running app — works for any framework)",
       "4. node cairn-server.cjs   (the copilot backend, separate from your app's own server)",
@@ -145,8 +146,10 @@ import { NextResponse } from "next/server";
 import { createCopilotHandler } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
+${MANIFEST_LOOKUP_SNIPPET}
+
 function loadManifest(): Manifest {
-  const manifestPath = path.join(process.cwd(), "ui-manifest.json");
+  const manifestPath = resolveManifestPath(process.cwd());
   if (fs.existsSync(manifestPath)) {
     return ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
   }
@@ -173,8 +176,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { createCopilotHandler } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
+${MANIFEST_LOOKUP_SNIPPET}
+
 function loadManifest(): Manifest {
-  const manifestPath = path.join(process.cwd(), "ui-manifest.json");
+  const manifestPath = resolveManifestPath(process.cwd());
   if (fs.existsSync(manifestPath)) {
     return ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
   }
@@ -280,8 +285,16 @@ const path = require("node:path");
 const { createCopilotHandler } = require("@cairnvibe/sdk/server");
 const { ManifestSchema } = require("@cairnvibe/core");
 
+function resolveManifestPath(root) {
+  const modern = path.join(root, ".cairn", "ui-manifest.json");
+  if (fs.existsSync(modern)) return modern;
+  const legacy = path.join(root, "ui-manifest.json");
+  if (fs.existsSync(legacy)) return legacy;
+  return modern;
+}
+
 function loadManifest() {
-  const manifestPath = path.join(__dirname, "ui-manifest.json");
+  const manifestPath = resolveManifestPath(__dirname);
   if (fs.existsSync(manifestPath)) {
     return ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
   }

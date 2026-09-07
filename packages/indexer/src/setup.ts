@@ -26,6 +26,8 @@ import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { ManifestSchema } from "@cairnvibe/core";
 import { Spinner, bold, classifyError, dim, green, red, yellow } from "./ui";
+import { manifestWritePath } from "./cairn-dir";
+import { writeInstallManifest, type InstallManifest } from "./install-manifest";
 
 const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexer"];
 
@@ -73,7 +75,9 @@ async function attemptBuild(dir: string, provider: Provider, key: string): Promi
       );
     });
     const manifest = ManifestSchema.parse(assembleManifest(dir, facts, l2, l3));
-    fs.writeFileSync(path.join(path.resolve(dir), "ui-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    const outPath = manifestWritePath(path.resolve(dir));
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2) + "\n");
     spinner.stop(green(`✓ wrote ui-manifest.json (${manifest.pages.length} page(s))`));
     return { ok: true, pageCount: manifest.pages.length };
   } catch (err) {
@@ -244,8 +248,10 @@ export async function runSetup(dir: string): Promise<void> {
   // that would ever call them — "on" did nothing beyond saving a string
   // nothing read.
   const wantsVoice = voiceChoice === "deepgram";
+  let voiceFilesWritten: string[] = [];
   if (wantsVoice) {
     const voiceInit = runInit(dir, { voice: true });
+    voiceFilesWritten = voiceInit.filesWritten;
     for (const f of voiceInit.filesWritten) console.log(`  wrote   ${path.relative(absDir, f) || f}`);
   }
 
@@ -317,11 +323,20 @@ export async function runSetup(dir: string): Promise<void> {
 
   // 7. Wire a prebuild hook so this stays current on every future build/deploy —
   // "just build and redeploy" only works if the manifest regenerates itself.
+  // prebuildScriptAdded tracks only the case where the project had NO
+  // prebuild script at all before this — `cairn remove` deletes exactly
+  // that case outright. A project that already had one and got ours
+  // appended isn't tracked for removal; untangling an appended suffix
+  // from whatever the project's own prebuild script does isn't something
+  // worth automating precisely, versus just leaving it for the (rare)
+  // case where it's actually the concern.
+  let prebuildScriptAdded = false;
   if (pkg && !pkg.scripts?.prebuild?.includes("cairn build")) {
     const pkgPath = path.join(absDir, "package.json");
     const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
     fresh.scripts = fresh.scripts ?? {};
     const providerFlag = provider === "groq" ? "groq" : "anthropic";
+    prebuildScriptAdded = !fresh.scripts.prebuild;
     fresh.scripts.prebuild = fresh.scripts.prebuild
       ? `${fresh.scripts.prebuild} && cairn build . --provider ${providerFlag} --if-configured`
       : `cairn build . --provider ${providerFlag} --if-configured`;
@@ -341,15 +356,41 @@ export async function runSetup(dir: string): Promise<void> {
   // instead of a second terminal nobody remembers to open. Wraps whatever
   // `dev` already does (a custom server, Turbopack, anything) rather than
   // replacing it — the realtime relay runs alongside it, not instead of it.
+  let originalDevScript: string | null = null;
   if (wantsVoice && pkg?.scripts?.dev && !pkg.scripts.dev.includes("cairn-realtime")) {
     const pkgPath = path.join(absDir, "package.json");
     const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-    const originalDev = fresh.scripts.dev as string;
-    fresh.scripts.dev = `cairn-realtime --port 3010 --with ${JSON.stringify(originalDev)}`;
+    originalDevScript = fresh.scripts.dev as string;
+    fresh.scripts.dev = `cairn-realtime --port 3010 --with ${JSON.stringify(originalDevScript)}`;
     fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
     console.log(green('✓ wired the realtime voice relay into `npm run dev` — it now starts alongside your app automatically.'));
     console.log(dim("(a missing/invalid Deepgram key skips voice only, never blocks your app's own dev server from starting.)"));
   }
 
+  // 9. Record exactly what this run touched — the ONE thing that makes
+  // `cairn remove` a real, precise reversal instead of a guess. Written
+  // last, on purpose: a run that fails or is skipped partway through
+  // (framework not detected, npm install failed) never leaves a stale
+  // record claiming more happened than actually did. .env is
+  // deliberately never listed — real credentials a user may have since
+  // added to it must never be something an uninstall auto-deletes.
+  const installManifest: InstallManifest = {
+    installedAt: new Date().toISOString(),
+    filesCreated: [
+      ...init.filesWritten,
+      ...voiceFilesWritten,
+      ...(inject.injected && inject.wrapperPath && fs.existsSync(inject.wrapperPath) ? [inject.wrapperPath] : []),
+      ...(transpile.ok && transpile.created && transpile.filePath ? [transpile.filePath] : []),
+    ],
+    layoutFile: inject.injected ? (inject.filePath ?? null) : null,
+    wrapperFile: inject.injected ? (inject.wrapperPath ?? null) : null,
+    configFile: transpile.ok && transpile.filePath ? { path: transpile.filePath, created: !!transpile.created } : null,
+    originalDevScript,
+    prebuildScriptAdded,
+    packagesInstalled: PACKAGES,
+  };
+  writeInstallManifest(absDir, installManifest);
+
   console.log(`\n${bold("Done.")} \`npm run dev\` and ask it something.`);
+  console.log(dim(`(everything this generated is tracked in .cairn/ — \`cairn remove\` undoes it in one command.)`));
 }

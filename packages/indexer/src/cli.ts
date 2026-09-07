@@ -14,6 +14,8 @@ import { generateDocsMarkdown } from "./docs";
 import { generateWebMcpComponent } from "./webmcp";
 import { runInit } from "./init";
 import { runSetup } from "./setup";
+import { runRemove } from "./remove";
+import { manifestReadPath, manifestWritePath } from "./cairn-dir";
 
 /**
  * A local `cairn build`/`npx cairn build` run (as opposed to a hosting
@@ -121,7 +123,8 @@ async function main(): Promise<void> {
       const manifest = assembleManifest(outDir, facts, { dead: [], conflicts: [] }, l3);
 
       const validated = ManifestSchema.parse(manifest);
-      const outPath = path.join(path.resolve(outDir), "ui-manifest.json");
+      const outPath = manifestWritePath(path.resolve(outDir));
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
 
       console.error(
@@ -138,7 +141,8 @@ async function main(): Promise<void> {
     const manifest = assembleManifest(dir, facts, l2, l3);
 
     const validated = ManifestSchema.parse(manifest);
-    const outPath = path.join(path.resolve(dir), "ui-manifest.json");
+    const outPath = manifestWritePath(path.resolve(dir));
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
 
     console.error(
@@ -151,6 +155,11 @@ async function main(): Promise<void> {
 
   if (command === "setup") {
     await runSetup(dir);
+    return;
+  }
+
+  if (command === "remove" || command === "uninstall") {
+    await runRemove(dir);
     return;
   }
 
@@ -178,7 +187,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "docs") {
-    const manifestPath = path.join(path.resolve(dir), "ui-manifest.json");
+    const manifestPath = manifestReadPath(path.resolve(dir));
     if (!fs.existsSync(manifestPath)) {
       console.error(`cairn docs: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
       process.exit(1);
@@ -191,7 +200,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "webmcp") {
-    const manifestPath = path.join(path.resolve(dir), "ui-manifest.json");
+    const manifestPath = manifestReadPath(path.resolve(dir));
     if (!fs.existsSync(manifestPath)) {
       console.error(`cairn webmcp: no ${manifestPath} — run \`cairn build ${dir}\` first.`);
       process.exit(1);
@@ -216,6 +225,7 @@ async function main(): Promise<void> {
 
   console.error("usage:");
   console.error("  cairn setup [dir]   (the one-command path: installs deps, asks for keys — skippable, wires the widget in, builds once, auto-rebuilds on future `npm run build`)");
+  console.error("  cairn remove [dir]   (undoes a `cairn setup` install in one command: the widget, config edits, generated files, the npm packages. Never touches real credentials in .env)");
   console.error("  cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)");
   console.error("  cairn scan <dir>");
   console.error("  cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)");
