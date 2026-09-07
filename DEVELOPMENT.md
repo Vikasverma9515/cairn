@@ -7818,6 +7818,64 @@ is a real, user-decision-gated migration, not started.
 
 ---
 
+### Live UI-inspection pass surfaces a real regression: the realtime relay and the plan route couldn't find the `.cairn/` manifest the indexer had just built
+
+Direct ask: check what's actually pending, then look hard at the live
+widget UI to ground a design pass instead of guessing. Two real,
+significant bugs turned up before any UI critique was possible.
+
+**Found, in order:**
+1. `examples/demo-app`'s own `package.json` (and `packages/evals`'s) still
+   declared `@cairnvibe/core: ^0.1.8` / `@cairnvibe/sdk: ^0.4.4` against a
+   local workspace that had long since crossed those ranges under npm's
+   0.x semver rules — so npm silently fell back to a stale *published*
+   copy instead of linking local source, with zero warning. Fixed both
+   ranges, deleted the stale copies, reinstalled, verified real symlinks
+   via `readlink`. This means an unknown amount of this session's earlier
+   "live verification" against demo-app may have been checking stale
+   published code, not the actual local changes under test.
+2. A missing `lightningcss-darwin-arm64` optional native binary broke the
+   Next.js build outright (`Cannot find module`) — a dev-machine-local,
+   non-committed fix (`npm install lightningcss-darwin-arm64@1.32.0
+   --no-save`), needed again after the workspace-link `npm install` above
+   silently dropped it.
+3. With the build finally clean, sending a real message into the widget
+   still failed ("Something went wrong on my end"). Root cause:
+   `packages/sdk/src/realtime-cli.ts` and
+   `examples/demo-app/app/api/copilot/plan/route.ts` still resolved the
+   manifest at a bare root `ui-manifest.json` — the path from *before*
+   this session's own `.cairn/` consolidation. `cairn build` now writes to
+   `.cairn/ui-manifest.json`, so `cairn-realtime` reported "no
+   ui-manifest.json — run cairn build first" immediately after a real,
+   successful build, and voice/realtime never started; the plan route had
+   the identical bug. demo-app's `predev` script also checked the stale
+   path, so it re-ran the indexer build on every single `npm run dev`
+   even when a fresh `.cairn/ui-manifest.json` already existed.
+
+**Built:** `realtime-cli.ts` gained an inlined `resolveManifestPath()`
+(same modern-then-legacy logic `cairn-dir.ts`/`copilot/route.ts` already
+use — sdk doesn't depend on indexer, so it's duplicated on purpose, same
+as the generated route templates already do); `plan/route.ts` got the
+identical fix mirrored from its sibling `route.ts`; demo-app's `predev`
+guard now checks `.cairn/ui-manifest.json` first. sdk bumped to 0.4.5.
+
+**Tests:** full `packages/sdk` suite 437/437. Full-repo `npm run
+typecheck` clean across every workspace. Live-verified end to end: fresh
+dev-server restart logged `cairn-realtime: listening on ws://localhost:3010`
+(previously it failed and silently skipped voice); sent a real message
+into the widget and watched a genuine 4-step tour execute with live
+highlighting on the actual page, not a canned response.
+
+**Pending:** `npm publish` for sdk 0.4.5 was blocked by this session's own
+safety classifier (a registry publish is an external, hard-to-reverse
+action) — committed and pushed to main, publish itself needs explicit
+user confirmation. VOXERA's Groq-key-sharing and the
+`@xenova/transformers` migration remain open, unchanged from before.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
