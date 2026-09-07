@@ -267,8 +267,23 @@ export async function resolveVerb(
     // per-request and was never cached, so there's nothing to lose by
     // making it bigger; the system prompt is what has to stay small and
     // route-independent.
+    //
+    // `input.visible` (raw data-ai ids currently in viewport, from
+    // context-collector.ts's own collectVisible()) is deliberately left
+    // OUT of what actually reaches the model — real, found-live waste:
+    // buildSystemPrompt's own context-field explanation covers
+    // currentPageElements/liveElements/webMcpTools/currentPageDataShapes/
+    // suggestedApproach, never `visible` — it was being paid for, on
+    // every single call, with zero documented meaning for the model to
+    // act on. liveElements (a live DOM scan with real id/role/text,
+    // ranked nearest-first) is the actual, explained mechanism for "what's
+    // on screen right now" this superseded. Still accepted from callers
+    // (the request schema/type is unchanged) — just not forwarded into
+    // the one place its token cost was being paid without ever being spent
+    // on anything.
+    const { visible: _visible, ...restInput } = input;
     const userMessage = JSON.stringify({
-      ...input,
+      ...restInput,
       currentPageElements: buildPageElements(manifest, input.route),
       currentPageDataShapes: buildPageDataShapes(manifest, input.route),
       ...(patternMatches.length ? { suggestedApproach: renderPlaybookHint(patternMatches[0].pattern) } : {}),

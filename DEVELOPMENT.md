@@ -7613,6 +7613,64 @@ broken.
 
 ---
 
+### Clearing the pending list, part 1: demo-app's manifest migrated, the CLI's UI made fully consistent, one more real token-waste bug found and cut
+
+Direct ask: work through everything flagged as still-open, Cairn's own
+repo first.
+
+**Built — `examples/demo-app`'s own `ui-manifest.json` migrated into
+`.cairn/`**: moved (not rebuilt — no reason to spend real LLM tokens
+just to relocate a file), confirmed the app's own `route.ts` (fixed
+in the `.cairn/` entry above) resolves it correctly at the new location.
+The genuinely-legacy fallback stays in the code for any OTHER install
+that hasn't migrated, but this repo's own reference example now matches
+the layout it documents.
+
+**Built — the `@clack/prompts` treatment extended to the rest of the
+CLI**: `build` (both the Next.js-source and crawl-mode paths) now shows
+a real spinner, including live rate-limit-retry status via
+`spinner().message()` — previously that information only showed up
+inside `cairn setup`'s own build step, never a bare `cairn build` run.
+`docs`/`webmcp`/`init`/the usage screen all moved from plain
+`console.error` to `log.*`/`note()` for visual consistency with
+`setup`/`remove`. Deliberately untouched: `scan` and `diff`, whose
+output is real data a script may pipe — never routed through a
+status-line helper that could interleave a symbol/color code into it.
+
+**Built — a real, live-found token-waste bug in `resolveVerb`'s own
+per-request payload**: `input.visible` (raw `data-ai` element ids
+currently in viewport, from `context-collector.ts`) was being spread
+into every single LLM call's userMessage, unconditionally — but
+`buildSystemPrompt`'s own context-field explanation only ever documents
+`currentPageElements`/`liveElements`/`webMcpTools`/
+`currentPageDataShapes`/`suggestedApproach`. `visible` was never
+explained to the model at all — pure paid-for, unused weight on every
+call, superseded by `liveElements` (a live DOM scan with real id/role/
+text, ranked nearest-first, actually documented) once that was built.
+Confirmed via grep it's never read for any server-side logic either
+(only ever forwarded) before cutting it from the payload — the request
+schema/type is unchanged, callers still send it, it's just no longer
+what reaches the model. Modest but real savings (~35-40 tokens on a
+small example; more on pages with many `data-ai` elements, e.g. a real
+admin dashboard).
+
+**Tests**: full `packages/indexer` suite re-run — 179/187 (same 8
+pre-existing Playwright-environment failures, unrelated). Full
+`packages/sdk` suite — 433/433. Both typecheck clean. `cairn build`'s
+new spinner path live-smoke-tested against a real missing-key error
+case (zero-cost — no real LLM call needed to verify the UI renders and
+the error path still exits correctly).
+
+**Pending, from this same list, still ahead**: the "operate a platform
+Cairn's never scanned" extension (Pillar 2's live-scan-only path,
+without requiring `cairn build` first) — the big one, tackled next, in
+its own entry. VOXERA's own `canvas`/`pkg-config` build issue and
+Groq-key-sharing — separate, VOXERA-side items, not this repo's.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
