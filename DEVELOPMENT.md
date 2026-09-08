@@ -8351,6 +8351,105 @@ itself needs more work.
 
 ---
 
+### A full, detailed spec for the realtime voice conversation layer — implemented as an addendum, not a rewrite
+
+A large, explicit spec: make the realtime voice agent sound like a
+capable coworker, not a chatbot — with hard constraints not to rebuild
+Planner/Executor/Critic, not to remove the verified-action system, and
+not to weaken server-side validation. Inspected the real pipeline first
+(as instructed), rather than guessing at what to change.
+
+**What was already there** (confirmed by direct code read, not assumed):
+STT is Deepgram `nova-2` over `wss://api.deepgram.com/v1/listen` with
+VAD-based endpointing (`endpointing=300&utterance_end_ms=1000`); TTS is
+Aura-2 (`aura-2-thalia-en`) over Deepgram's streaming Speak WebSocket;
+barge-in is a real, mature client-side system (energy+ZCR VAD, adaptive
+noise floor, a 200ms sustained-speech gate against single-frame false
+triggers, `stopScheduledRtAudio()` firing with zero network round trip);
+the shared system prompt already banned "Certainly/Great question/
+Absolutely/I'd be happy to," required contractions, and had a capped
+occasional-hesitation rule. `respondStreamed` (token-streaming) exists
+on both LLM classes but is called nowhere in the actual verb-resolution
+path — every turn waits for one complete tool-call JSON before any TTS
+begins; see Pending below for why this wasn't changed.
+
+**Built:** `VOICE_CONVERSATION_ADDENDUM`, a new exported constant in
+`realtime-server.ts`, replacing the realtime relay's existing one-
+paragraph addendum with the full spec — banned scripted openers, real
+acknowledgment vocabulary with explicit permission to skip one
+entirely, a ban on narrating internal process/tools/step-by-step
+mechanics, concrete word-count targets by response type (1-6 / 5-15 /
+10-30 words), an over-confirmation ban with a real ambiguous-request
+example, honest failure/uncertainty phrasing, result-grounded response
+templates (not generic "operation completed" text), reply-opening
+variety, a no-fake-human-claims rule, and speech-formatting rules
+including Deepgram's own documented three-exactly-dots pause convention
+(`developers.deepgram.com/docs/improving-aura-2-formatting` — sourced,
+not guessed). Deliberately a plain prompt addendum, not a separate
+"rewrite for speech" LLM call — a dedicated conversion pass would add a
+full extra model round trip to every turn, working directly against
+the same brief's own latency goal. Zero changes to `resolveVerb`, the
+verb schema, Planner/Executor/Critic, or any validation — this governs
+only the wording of the "text" field that was always going to be
+spoken.
+
+**Deepgram Flux — investigated, not migrated.** Researched (not
+guessed): Flux STT and Flux TTS are both real, GA products, but both
+are genuinely new `/v2/` protocols (`wss://api.deepgram.com/v2/listen`,
+`/v2/speak`) with structured turn-event message shapes, not drop-in
+replacements for the current `/v1/` endpoints — migrating either one
+means rewriting the connection/event-handling logic, not swapping a
+URL. Real upside: Flux STT's model-native end-of-turn detection
+(sub-400ms, independently validated at ~50% lower latency-to-first-
+token than the current VAD-based approach) would directly address the
+"user stops talking → agent responds" latency this spec cares about.
+Real cost: a protocol rewrite is not what "minimum changes required"
+asked for, and Flux TTS's free tier ends September 12, 2026 — four
+days from today — with metered billing starting the next day, a real,
+time-sensitive cost consideration for a live migration decision.
+Recommendation: worth a dedicated, separately-scoped migration, not
+bundled into this pass.
+
+**Tests:** 12 new in `realtime-voice-tone.test.ts` — direct content
+assertions on the exported addendum (banned openers present, natural
+acknowledgment vocabulary present with permission to skip one, no-
+tool-narration ban present, word-count targets present, over-
+confirmation ban + clarification example present, honest-failure
+phrasing present — verified as the taught-by-contrast example it is,
+not a instruction to apologize, after a first wrong assertion caught
+that distinction, see Failed below — result-grounded template present,
+markdown/id-narration ban present, the real three-dot convention
+present, the preserved highlight/navigate confirmation requirement
+present, no-fake-human-claims present, persona framing present). Real
+model output can't be unit-tested; interruption handling already had 7
+dedicated tests in `vad.test.ts` from earlier this session, not
+duplicated here. Full `packages/sdk` suite: 472/472. Full-repo
+typecheck clean.
+
+**Pending:** not live-verified against a real voice call — this repo's
+Browser-pane tooling has no microphone simulation, so this is verified
+by test suite + code review, not a live session (same honesty
+discipline as the checkpointing work above). Token-level LLM streaming
+into TTS was investigated and deliberately NOT implemented: `resolveVerb`
+requires a structured tool-call response (the verb schema, target
+resolution, capability/registered-action validation the user explicitly
+said not to weaken) — streaming that would mean parsing PARTIAL tool-
+call JSON mid-generation, a real risk to the validated-action guarantee
+for a latency win the existing ACK_PHRASES mechanism (spoken instantly
+on multi-step detection, before the real work starts) already covers
+without that risk. Deepgram Flux migration (STT and/or TTS) remains a
+real, separately-scoped option. `npm publish` for sdk 0.4.12.
+
+**Failed:** the first version of the "no apology-heavy phrasing" test
+asserted the addendum never contains the string "I apologize" at all —
+wrong: the addendum quotes it as the explicit banned example ("never
+'I apologize, but...'"), the same contrastive teaching style the rest
+of the prompt uses throughout. Caught immediately by the test itself
+failing, fixed to assert the correct framing (introduced by "never,"
+not offered as guidance) before this was reported as done.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
