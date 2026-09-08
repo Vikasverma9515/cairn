@@ -54,8 +54,8 @@ directly for the most precise result, or crawling any other framework's
 running app), and run (`<Copilot/>` for React, or the framework-agnostic
 `<cairn-widget>` for Vue, Angular, Svelte, even a plain static HTML page)
 are all live-verified, not just planned — including live LLM calls
-(Anthropic or Groq) and live voice (Deepgram STT/TTS), identical either
-way. Next.js gets the deeper, AST-based analysis; everything else gets
+(Anthropic, Groq, or Gemini) and live voice (Deepgram STT/TTS), identical
+either way. Next.js gets the deeper, AST-based analysis; everything else gets
 the same real runtime via a headless-browser crawl instead of a source
 read. See [ROADMAP.md](./ROADMAP.md) for what's actually left (mostly
 open-source polish at this point) and [DEVELOPMENT.md](./DEVELOPMENT.md)
@@ -224,10 +224,10 @@ plain explanation — it never guesses and clicks the wrong thing.
 npm install
 npm run build -w @cairnvibe/indexer -w @cairnvibe/sdk   # compiles the cairn CLI + sdk's server/CLI entry points — needed once
 npm install                                     # re-run once so npm links the `cairn`/`cairn-realtime` bins now that dist/ exists
-cp .env.example .env                            # fill in ANTHROPIC_API_KEY or GROQ_API_KEYS (see .env.example)
+cp .env.example .env                            # fill in ANTHROPIC_API_KEY, GROQ_API_KEYS, or GEMINI_API_KEY (see .env.example)
 
 npx cairn build ./examples/demo-app             # writes examples/demo-app/.cairn/ui-manifest.json
-npx cairn build ./examples/demo-app --provider groq   # or use Groq instead
+npx cairn build ./examples/demo-app --provider groq   # or --provider gemini
 
 npm run dev -w demo-app                         # or: cd examples/demo-app && npm run dev
 # (npm run dev also auto-builds the manifest via predev if it's missing)
@@ -276,7 +276,7 @@ import { createCopilotHandler } from "@cairnvibe/sdk/server";
 import manifest from "../../../.cairn/ui-manifest.json";
 
 const handler = createCopilotHandler(manifest, {
-  provider: "groq", // or "anthropic" (default)
+  provider: "groq", // or "anthropic" (default) or "gemini"
   registeredActions: ["archiveInvoice"],
 });
 
