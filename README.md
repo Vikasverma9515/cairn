@@ -336,6 +336,11 @@ doesn't handle yet (client-side-only routing with no real `<a href>`).
 npx cairn-realtime --port 3010   # its own long-lived process alongside `next dev`
 ```
 
+- **Sounds like a coworker, not a script** — a dedicated conversational
+  layer governs pacing, word count, natural acknowledgments, honest
+  uncertainty, and speech-safe punctuation, on top of the same verified
+  Planner → Executor → Critic loop, not instead of it (`VOICE_CONVERSATION_ADDENDUM`
+  in `packages/sdk/src/realtime-server.ts`).
 - **Streaming, not buffered** — audio starts in ~1–1.5s over a persistent
   WebSocket, not a 5–10s wait for a full clip.
 - **Barge-in** — talk over the agent and it stops immediately.
