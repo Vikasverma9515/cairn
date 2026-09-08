@@ -220,6 +220,72 @@ describe("handleDeepgramMessage", () => {
     expect(finals).toEqual([{ type: "final", text: "hello", generation: 0 }]);
   });
 
+  // Real, live-reported bug: "error" was the one turn-scoped message type
+  // with no generation field at all, so a client couldn't tell a stale
+  // turn's failure apart from the current one — see the ServerMessage
+  // union's own doc comment for the full "wrong answer next to a later
+  // question" failure mode this closes, and index.tsx's matching
+  // isStaleRtMessage guard on the client side.
+  it("checkpointing gap fix: an unexpected failure OUTSIDE resolveVerb's own try/catch (a throwing getContext, not a rejected LLM call — resolveVerb already turns THAT into a normal fallback 'explain' verb, never an exception) sends an 'error' carrying the SAME generation as this turn's own 'final'", async () => {
+    const { client, sent } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "never reached — getContext throws first" });
+    const deps = fakeDeps(respond);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const throwingGetContext = () => {
+      throw new Error("something genuinely unexpected");
+    };
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the acme invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      throwingGetContext,
+      async () => {},
+      history,
+      turnState,
+      () => 3, // this turn's own generation, stable — nothing superseded it
+      neverCalledWaitForToolResult,
+    );
+
+    const finals = sent.filter((m: any) => m.type === "final");
+    const errors = sent.filter((m: any) => m.type === "error");
+    expect(finals).toEqual([{ type: "final", text: "archive the acme invoice", generation: 3 }]);
+    expect(errors).toEqual([{ type: "error", message: "Something went wrong answering that — try again.", generation: 3 }]);
+  });
+
+  it("checkpointing gap fix: an unexpected failure for a turn a LATER one already superseded sends no error at all — the exact stale-answer case the generation field exists to prevent", async () => {
+    const { client, sent } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "never reached — getContext throws first" });
+    const deps = fakeDeps(respond);
+    const history: HistoryTurn[] = [];
+    const turnState = { buffer: "" };
+    const throwingGetContext = () => {
+      throw new Error("something genuinely unexpected");
+    };
+    // myGeneration is captured once, at the start of this turn (returns 3
+    // the first time); by the time the failed call's catch block checks
+    // again, a later turn has already bumped the real generation to 4 —
+    // simulated here by returning 4 on every call after the first.
+    let calls = 0;
+    const getGeneration = () => (calls++ === 0 ? 3 : 4);
+
+    await handleDeepgramMessage(
+      resultsMessage("archive the acme invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      throwingGetContext,
+      async () => {},
+      history,
+      turnState,
+      getGeneration,
+      neverCalledWaitForToolResult,
+    );
+
+    const errors = sent.filter((m: any) => m.type === "error");
+    expect(errors).toEqual([]);
+  });
+
   // Phase 5 — recordMemoryTurn is called with the same real (role, text)
   // pairs history.push already records, right alongside it.
   it("Phase 5: recordMemoryTurn is called with the real user question and the real assistant answer for a terminal turn", async () => {

@@ -180,7 +180,7 @@ export function Copilot({
   // stay visible — scrolled up, not gone — instead of the old behavior of
   // silently overwriting `answer`/`caption` with nothing left to look back
   // at once the next question began.
-  const [transcript, setTranscript] = useState<{ id: number; role: "user" | "agent"; text: string }[]>([]);
+  const [transcript, setTranscript] = useState<{ id: number; role: "user" | "agent"; text: string; generation?: number }[]>([]);
   const transcriptIdRef = useRef(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Mirror the values archiveCurrentExchange needs to read from inside
@@ -190,6 +190,23 @@ export function Copilot({
   // rtStateRef instead of reading state).
   const userCaptionRef = useRef<string>("");
   const answerRef = useRef<string | null>(null);
+  /**
+   * Real, live-reported bug this closes: a fast back-and-forth voice
+   * conversation could show one question's answer displayed next to a
+   * LATER, unrelated question — or lose an answer entirely — because the
+   * live `caption`/`answer` pair was archived (or overwritten) purely on
+   * "a new 'final' arrived," with no way to tell whether the CURRENT
+   * `answer` state actually belonged to the CURRENT `caption` or was a
+   * slow-arriving reply to an OLDER question that just hadn't landed yet.
+   * This tracks which turn's own server-assigned generation the currently
+   * DISPLAYED caption/answer pair actually belongs to — set the instant a
+   * new "final" arrives (before caption is even updated), so a reply that
+   * shows up late for an OLDER generation can be told apart from the
+   * genuinely current one and placed back where it actually belongs
+   * (see the "final"/"verb" handlers below) instead of either overwriting
+   * the wrong exchange or vanishing.
+   */
+  const rtLiveGenerationRef = useRef<number | null>(null);
   const [rtMicMuted, setRtMicMuted] = useState(false);
   const [rtSpeakerMuted, setRtSpeakerMuted] = useState(false);
   // Set while a "tour" verb's steps are being narrated/highlighted one at a
@@ -500,14 +517,48 @@ export function Copilot({
    * text becomes a fixed history entry the instant the incoming one starts
    * replacing it, instead of just vanishing.
    */
-  function archiveText(role: "user" | "agent", text: string) {
+  function archiveText(role: "user" | "agent", text: string, generation?: number) {
     if (!text) return;
-    setTranscript((prev) => [...prev, { id: transcriptIdRef.current++, role, text }]);
+    setTranscript((prev) => [...prev, { id: transcriptIdRef.current++, role, text, generation }]);
   }
 
-  function archiveCurrentExchange() {
-    archiveText("user", userCaptionRef.current);
-    archiveText("agent", answerRef.current ?? "");
+  /** `generation` tags the OUTGOING exchange with the turn it actually
+   * belonged to (rtLiveGenerationRef.current, read BEFORE the caller
+   * updates it for the incoming turn) — undefined for the typed/
+   * recording paths, which never set that ref and don't have this race. */
+  function archiveCurrentExchange(generation?: number) {
+    archiveText("user", userCaptionRef.current, generation);
+    archiveText("agent", answerRef.current ?? "", generation);
+  }
+
+  /**
+   * The other half of the fix rtLiveGenerationRef exists for: a reply
+   * that arrives for a generation OLDER than the one currently live —
+   * its own question has therefore already been archived (a newer
+   * "final" beat it there) — no longer gets silently dropped or shown
+   * against the wrong, newer question. Finds that question's own
+   * archived entry by generation and inserts the real answer directly
+   * after it, exactly where it chronologically belongs, instead of
+   * either overwriting whatever's currently live or vanishing. A no-op
+   * (falls through to the caller's own fallback) if no matching
+   * question is found — a defensive case, not expected in practice.
+   */
+  function insertArchivedAnswer(generation: number, text: string): boolean {
+    if (!text) return false;
+    let inserted = false;
+    setTranscript((prev) => {
+      const idx = prev.findIndex((e) => e.generation === generation && e.role === "user");
+      if (idx === -1) return prev;
+      // Don't insert a second answer for a question that already has one —
+      // a genuine duplicate delivery (a reconnect, a retried send) should
+      // never show the same exchange's answer twice.
+      const alreadyAnswered = prev[idx + 1]?.generation === generation && prev[idx + 1]?.role === "agent";
+      if (alreadyAnswered) return prev;
+      inserted = true;
+      const entry = { id: transcriptIdRef.current++, role: "agent" as const, text, generation };
+      return [...prev.slice(0, idx + 1), entry, ...prev.slice(idx + 1)];
+    });
+    return inserted;
   }
 
   function setRtStatus(next: Status) {
@@ -1343,6 +1394,42 @@ export function Copilot({
     setAnswer(null);
     setCaption("");
     setRtStatus("rt-connecting");
+    // A fresh connection has no prior turn's generation to speak of —
+    // without this, a lingering value from an EARLIER call (ended and
+    // restarted) could tag this call's first archived exchange with an
+    // unrelated old generation number.
+    rtLiveGenerationRef.current = null;
+
+    /**
+     * Real, live-reported bug this pair closes: `userCaptionRef.current`/
+     * `answerRef.current` used to be kept in sync purely via a `useEffect`
+     * watching `userCaption`/`answer` — which only runs AFTER a render
+     * commits. Two realtime WS messages arriving close enough together
+     * that React never gets a render in between (confirmed live: two
+     * "final" transcripts dispatched back to back, with no delay, is
+     * enough on its own) means the SECOND one's `archiveCurrentExchange()`
+     * reads a ref that's still one full turn behind — archiving with an
+     * effectively empty caption (archiveText silently skips empty text),
+     * so that turn's own question, and any answer that later tries to
+     * attach to it, vanishes from the transcript entirely rather than
+     * merely being mis-paired. These wrappers make the ref the real,
+     * synchronously-updated source of truth for exactly the realtime
+     * turn flow (every setCaption/setAnswer call inside this function,
+     * including ws.onmessage below) — the React state update alongside it
+     * is still what drives the actual re-render, this only removes the
+     * one-effect-cycle lag `archiveCurrentExchange` could ever observe.
+     * Scoped to realtime specifically — the typed/tour paths call
+     * setCaption/setAnswer directly and are never subject to this exact
+     * race (no concurrent, unpaced WS messages involved there).
+     */
+    function setRtCaption(text: string) {
+      userCaptionRef.current = text;
+      setCaption(text);
+    }
+    function setRtAnswer(text: string | null) {
+      answerRef.current = text;
+      setAnswer(text);
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1502,7 +1589,7 @@ export function Copilot({
         void audioCtx.resume().catch(() => {}); // don't wait up to 2s for the periodic health check if the browser already suspended capture
         micAudioSentSinceListeningRef.current = false;
         setRtStatus("rt-listening");
-        setCaption("");
+        setRtCaption("");
         void sendFreshContext(); // refresh before the user starts talking again, not after
       }
 
@@ -1538,7 +1625,7 @@ export function Copilot({
           // nothing: no reply, no error, just a silent reset back to
           // "Listening…" that reads as "it heard me and did nothing." A
           // real, live-found gap, not just a console.warn nobody sees.
-          setAnswer("That's taking longer than expected — try asking again.");
+          setRtAnswer("That's taking longer than expected — try asking again.");
         }, 20000);
       }
 
@@ -1627,12 +1714,17 @@ export function Copilot({
         if (typeof event.data !== "string") return; // audio now arrives as base64 inside audio_chunk, not raw binary frames
         const msg = JSON.parse(event.data);
         if (msg.type === "interim") {
-          setCaption(msg.text);
+          setRtCaption(msg.text);
         } else if (msg.type === "final") {
           rtLog("final transcript", { text: msg.text, generation: msg.generation });
           rtLastFinalGenerationRef.current = typeof msg.generation === "number" ? msg.generation : 0;
-          archiveCurrentExchange(); // the previous turn's pair is complete — move it into history before this one starts overwriting caption/answer
-          setCaption(msg.text);
+          // Tag the OUTGOING exchange with the generation it actually
+          // belonged to (read BEFORE overwriting it below) — this is what
+          // lets a same-generation reply that arrives late find its real
+          // question again instead of showing up next to this NEW one.
+          archiveCurrentExchange(rtLiveGenerationRef.current ?? undefined);
+          rtLiveGenerationRef.current = typeof msg.generation === "number" ? msg.generation : null;
+          setRtCaption(msg.text);
           // Without this, `answer` still held the PREVIOUS turn's reply
           // text at the moment this new turn's own reply — if it ever
           // arrives — would overwrite it. Usually invisible (the previous
@@ -1648,13 +1740,32 @@ export function Copilot({
           // here means an abandoned turn now correctly archives with NO
           // reply bubble (archiveText skips empty text) instead of someone
           // else's.
-          setAnswer(null);
+          setRtAnswer(null);
           setRtStatus("rt-thinking");
           armThinkingWatchdog();
         } else if (msg.type === "verb") {
-          if (isStaleRtMessage(msg)) return; // belongs to a turn a later "final" already superseded
-          rtLog("verb received", { verb: msg.verb?.verb, generation: msg.generation });
           const parsedStep = safeParseVerbResponse(msg.verb);
+          if (isStaleRtMessage(msg)) {
+            // Real, live-reported bug this closes: previously just
+            // `return`ing here either silently lost this turn's real
+            // answer, or — if `answer` state hadn't been cleared since an
+            // even OLDER turn — let a stale reply sit there and get
+            // archived alongside a later, unrelated question on the NEXT
+            // final. A terminal verb's real text was always going to
+            // become a visible reply; recover it into the transcript
+            // slot it actually belongs to (right after its own archived
+            // question — see insertArchivedAnswer) instead of dropping it
+            // or misattributing it. A CONTINUING step has no such text
+            // worth recovering (internal progress, not a real answer) and
+            // is still just dropped here, same as every other stale
+            // message type below.
+            if (parsedStep && isTerminalVerb(parsedStep) && typeof msg.generation === "number") {
+              const staleText = "text" in parsedStep ? parsedStep.text : undefined;
+              if (staleText) insertArchivedAnswer(msg.generation, staleText);
+            }
+            return;
+          }
+          rtLog("verb received", { verb: msg.verb?.verb, generation: msg.generation });
           if (parsedStep && !isTerminalVerb(parsedStep)) {
             // A continuing agent-loop step (click/fill/read/call_tool) —
             // the turn isn't over: execute it for real and report the
@@ -1665,7 +1776,7 @@ export function Copilot({
             // reads as visible progress, not a silent pause; never spoken
             // — the server's loop stays quiet between steps on purpose,
             // to keep it fast.
-            setAnswer(summarizeVerbForHistory(msg.verb));
+            setRtAnswer(summarizeVerbForHistory(msg.verb));
             setLoopWorking(true);
             // Real, live-found bug: armThinkingWatchdog() only ever fired
             // once, on the turn's own "final" message, giving the WHOLE
@@ -1761,13 +1872,30 @@ export function Copilot({
           rtAudioDoneArrivingRef.current = true;
           maybeResumeListening();
         } else if (msg.type === "error") {
+          // Real, live-reported bug this closes: every OTHER turn-scoped
+          // message type (verb/speaking_start/audio_chunk/speaking_end/
+          // turn_complete) already drops a stale one via isStaleRtMessage
+          // — "error" was the one type that never did. A late failure for
+          // a turn the user had already moved past (a rate-limited LLM
+          // call, most commonly) unconditionally overwrote whatever the
+          // CURRENT turn was showing — "Something went wrong on my end"
+          // landing next to a later, unrelated question, or a real
+          // in-progress caption/answer getting wiped by a failure that
+          // belonged to an earlier question entirely. Server now attaches
+          // `generation` to every TURN-scoped error (realtime-server.ts);
+          // a connection-level failure (Deepgram's own socket dying, a
+          // malformed message) still carries none and is deliberately
+          // never dropped here — isStaleRtMessage only ever treats an
+          // ABSENT generation as current, exactly the pre-existing
+          // semantics every other handler below already relies on.
+          if (isStaleRtMessage(msg)) return;
           rtLog("server error", { message: msg.message });
           // Must actually unstick the turn, not just show the message —
           // otherwise the mic never resumes and the session is stuck
           // exactly the way a silently-dropped response used to leave it.
           disarmThinkingWatchdog();
           setLoopWorking(false);
-          setAnswer(msg.message ?? "Something went wrong.");
+          setRtAnswer(msg.message ?? "Something went wrong.");
           if (touringRef.current) {
             // A tour step's own speakStreamed() failed server-side (see
             // realtime-server.ts's "speak" handler). Without resolving this
@@ -1780,14 +1908,14 @@ export function Copilot({
             rtTourAudioDoneRef.current = null;
           } else {
             setRtStatus("rt-listening");
-            setCaption("");
+            setRtCaption("");
           }
         }
       };
 
       ws.onerror = () => {
         rtLog("connection error");
-        setAnswer("Couldn't connect to the realtime voice service.");
+        setRtAnswer("Couldn't connect to the realtime voice service.");
         endRealtime();
       };
       ws.onclose = (closeEvent) => {
@@ -1795,7 +1923,7 @@ export function Copilot({
         if (rtStateRef.current !== "idle") endRealtime();
       };
     } catch {
-      setAnswer("Couldn't access the microphone — check your browser's permission for this site.");
+      setRtAnswer("Couldn't access the microphone — check your browser's permission for this site.");
       setRtStatus("idle");
       rtStartingRef.current = false;
       typedPlaybackSuspendedRef.current = false; // the call never actually started — don't leave typed replies permanently silenced

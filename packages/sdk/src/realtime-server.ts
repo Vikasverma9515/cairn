@@ -226,7 +226,25 @@ type ServerMessage =
    * case) — mainly so packages/evals' voiceFrames capture has something
    * readable to grade the Talker's persona against. */
   | { type: "ack"; text: string }
-  | { type: "error"; message: string };
+  /**
+   * `generation` here is OPTIONAL, unlike every turn-scoped message type
+   * above — deliberately: a connection-level failure (Deepgram's STT
+   * socket dying, a malformed message crashing the handler) isn't about
+   * any one turn and must always reach the client regardless of what
+   * generation is current. A TURN-scoped failure (this turn's own LLM/
+   * TTS call throwing, a tour step's narration failing) DOES carry one,
+   * for the exact same reason every other turn-scoped type does — see
+   * the doc comment above. Real, live-found gap this closes: this was
+   * the one message type with no generation field at all, so a stale
+   * turn's error (a rate-limited/failed LLM call for a question the
+   * user had already moved past) always got through and overwrote
+   * whatever the CURRENT turn was showing — "Something went wrong on my
+   * end" landing next to a later, unrelated question, or wiping out
+   * live progress — the identical failure MODE the doc comment above
+   * already named, just through the one message type that was never
+   * covered.
+   */
+  | { type: "error"; message: string; generation?: number };
 
 // seedHistoryFromMemory/formatRememberedFacts moved to memory-sqlite.ts
 // (Phase 5 step 4) — the SAME shared, storage-agnostic logic both the
@@ -696,9 +714,10 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
         // found live as a tour that goes badly quiet for stretches at a
         // time. A real "error" message lets the client's tour-step handler
         // (index.tsx's ws.onmessage) unstick itself immediately instead.
+        const tourStepGeneration = generation;
         speakStreamed(msg.text).catch((err) => {
           console.error("[cairn realtime] speakStreamed failed for a tour step:", err);
-          safeSend(client, { type: "error", message: "Something went wrong narrating that step." });
+          safeSend(client, { type: "error", message: "Something went wrong narrating that step.", generation: tourStepGeneration });
         });
       }
     } catch {
@@ -1211,7 +1230,7 @@ async function finalizeTurn(
   } catch (err) {
     console.error("[cairn realtime] failed to resolve/speak this turn:", err);
     if (myGeneration === getGeneration()) {
-      safeSend(client, { type: "error", message: "Something went wrong answering that — try again." });
+      safeSend(client, { type: "error", message: "Something went wrong answering that — try again.", generation: myGeneration });
       safeSend(client, { type: "turn_complete", generation: myGeneration });
     }
   }
