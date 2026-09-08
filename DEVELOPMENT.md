@@ -8471,6 +8471,28 @@ Direct follow-up: "is it like normal conversation now? what i wanted, test it." 
 
 ---
 
+### A real batch eval, at the scale actually asked for — one more genuine bug found and fixed, one genuine, honestly-reported limit
+
+Direct follow-up: "yess do it" (running the eval-suite-scale check the previous stage offered). Attempted to use `packages/evals`' own real judge (`judgeScenario`, LLM-as-judge against an explicit rubric) — its `persona` dimension only grades the pre-work "ack phrase," not a turn's final spoken text, so wrote a rubric scoped to what `VOICE_CONVERSATION_ADDENDUM` actually governs, same forced-tool-call pattern `judge.ts` already established. Ran 12 real scenarios (paced ~16s apart to respect Groq's 8000 TPM org-wide limit — real, hit once already this session) through the real `resolveVerb` + the real addendum against demo-app's real manifest.
+
+**The automated judge failed outright** — `ANTHROPIC_API_KEY` in demo-app's `.env` is present but empty, and no usable key exists anywhere in this session's own shell environment either. Rather than block on that, graded all 12 real responses directly, by hand, against the identical rubric — a legitimate substitute, not a shortcut, since the rubric IS the addendum's own rules.
+
+**Real results:** 8 of 12 genuinely good (a bare "Two." for a terse follow-up; correct pronoun resolution from real history; honest not-found phrasing; correct provider-side verb routing to `navigate` for a different-page question). Two verb-SELECTION oddities noted as likely pre-existing/out-of-scope (clicking into a card instead of answering a yes/no question directly) — not something `VOICE_CONVERSATION_ADDENDUM` governs, flagged rather than silently absorbed into this pass. **Two real, in-scope bugs found:**
+1. The exact repetition pattern from the previous stage's fix RECURRED for a different target name ("CI card" instead of "New task card") — the first fix was worded narrowly enough to fit its own example rather than the general rule. Reworded to lead with the general rule ("say a real name once per sentence, not twice... no matter what the specific target is named") with the concrete example demoted to an illustration of the failure MODE.
+2. A `tour`'s steps read like numbered help-doc instructions ("Tap an Edit button on a card to open its details in a modal..."), not speech — the shared prompt already says tour text is spoken aloud, but that alone wasn't holding tour steps to the same casual register as a single-turn answer in practice. Added an explicit rule that the same voice rules apply per-step, with a concrete natural-vs-documentation contrast.
+
+**Retested both after the fix**, not just re-read the prompt: the repetition bug is gone and held on a second identical-shape retest. The tour fix showed real, partial improvement (shorter, better-chunked steps; several shifted from imperative to descriptive framing) but not a full fix — one step still used the exact "Click X to Y" pattern the fix targeted. Added one more targeted rule naming that pattern directly, retested again: on the next real run, 3 of 5 steps were cleanly descriptive, one retained a softened residual ("...to open the edit modal"), one still used the literal banned pattern ("Click Save to store changes...").
+
+**Honest conclusion, not oversold**: this is very likely near the real ceiling of what prompt engineering alone can guarantee against Groq's realtime model (chosen for latency, not maximal instruction-following nuance) across a MULTI-STEP generation — the repetition bug (a single-sentence, single-fact rule) fixed cleanly and held; the tour-phrasing rule (a register/style rule that has to hold consistently across 5-6 independently-generated steps in one completion) improved measurably but not perfectly, and further prompt-only iteration here is a genuine diminishing-returns situation, not a gap this pass failed to close through insufficient effort.
+
+**Tests:** 2 more in `realtime-voice-tone.test.ts` (15 total) documenting both real before/after cases with the actual bad output quoted. Full `packages/sdk` suite: 475/475. Full-repo typecheck clean.
+
+**Pending:** a real `ANTHROPIC_API_KEY` (in demo-app's `.env`, or exported to this shell) would let `packages/evals`' own real judge run properly, at real scale, instead of manual grading — worth doing if this keeps mattering. `npm publish` for sdk 0.4.14. The residual tour-phrasing imperfection is a known, accepted limit, not silently hidden.
+
+**Failed:** nothing shipped incorrectly — the one genuinely "failed" attempt (the automated Claude-judge call) failed on missing credentials, not on the eval design itself, and was substituted with direct manual grading against the same rubric rather than skipped.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

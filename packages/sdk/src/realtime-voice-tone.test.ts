@@ -72,16 +72,52 @@ describe("VOICE_CONVERSATION_ADDENDUM", () => {
     expect(VOICE_CONVERSATION_ADDENDUM.toLowerCase()).toContain("avoid all caps");
   });
 
-  it("bans restating a target's name/description twice in one sentence — a real, live-caught repetition bug", () => {
-    // Live-verified gap: a real Groq call against demo-app's actual
-    // manifest produced "The Edit button for the New task card is the
-    // button labeled Edit on the New task card in the Todo column" for a
-    // highlight response — the exact double-restatement this rule bans.
-    // Re-run after this fix landed: "Highlighting the Edit button for
-    // the New task card" (8 words, no repetition).
+  it("bans restating a target's name twice in one sentence, generalized to ANY target — a real, live-caught repetition bug that recurred once with a narrower fix", () => {
+    // First live-caught instance: "The Edit button for the New task card
+    // is the button labeled Edit on the New task card in the Todo
+    // column." Fixed with a rule anchored to that one example. A second,
+    // broader live batch caught the IDENTICAL failure shape recur for a
+    // DIFFERENT target: "The Edit button for the CI card is the Edit
+    // button in the In Progress column, right next to the CI card" — the
+    // first fix was too narrowly worded to generalize past its own
+    // example. Reworded here to lead with the general rule ("say a real
+    // name once per sentence, not twice... no matter what the specific
+    // target is named") and keep the concrete example as illustration of
+    // the failure MODE, not the only case it applies to.
     const lower = VOICE_CONVERSATION_ADDENDUM.toLowerCase();
-    expect(lower).toContain("say the target's real name or location once");
-    expect(VOICE_CONVERSATION_ADDENDUM).toContain("It's on the New task card in Todo");
+    expect(lower).toContain("say a real name once per sentence, not twice");
+    expect(lower).toContain("no matter what the specific target is named");
+    expect(VOICE_CONVERSATION_ADDENDUM).toContain("CI card"); // the real, second live-caught example is present, not just the rule
+  });
+
+  it("requires tour steps to sound like a person pointing at their own screen, not documentation — a second real gap from the same live batch", () => {
+    // Live-caught: "what can I do here" produced a real tour whose steps
+    // read like a numbered help-doc ("Tap an Edit button on a card to
+    // open its details in a modal. In the modal, update the title or
+    // description in the text field. Press Save to apply changes or
+    // Close to discard them.") — grammatically fine, but nothing a
+    // person would actually say out loud mid-conversation. The shared
+    // (non-voice-specific) prompt already says tour step text is spoken
+    // aloud, but that alone wasn't enough to keep tour steps as casual
+    // as a single-turn answer in practice.
+    const lower = VOICE_CONVERSATION_ADDENDUM.toLowerCase();
+    expect(lower).toContain('a "tour" verb\'s steps are read aloud one at a time');
+    expect(lower).toContain("not a numbered instruction manual being read out loud");
+    expect(lower).toContain("keep every step just as short as a single-turn answer would be");
+  });
+
+  it("bans 'Tap X to Y'/'Press X to Y' command-manual phrasing — the residual gap a retest found after the first tour fix only shortened steps without changing their style", () => {
+    // Re-run after the first tour fix (above): steps got real-world
+    // shorter and better-chunked ("Tap Add to create a new card in this
+    // column." / "Press Save to apply the changes.") but every single
+    // one still used imperative "Tap X to Y" / "Press X to Y" phrasing —
+    // genuinely closer to a help doc's command list than to a person
+    // describing their own screen, even at the right length. This rule
+    // names that exact pattern directly rather than relying on "sound
+    // natural" alone to shift it.
+    const lower = VOICE_CONVERSATION_ADDENDUM.toLowerCase();
+    expect(lower).toContain('"tap x to y" / "press x to y" / "click x to y"');
+    expect(lower).toContain("describe what's there instead of instructing an action to take");
   });
 
   it("still requires a short spoken confirmation for highlight/open/navigate/do — preserved from the addendum this replaced", () => {
