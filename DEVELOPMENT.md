@@ -8134,6 +8134,112 @@ already correct; only its reachability under scroll was broken.
 
 ---
 
+### Real dialog/modal awareness — closing the "agent gets confused by popups" gap, general to any platform
+
+Direct ask, following a research pass on VOXERA's own reported gaps
+(unclear page structure, popup confusion, no cross-session memory,
+"doesn't feel human"): "make sure you make all the changes in cairn...
+it should be able to understand any platform... continue and fix
+everything one by one." First of the four: modal/dialog awareness — the
+smallest, most isolated fix, and the one the research pass identified as
+the concrete, checkable root cause of "gets confused" (not a vague UX
+complaint — confirmed by grep that zero modal detection existed anywhere
+in the codebase before this).
+
+**Built**, general to `@cairnvibe/core`/`sdk`, not VOXERA-specific:
+1. **`OpenDialogSchema`** (`packages/core/src/index.ts`) — `{label, modal}`,
+   added to `CopilotRequestSchema` as `openDialog`.
+2. **Detection** (`packages/sdk/src/runtime-scan.ts`) — `findOpenDialog`
+   looks for the real ARIA markers virtually every modal implementation
+   sets (`role="dialog"`/`role="alertdialog"`/`aria-modal="true"`) —
+   custom-built or a component library (Radix, Headless UI, MUI,
+   Bootstrap all set these), never a guess at a CSS class or z-index.
+   `labelForDialog` resolves a name via aria-labelledby → aria-label →
+   the dialog's own first heading → "Dialog", the same priority order a
+   screen reader would use. When `aria-modal="true"` (a REAL modal,
+   background genuinely inert), `scanInteractiveElements` SCOPES the
+   whole scan to just the dialog's own subtree — background elements are
+   excluded entirely, not just deprioritized, since the user genuinely
+   cannot reach them right now. A bare `role="dialog"` with no
+   `aria-modal` (present but non-blocking, rare but ARIA-valid) is still
+   reported, just without narrowing the scan.
+3. **Threaded through both transports**: the typed/HTTP request body
+   (`index.tsx`'s `ask()`), the realtime relay's "context" WS message
+   (`sendFreshContext`) and its server-side parsing/`getContext()`
+   (`realtime-server.ts`), and `resolveVerb`'s input type (`server.ts`) —
+   auto-flows into the LLM's `userMessage` via the existing `...restInput`
+   spread, no new per-call-site wiring needed there.
+4. **System prompt updated** (`buildSystemPrompt`) to explain the new
+   field: when a modal is open, say so plainly instead of treating new
+   `liveElements` as an unexplained page change, and don't expect
+   anything from the page behind it until the dialog closes. Also fixed
+   a stale "three things" count in the same paragraph (five, then six,
+   fields were already listed) while touching this text.
+
+**A real bug caught by LIVE testing, not the test suite** (the exact
+kind of thing this session's "read something concrete" discipline exists
+for): the Cairn widget's OWN panel carries `role="dialog"` too — correct
+accessibility markup for a floating chat panel, added earlier this
+session. Without an exclusion, the widget is open almost the entire time
+a user is actually talking to it, so `findOpenDialog` picked the
+widget's own panel over (or on top of) a real host-app dialog nearly
+every time — confirmed live via `document.querySelectorAll('[role=
+"dialog"], [aria-modal="true"]')` in the browser returning BOTH the demo
+app's real edit-card dialog AND `.cairn-panel`. Fixed with a
+`.closest(".cairn-panel")` exclusion in `findOpenDialog`, with two new
+regression tests (widget panel alone → `openDialog: null`; a real host
+dialog detected correctly even with the widget panel open at the same
+time, DOM-ordered last to prove the exclusion isn't accidental).
+
+Also fixed, found while building a live test case: demo-app's own
+`CardModal.tsx` had ZERO ARIA markup (`data-ai="board-modal"` only) — a
+real, honest limitation surfaced by trying to verify this feature
+end-to-end: the detection only works when a host app's modal follows the
+ARIA contract, and demo-app's own hand-rolled one didn't. Added
+`role="dialog"` `aria-modal="true"` `aria-labelledby="board-modal-title"`
+— a legitimate accessibility fix on its own, and what made real
+end-to-end verification possible.
+
+**Tests:** 9 new tests in `runtime-scan.test.ts` (no-dialog → null,
+real modal scopes the scan and excludes background, non-modal dialog
+reported without narrowing, three label-priority cases, a plain button
+never misidentified — the exact regression the fake `querySelectorAll`
+stub's own prior bug caused, see below — plus the two widget-panel-
+exclusion tests above). Also fixed a real gap in the test double itself:
+`withFakeDom`'s fake `document.querySelectorAll` used to discriminate
+only `"*"` vs "everything else" via one generic semantic-ish filter — a
+plain `<button>` fixture matched that generic filter and got
+misidentified as a dialog the instant `DIALOG_SELECTOR` existed,
+crashing 6 pre-existing tests. Fixed to discriminate by what each
+selector would ACTUALLY match in a real browser. Full `packages/sdk`
+suite: 446/446. Full-repo `npm run typecheck` clean.
+
+**Live-verified end to end**, not just unit-tested: opened demo-app's
+real edit-card modal, asked the widget "what is this popup and what can
+I click in it" with the widget's own panel open at the same time, and
+got back: *"The popup is the edit-card dialog that appears when you
+click a card's Edit button. Inside it you can click the Save button to
+apply any changes you made, or the Close button to dismiss the dialog
+without saving."* — correctly scoped to ONLY the dialog's real contents
+(Save/Close), zero mention of unrelated board elements (Move to
+dropdowns, nav links) sitting behind it. This is the actual, concrete
+fix for "gets confused" by a popup, proven against a real running app,
+not asserted.
+
+**Pending:** `npm publish` for core 0.1.9 and sdk 0.4.9 needs the same
+explicit confirmation every prior publish this session has. Three more
+items from the same research pass remain: cross-session/task-state
+memory (checkpointing what was pending across an interruption), a
+conversational-tone pass, and confirming whether VOXERA's own deployment
+has memory turned on at all (`CAIRN_MEMORY_DB_PATH` unset means it
+isn't, regardless of anything built here).
+
+**Failed:** nothing shipped incorrectly — both real bugs above (the
+widget-panel misidentification, the fake-DOM test-stub gap) were caught
+and fixed before this was reported as done, not after.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

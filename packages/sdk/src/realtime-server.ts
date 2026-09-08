@@ -27,7 +27,7 @@
 
 import http from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import { classifyUiPattern, deriveStructureSignals, type AgentEvent, type HistoryTurn, type LiveElement, type Manifest, type Plan, type ProgressLedger, type VerbResponse, type WebMcpTool } from "@cairnvibe/core";
+import { classifyUiPattern, deriveStructureSignals, type AgentEvent, type HistoryTurn, type LiveElement, type Manifest, type OpenDialog, type Plan, type ProgressLedger, type VerbResponse, type WebMcpTool } from "@cairnvibe/core";
 import { driveAgentLoop, looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import {
   buildSystemPrompt,
@@ -340,11 +340,12 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
   // sends one on route changes and each time it's about to start listening
   // again), so a live scan from several turns ago never lingers into a
   // later one.
-  let context: { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[] } = {
+  let context: { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[]; openDialog: OpenDialog | null } = {
     route: "/",
     visible: [],
     liveElements: [],
     webMcpTools: [],
+    openDialog: null,
   };
   // Unlike the stateless HTTP path (which needs the client to resend
   // history every request), a realtime connection is already stateful —
@@ -571,6 +572,7 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
           visible: Array.isArray(msg.visible) ? msg.visible : [],
           liveElements: parseLiveElements(msg.liveElements),
           webMcpTools: parseWebMcpTools(msg.webMcpTools),
+          openDialog: parseOpenDialog(msg.openDialog),
         };
         // Phase 5 — `scopeId` is whatever opaque id the CUSTOMER's own
         // client code chooses to send (their own end-user id if they have
@@ -649,7 +651,7 @@ export async function handleDeepgramMessage(
   raw: string,
   client: WebSocket,
   deps: ConnectionDeps,
-  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[] },
+  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[]; openDialog?: OpenDialog | null },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
   turnState: { buffer: string },
@@ -767,7 +769,7 @@ async function finalizeTurn(
   turnState: { buffer: string },
   client: WebSocket,
   deps: ConnectionDeps,
-  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[] },
+  getContext: () => { route: string; visible: string[]; liveElements: LiveElement[]; webMcpTools: WebMcpTool[]; openDialog?: OpenDialog | null },
   speakStreamed: (text: string) => Promise<void>,
   history: HistoryTurn[],
   getGeneration: () => number,
@@ -890,7 +892,7 @@ async function finalizeTurn(
 
     const result = await driveAgentLoop(historyForThisTurn, {
       async getNextStep(loopHistory) {
-        const { route, visible, liveElements, webMcpTools } = getContext();
+        const { route, visible, liveElements, webMcpTools, openDialog } = getContext();
         // Phase 5 step 2 — offered only when there's somewhere real to
         // write it (memory configured AND this connection has a real
         // scopeId) — never a tool the model can call into a void.
@@ -901,6 +903,7 @@ async function finalizeTurn(
           visible,
           liveElements,
           webMcpTools: availableTools,
+          openDialog,
           history: loopHistory,
         });
       },
@@ -1155,5 +1158,15 @@ function parseWebMcpTools(raw: unknown): WebMcpTool[] {
     if (tools.length >= 30) break;
   }
   return tools;
+}
+
+/** Same defensive shape-check as parseLiveElements/parseWebMcpTools, for
+ * the client's self-reported open-dialog state. */
+function parseOpenDialog(raw: unknown): OpenDialog | null {
+  if (!raw || typeof raw !== "object") return null;
+  const label = (raw as any).label;
+  const modal = (raw as any).modal;
+  if (typeof label !== "string" || typeof modal !== "boolean") return null;
+  return { label, modal };
 }
 

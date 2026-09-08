@@ -541,6 +541,7 @@ export function Copilot({
         visible: collectVisible(),
         liveElements: liveScan.elements,
         webMcpTools,
+        openDialog: liveScan.openDialog,
       }),
     );
   }
@@ -914,6 +915,7 @@ export function Copilot({
             history: loopHistory,
             liveElements: liveScan.elements,
             webMcpTools,
+            openDialog: liveScan.openDialog,
             scopeId,
           }),
         });

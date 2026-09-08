@@ -562,6 +562,26 @@ export const LiveElementSchema = z.object({
 export type LiveElement = z.infer<typeof LiveElementSchema>;
 
 /**
+ * A real, currently-open dialog/modal, detected via the same ARIA markers
+ * ([role="dialog"]/[role="alertdialog"]/[aria-modal="true"]) virtually
+ * every modal implementation sets — custom-built or a component library
+ * (Radix, Headless UI, MUI, Bootstrap all set these). Closes a real,
+ * previously-found gap: liveElements used to mix a modal's own buttons
+ * into the same flat, ranked list as everything else on the page, with
+ * nothing telling the model a modal had just appeared, that background
+ * elements are now inert, or that a click just revealed this — the
+ * concrete, live-reported cause of an agent "getting confused" the
+ * instant a popup showed up.
+ */
+export const OpenDialogSchema = z.object({
+  /** From aria-labelledby's target, aria-label, or the dialog's own first heading, in that order — "Dialog" if none of those exist. */
+  label: z.string().max(120),
+  /** True only for aria-modal="true" — a real ARIA modal, background genuinely inert. A bare role="dialog" with no aria-modal (rare, but valid) is reported present but non-blocking: false here means liveElements still includes the rest of the page, since it's real content the user can still reach. */
+  modal: z.boolean(),
+});
+export type OpenDialog = z.infer<typeof OpenDialogSchema>;
+
+/**
  * A real tool the page itself registered via the WebMCP standard
  * (`document.modelContext.registerTool()` — see webmcp-client.ts) —
  * discovered client-side, reported here so the model can call it by name.
@@ -608,6 +628,8 @@ export const CopilotRequestSchema = z.object({
   liveElements: z.array(LiveElementSchema).max(60).optional(),
   /** Real tools the page registered via WebMCP — see WebMcpToolSchema. */
   webMcpTools: z.array(WebMcpToolSchema).max(30).optional(),
+  /** A real, currently-open dialog/modal — see OpenDialogSchema. null/absent means no dialog is open right now. */
+  openDialog: OpenDialogSchema.nullable().optional(),
   /**
    * Phase 5 step 4 — real cross-session memory for the typed/HTTP
    * transport. Whatever opaque id the CUSTOMER's own client code

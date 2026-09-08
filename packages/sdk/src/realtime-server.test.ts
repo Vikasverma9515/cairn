@@ -69,7 +69,7 @@ function fakeMemoryStore() {
   };
 }
 
-const getContext = () => ({ route: "/", visible: [] as string[], liveElements: [], webMcpTools: [] });
+const getContext = () => ({ route: "/", visible: [] as string[], liveElements: [], webMcpTools: [], openDialog: null });
 const neverCalledWaitForToolResult = () => {
   throw new Error("waitForToolResult should not be called for a terminal-verb-only turn");
 };

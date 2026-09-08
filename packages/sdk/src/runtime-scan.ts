@@ -6,7 +6,7 @@
 // hasClickHandler below), which a selector alone could never catch, since
 // React never writes an "onclick" HTML attribute for a JSX onClick prop.
 
-import type { LiveElement } from "@cairnvibe/core";
+import type { LiveElement, OpenDialog } from "@cairnvibe/core";
 
 // Clickable elements, plus real fillable form fields (text/email/number/etc
 // inputs, textarea, select — NOT submit/button inputs, already covered by
@@ -25,6 +25,8 @@ const RESCAN_DEBOUNCE_MS = 250;
 export interface LiveScan {
   elements: LiveElement[];
   byId: Map<string, HTMLElement>;
+  /** A real, currently-open dialog/modal — see findOpenDialog. null when nothing's open. */
+  openDialog: OpenDialog | null;
 }
 
 /** Excludes elements that aren't rendered anywhere (display:none, a closed
@@ -36,6 +38,59 @@ export interface LiveScan {
 function isRendered(el: Element): boolean {
   const rect = el.getBoundingClientRect();
   return rect.width > 0 || rect.height > 0;
+}
+
+const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+
+/**
+ * Real, live-reported bug this closes: when a modal opened, its buttons
+ * got mixed into the same flat, ranked liveElements list as everything
+ * else on the page — nothing told the model a modal had just appeared,
+ * that background elements were now inert, or that its own last click was
+ * what revealed it. The concrete cause of an agent "getting confused" the
+ * instant a popup showed up, not a vague UX complaint.
+ *
+ * Detected via the same ARIA markers virtually every modal implementation
+ * sets (custom-built or a component library — Radix, Headless UI, MUI,
+ * Bootstrap all set these), never a guess at a CSS class or z-index. When
+ * more than one somehow stacks, the LAST one in DOM order wins — modals
+ * are near-universally appended to the end of <body>, so the most
+ * recently opened one is also the last in document order.
+ */
+function findOpenDialog(root: ParentNode): { el: HTMLElement; label: string; modal: boolean } | null {
+  // Real, live-found bug this excludes: the Cairn widget's OWN panel
+  // carries role="dialog" too (correct accessibility markup for a
+  // floating chat panel) — without this filter, the widget's own
+  // ever-present panel outranked (or masked) a real host-app dialog
+  // every single time the widget happened to be open, which is most of
+  // the time a user is actually talking to it. `.closest` also catches
+  // anything the widget renders nested inside the panel in the future,
+  // not just the panel element itself.
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>(DIALOG_SELECTOR))
+    .filter(isRendered)
+    .filter((el) => !el.closest(".cairn-panel"));
+  if (candidates.length === 0) return null;
+  const el = candidates[candidates.length - 1];
+  return { el, label: labelForDialog(el), modal: el.getAttribute("aria-modal") === "true" };
+}
+
+/** Same priority order a real user's screen reader would announce: an
+ * explicit aria-labelledby target, then aria-label, then the dialog's own
+ * first heading (the standard convention every dialog pattern guide
+ * recommends) — "Dialog" only when none of those exist. */
+function labelForDialog(el: HTMLElement): string {
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const target = el.ownerDocument?.getElementById(labelledBy);
+    const text = target?.textContent?.trim();
+    if (text) return text.length > MAX_LABEL_LENGTH ? `${text.slice(0, MAX_LABEL_LENGTH - 1)}…` : text;
+  }
+  const ariaLabel = el.getAttribute("aria-label")?.trim();
+  if (ariaLabel) return ariaLabel.length > MAX_LABEL_LENGTH ? `${ariaLabel.slice(0, MAX_LABEL_LENGTH - 1)}…` : ariaLabel;
+  const heading = el.querySelector<HTMLElement>("h1, h2, h3, h4, [role='heading']");
+  const headingText = heading?.textContent?.trim();
+  if (headingText) return headingText.length > MAX_LABEL_LENGTH ? `${headingText.slice(0, MAX_LABEL_LENGTH - 1)}…` : headingText;
+  return "Dialog";
 }
 
 /**
@@ -124,21 +179,33 @@ function hasClickHandler(el: HTMLElement): boolean {
  * server-side in CopilotRequestSchema) and the real elements it maps to,
  * keyed by the same ids (`byId`) — resolve a verb's target by looking it up
  * here, never by re-deriving a selector from the id string.
+ *
+ * When a real modal (`aria-modal="true"`) is open, the scan is SCOPED to
+ * just its own subtree — background elements are genuinely inert while a
+ * modal blocks the page, so including them only gave the model real,
+ * clickable-looking ids for things the user cannot actually reach right
+ * now. A non-modal `role="dialog"` (present but not blocking — rare, but
+ * ARIA-valid) is still reported via `openDialog`, just without narrowing
+ * the scan — that content really is still reachable.
  */
 export function scanInteractiveElements(root: ParentNode = document): LiveScan {
   const elements: LiveElement[] = [];
   const byId = new Map<string, HTMLElement>();
   let counter = 0;
 
-  if (typeof document === "undefined") return { elements, byId };
+  if (typeof document === "undefined") return { elements, byId, openDialog: null };
 
-  const semanticCandidates = Array.from(root.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR)).filter(isRendered);
+  const dialog = findOpenDialog(root);
+  const scanRoot: ParentNode = dialog?.modal ? dialog.el : root;
+  const openDialog: OpenDialog | null = dialog ? { label: dialog.label, modal: dialog.modal } : null;
+
+  const semanticCandidates = Array.from(scanRoot.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR)).filter(isRendered);
   const semanticSet = new Set(semanticCandidates);
   // A second pass, only over what the selector-based pass didn't already
   // catch — a plain `<div onClick>`/`<span onClick>` with no semantic tag
   // or role at all (see hasClickHandler's doc comment for why a selector
   // alone can't find these).
-  const nonSemanticCandidates = Array.from(root.querySelectorAll<HTMLElement>("*")).filter(
+  const nonSemanticCandidates = Array.from(scanRoot.querySelectorAll<HTMLElement>("*")).filter(
     (el) => !semanticSet.has(el) && isRendered(el) && hasClickHandler(el),
   );
   const nonSemanticSet = new Set(nonSemanticCandidates);
@@ -160,7 +227,7 @@ export function scanInteractiveElements(root: ParentNode = document): LiveScan {
     elements.push({ id, role: roleFor(el, nonSemanticSet.has(el)), label });
   }
 
-  return { elements, byId };
+  return { elements, byId, openDialog };
 }
 
 export interface LiveElementRegistry {
@@ -186,7 +253,7 @@ export interface LiveElementRegistry {
  * context while the main conversation keeps moving.
  */
 export function createLiveElementRegistry(): LiveElementRegistry {
-  let current: LiveScan = { elements: [], byId: new Map() };
+  let current: LiveScan = { elements: [], byId: new Map(), openDialog: null };
   let observer: MutationObserver | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -210,7 +277,11 @@ export function createLiveElementRegistry(): LiveElementRegistry {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["data-ai", "aria-label"],
+      // role/aria-modal/aria-hidden added for modal detection — some
+      // implementations toggle a dialog open/closed via an attribute
+      // change alone (aria-hidden flipping on a wrapper) rather than a
+      // real mount/unmount childList mutation.
+      attributeFilter: ["data-ai", "aria-label", "role", "aria-modal", "aria-hidden"],
     });
     window.addEventListener("scroll", scheduleRescan, { passive: true });
     window.addEventListener("resize", scheduleRescan);

@@ -23,8 +23,8 @@ export function CardModal({ card, onClose }: { card: BoardCard; onClose: () => v
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" data-ai="board-modal">
-      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-        <h2 className="text-lg font-semibold text-gray-900">Edit card</h2>
+      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="board-modal-title">
+        <h2 id="board-modal-title" className="text-lg font-semibold text-gray-900">Edit card</h2>
         <label className="mt-4 block text-xs font-medium uppercase tracking-wide text-gray-500">Title</label>
         <input
           data-ai="board-modal-title"

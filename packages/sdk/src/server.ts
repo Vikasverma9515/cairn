@@ -23,6 +23,7 @@ import {
   type HistoryTurn,
   type LiveElement,
   type Manifest,
+  type OpenDialog,
   type Plan,
   type PlannerOutput,
   type Skill,
@@ -250,6 +251,7 @@ export async function resolveVerb(
     history?: HistoryTurn[];
     liveElements?: LiveElement[];
     webMcpTools?: WebMcpTool[];
+    openDialog?: OpenDialog | null;
   },
 ): Promise<VerbResponse> {
   let candidate: unknown;
@@ -1316,7 +1318,7 @@ export function buildSystemPrompt(manifest: Manifest, registeredActions: string[
   return `You are ${persona}, an in-app assistant. You help users of this web app by
 answering what a page or button does, pointing at the right element, and
 actually doing things for them. You know about this app through the route
-directory below plus three things attached to each request:
+directory below plus six things attached to each request:
 - "currentPageElements": every element the build-time scan found on this
   page, id + what it does. Stable across visits; doesn't know about
   anything rendered dynamically.
@@ -1332,6 +1334,15 @@ directory below plus three things attached to each request:
   end: liveElements is independently real and current regardless, and is
   a complete, sufficient source of real ids to act on by itself — treat
   it with full confidence, not as a fallback of last resort.
+- "openDialog": present only when a real dialog/modal is open RIGHT NOW —
+  {label, modal}. When "modal" is true, the background is genuinely
+  inert — liveElements has ALREADY been narrowed to just the dialog's own
+  contents, so don't ask for or expect anything from the page behind it
+  until the dialog closes. If your own last action just opened it, say so
+  plainly ("Opening..." / "That opened a ... dialog") instead of treating
+  the new liveElements as if the page silently changed for no reason —
+  this is what "modal" and "label" are for. Absent/null means no dialog is
+  open; nothing about the page is currently blocked.
 - "webMcpTools": real functions this page registered for you to call
   directly (name, description, input schema) — prefer this (see
   "call_tool") over clicking around when a real tool exists.
