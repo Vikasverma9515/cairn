@@ -651,10 +651,12 @@
 <section id="cli">
   <div class="wrap">
     <p class="kicker">CLI reference</p>
-    <h2>Eight commands, that's the whole surface.</h2>
+    <h2>Ten commands, that's the whole surface.</h2>
     <table class="cli">
       <tr><th style="width:1%;">Command</th><th class="desc">What it does</th></tr>
       <tr><td><code>cairn setup [dir]</code></td><td class="desc">The one-command path — installs, asks skippable questions, wires the widget into your real layout, builds once, sets up auto-rebuild.</td></tr>
+      <tr><td><code>cairn remove [dir]</code></td><td class="desc">Undoes a <code>cairn setup</code> install in one command — the widget, config edits, generated files, the npm packages. Never touches real credentials in <code>.env</code>.</td></tr>
+      <tr><td><code>cairn update [dir]</code></td><td class="desc">Checks core/sdk/indexer against the latest published versions and asks before installing — <code>--apply</code> skips the prompt.</td></tr>
       <tr><td><code>cairn init &lt;dir&gt;</code></td><td class="desc">The manual version of the same scaffolding — no prompts, no installs, no file edits beyond new files.</td></tr>
       <tr><td><code>cairn scan &lt;dir&gt;</code></td><td class="desc">L1 only — deterministic, no LLM call, no API key needed.</td></tr>
       <tr><td><code>cairn build &lt;dir&gt;</code></td><td class="desc">Full pipeline against Next.js source — writes <code>ui-manifest.json</code>.</td></tr>
