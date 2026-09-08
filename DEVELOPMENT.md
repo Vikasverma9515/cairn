@@ -7876,6 +7876,89 @@ user confirmation. VOXERA's Groq-key-sharing and the
 
 ---
 
+### The widget UI pass this session's own UI critique called for, plus a real Settings panel — built end to end, not just proposed
+
+Direct ask, verbatim: "build all the features one by one... streaming is
+must dude... build all, that will be good and sexy." Everything proposed in
+the prior stage's own critique, actually built now, in `packages/sdk/src/
+index.tsx` (the React `<Copilot/>` widget demo-app and any Next.js consumer
+actually render — `web-component.ts`'s vanilla-JS `<cairn-widget>` was left
+untouched this pass, so it doesn't yet have feature parity with what's
+below; a real, known gap, not silently ignored).
+
+**Built:**
+1. **Word-by-word streaming, kept exactly as-is** — the user's explicit
+   "streaming is must" line. `renderCaptionWords`'s per-word `<span>` sweep
+   animation is untouched; the only change is wrapping the whole run in an
+   `aria-hidden="true"` container and putting the real, complete answer text
+   on the parent's `aria-label` instead — a screen reader gets the sentence
+   once, a sighted user still sees it sweep in word by word exactly as
+   before.
+2. **A real Settings panel** — a gear icon in a new panel header (swaps for
+   a back-arrow + "Settings" title when open), four sections, every control
+   wired to a genuine, verifiable effect, none of them a placeholder:
+   - *Appearance* — Size (Compact 296px / Comfortable 340px, driven by
+     `--cairn-w`/`--cairn-pad`/`--cairn-gap`/`--cairn-btn` CSS custom
+     properties set inline from state), Position (right/left, a `.cairn-pos-
+     left` class flips both the FAB and panel), Text size (S/M/L via
+     `--cairn-font`, applied to the panel's own `font` shorthand so bubbles
+     and the input inherit it correctly).
+   - *Behavior* — Voice replies toggle, shown only when the host actually
+     configured `speakEndpoint` (meaningless otherwise). Gates `speak()`/
+     `speakAndWait()` — the typed/HTTP path's own TTS narration — directly;
+     never touches an active realtime voice call, muting narration mid-call
+     would be confusing, not helpful. Fixed a real bug caught before it
+     shipped: `runTour`'s pacing fallback only checked `speakEndpoint`, so
+     with voice muted `speakAndWait` would return instantly and steps would
+     race by unpaced — the call site now checks `speakEndpoint &&
+     settings.voiceReplies` so the reading-time pacing fallback engages
+     correctly either way.
+   - *Accessibility* — Reduce motion, independent of and in addition to the
+     existing `prefers-reduced-motion` media query. Toggling it sets a class
+     on `<html>`, not the panel — the synthetic cursor overlay mounts
+     directly on `<body>`, outside this component's own tree, so nothing
+     narrower would have reached it. Live-verified: `getComputedStyle`
+     confirmed `animationName: "none"` on the panel with the toggle on.
+   - *Privacy* — Clear conversation, correctly disabled when there's nothing
+     to clear (real `hasHistory` check, not just always-enabled), removes
+     the real `sessionStorage` conversation entry and resets all the
+     in-memory state.
+   - New `CairnSettings` type + `loadSettings`/`saveSettings`, persisted to
+     `localStorage` (deliberately not `sessionStorage`, unlike the
+     conversation store — a preference should survive past the current tab,
+     a conversation shouldn't) under `cairn:settings:v1`, merged field-by-
+     field against defaults on load so an old stored value from a future
+     dropped/renamed setting degrades safely instead of carrying forward
+     garbage.
+3. **A more visible click/highlight confirmation** — `.cairn-glow`'s outline
+   bumped 2px→3px and its pulse from 2 iterations to 3, per the prior
+   stage's own live-observed finding that the existing highlight was too
+   subtle to read as unambiguous "the agent just interacted with this."
+
+**Tests:** full `packages/sdk` suite 437/437, full-repo `npm run
+typecheck` clean across every workspace, both before and after the sdk
+rebuild. Live-verified in the browser, not just typechecked: toggled
+Compact+Left — FAB and panel both moved and shrank on the spot; reloaded
+the page — both settings, correctly, survived (localStorage); sent a real
+message and watched a live 5-step tour stream in with the glow highlight
+now visibly stronger on each targeted element; confirmed via
+`getComputedStyle` that Reduce Motion genuinely zeroes the panel's
+`animationName`; confirmed via `read_page`'s accessibility-tree dump that
+the streamed answer's wrapping element now carries the full sentence as its
+accessible name; confirmed via direct `sessionStorage`/`localStorage`
+reads that Clear Conversation and every settings toggle actually persist
+the real values, not just update on-screen state.
+
+**Pending:** feature parity for the vanilla `<cairn-widget>` (`web-
+component.ts`) — same Settings panel, same a11y fix, same glow bump — not
+built this pass, since demo-app (and this session's own live verification)
+only exercises the React path. `npm publish` for sdk 0.4.6 needs the same
+explicit confirmation the previous stage's publish did.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

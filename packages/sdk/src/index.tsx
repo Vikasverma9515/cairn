@@ -1,8 +1,10 @@
 "use client";
 
+import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  ArrowLeft,
   ChevronDown,
   ChevronUp,
   Loader2,
@@ -11,7 +13,9 @@ import {
   PhoneCall,
   PhoneOff,
   Send,
+  Settings2,
   Square,
+  Trash2,
   Volume2,
   VolumeX,
   X,
@@ -144,6 +148,12 @@ export function Copilot({
   // stays out of the way behind an explicit toggle instead of always being
   // visible inline, which made the panel grow uncomfortably tall.
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  // Starts at DEFAULT_SETTINGS on both server and client's first render —
+  // same hydration-safety reason `open`/`micSupported` do this — then, once
+  // actually restored from localStorage post-mount, flips to whatever this
+  // person last configured (see the dedicated restore effect below).
+  const [settings, setSettings] = useState<CairnSettings>(DEFAULT_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
   // Real, live-reported gap this closes: once a continuing agent-loop step
@@ -378,6 +388,59 @@ export function Copilot({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Same post-mount restore pattern as the conversation above, for the
+  // separate settings store (localStorage, see loadSettings's own comment
+  // for why that's the right storage for a preference vs. a conversation).
+  useEffect(() => {
+    setSettings(loadSettings());
+  }, []);
+
+  // Persists on every change, skipping the initial mount render for the
+  // identical reason the conversation-persist effect below does: that first
+  // call is always tied to DEFAULT_SETTINGS, captured before the restore
+  // effect above's setState has landed — persisting it would overwrite a
+  // real, just-restored preference with the plain defaults for one tick.
+  const skippedSettingsMountPersistRef = useRef(false);
+  useEffect(() => {
+    if (!skippedSettingsMountPersistRef.current) {
+      skippedSettingsMountPersistRef.current = true;
+      return;
+    }
+    saveSettings(settings);
+  }, [settings]);
+
+  // A widget-scoped "no animations" preference has to reach further than
+  // this component's own JSX can: the synthetic cursor overlay (see
+  // cursor-overlay.ts) is appended directly to <body>, outside this
+  // component's tree entirely, so a class on the panel/fab alone would
+  // never reach it. Toggling a class on <html> is the one place a plain
+  // CSS descendant selector reaches every piece the widget draws,
+  // regardless of where each one actually mounts.
+  useEffect(() => {
+    document.documentElement.classList.toggle("cairn-reduce-motion", settings.reduceMotion);
+    return () => document.documentElement.classList.remove("cairn-reduce-motion");
+  }, [settings.reduceMotion]);
+
+  function updateSetting<K extends keyof CairnSettings>(key: K, value: CairnSettings[K]) {
+    setSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function clearConversation() {
+    setTranscript([]);
+    setLastQuestion(null);
+    setAnswer(null);
+    setCaption("");
+    historyRef.current = [];
+    transcriptIdRef.current = 0;
+    if (typeof window !== "undefined") {
+      try {
+        window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
+      } catch {
+        // Storage unavailable — the in-memory state above is already cleared, which is what actually matters.
+      }
+    }
+  }
 
   const asking = status === "asking";
   const recording = status === "recording";
@@ -627,11 +690,12 @@ export function Copilot({
           // (same Speak WS, same gapless PCM scheduling a normal reply
           // uses) instead of falling back to a separate buffered REST call.
           await speakOverRealtime(step.text);
-        } else if (speakEndpoint) {
+        } else if (speakEndpoint && settings.voiceReplies) {
           await speakAndWait(step.text);
         } else {
-          // No TTS configured — pace by an estimate of reading time instead
-          // of racing through every step instantly.
+          // No TTS configured, or the user turned narration off in
+          // Settings — either way pace by an estimate of reading time
+          // instead of racing through every step instantly.
           await new Promise((resolve) => setTimeout(resolve, Math.max(1200, step.text.length * 45)));
         }
         if (tourGenerationRef.current !== myGeneration) return;
@@ -1113,7 +1177,7 @@ export function Copilot({
   }
 
   async function speak(text: string) {
-    if (!speakEndpoint || !text.trim()) return;
+    if (!speakEndpoint || !text.trim() || !settings.voiceReplies) return;
     try {
       const res = await fetch(speakEndpoint, {
         method: "POST",
@@ -1138,7 +1202,7 @@ export function Copilot({
    * runTour() so each step's highlight stays up for exactly as long as its
    * narration takes, instead of racing ahead to the next step. */
   async function speakAndWait(text: string): Promise<void> {
-    if (!speakEndpoint || !text.trim()) return;
+    if (!speakEndpoint || !text.trim() || !settings.voiceReplies) return;
     try {
       const res = await fetch(speakEndpoint, {
         method: "POST",
@@ -1791,20 +1855,56 @@ export function Copilot({
     "rt-speaking": "Speaking…",
   };
 
+  const panelVars: PanelCSSVars = {
+    "--cairn-w": settings.density === "compact" ? "296px" : "340px",
+    "--cairn-pad": settings.density === "compact" ? "14px" : "18px",
+    "--cairn-gap": settings.density === "compact" ? "10px" : "14px",
+    "--cairn-btn": settings.density === "compact" ? "32px" : "36px",
+    "--cairn-font": settings.fontSize === "small" ? "12.5px" : settings.fontSize === "large" ? "15px" : "13.5px",
+  };
+  const posClass = settings.position === "left" ? " cairn-pos-left" : "";
+
   return (
     <>
       <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: COPILOT_STYLES }} />
       <button
-        className={status === "rt-speaking" ? "cairn-fab cairn-fab-speaking" : "cairn-fab"}
+        className={(status === "rt-speaking" ? "cairn-fab cairn-fab-speaking" : "cairn-fab") + posClass}
         aria-label={open ? `Close ${persona} help` : `Open ${persona} help`}
         onClick={() => setOpen((v) => !v)}
       >
         {open ? <X size={22} /> : <CairnMark />}
       </button>
       {open && (
-        <div className="cairn-panel" role="dialog" aria-label={`${persona} help panel`} ref={panelRef}>
+        <div className={"cairn-panel" + posClass} style={panelVars} role="dialog" aria-label={`${persona} help panel`} ref={panelRef}>
+          <div className="cairn-panel-header">
+            {settingsOpen ? (
+              <>
+                <button type="button" className="cairn-header-btn" aria-label="Back to conversation" onClick={() => setSettingsOpen(false)}>
+                  <ArrowLeft size={15} />
+                </button>
+                <span className="cairn-panel-title">Settings</span>
+              </>
+            ) : (
+              <>
+                <span className="cairn-panel-title">{persona}</span>
+                <button type="button" className="cairn-header-btn cairn-header-btn-end" aria-label="Open settings" onClick={() => setSettingsOpen(true)}>
+                  <Settings2 size={15} />
+                </button>
+              </>
+            )}
+          </div>
 
-          {(transcript.length > 0 || userCaption || answer || busy) && (
+          {settingsOpen && (
+            <SettingsView
+              settings={settings}
+              updateSetting={updateSetting}
+              onClear={clearConversation}
+              showVoiceReplies={!!speakEndpoint}
+              hasHistory={transcript.length > 0 || !!answer || !!lastQuestion}
+            />
+          )}
+
+          {!settingsOpen && (transcript.length > 0 || userCaption || answer || busy) && (
             <div className="cairn-stack">
               {transcript.length > 0 && (
                 <button
@@ -1835,7 +1935,7 @@ export function Copilot({
                 <div className="cairn-bubble cairn-bubble-agent" key={`a-${answer ?? status}`}>
                   {tourChip && <span className="cairn-chip">{tourChip}</span>}
                   {answer ? (
-                    <span className="cairn-bubble-text">
+                    <span className="cairn-bubble-text" aria-label={answer}>
                       {renderCaptionWords(answer)}
                       {loopWorking && (
                         // Real, live-reported gap this closes: this bubble
@@ -1866,7 +1966,7 @@ export function Copilot({
             </div>
           )}
 
-          {realtimeActive ? (
+          {!settingsOpen && (realtimeActive ? (
             <div className="cairn-rt-bar">
               <span className={`cairn-rt-dot cairn-rt-dot-${status}`} />
               <span className="cairn-rt-label">{statusLabel[status]}</span>
@@ -1945,10 +2045,157 @@ export function Copilot({
                 </button>
               </div>
             </form>
-          )}
+          ))}
         </div>
       )}
     </>
+  );
+}
+
+type PanelCSSVars = React.CSSProperties & Record<`--cairn-${string}`, string>;
+
+function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (v: T) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="cairn-segmented" role="radiogroup" aria-label={ariaLabel}>
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          role="radio"
+          aria-checked={value === opt.value}
+          className={value === opt.value ? "cairn-segmented-btn cairn-segmented-btn-active" : "cairn-segmented-btn"}
+          onClick={() => onChange(opt.value)}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Toggle({ checked, onChange, ariaLabel }: { checked: boolean; onChange: (v: boolean) => void; ariaLabel: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      className={checked ? "cairn-toggle cairn-toggle-on" : "cairn-toggle"}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="cairn-toggle-knob" />
+    </button>
+  );
+}
+
+/**
+ * Direct ask: "settings — what can we include, small settings button, that
+ * can people configure." Deliberately scoped to settings with a REAL,
+ * immediately-visible client-side effect — density/position/font/motion
+ * change the panel on the spot, voice-replies gates a real code path
+ * (speak()/speakAndWait() above), clear-conversation actually clears real
+ * stored state. No placeholder toggles that silently do nothing.
+ */
+function SettingsView({
+  settings,
+  updateSetting,
+  onClear,
+  showVoiceReplies,
+  hasHistory,
+}: {
+  settings: CairnSettings;
+  updateSetting: <K extends keyof CairnSettings>(key: K, value: CairnSettings[K]) => void;
+  onClear: () => void;
+  showVoiceReplies: boolean;
+  hasHistory: boolean;
+}) {
+  return (
+    <div className="cairn-settings">
+      <div className="cairn-settings-section">
+        <div className="cairn-settings-heading">Appearance</div>
+        <div className="cairn-settings-row">
+          <span className="cairn-settings-label">Size</span>
+          <Segmented
+            ariaLabel="Widget size"
+            value={settings.density}
+            onChange={(v) => updateSetting("density", v)}
+            options={[
+              { value: "compact", label: "Compact" },
+              { value: "comfortable", label: "Comfortable" },
+            ]}
+          />
+        </div>
+        <div className="cairn-settings-row">
+          <span className="cairn-settings-label">Position</span>
+          <Segmented
+            ariaLabel="Widget position"
+            value={settings.position}
+            onChange={(v) => updateSetting("position", v)}
+            options={[
+              { value: "right", label: "Right" },
+              { value: "left", label: "Left" },
+            ]}
+          />
+        </div>
+        <div className="cairn-settings-row">
+          <span className="cairn-settings-label">Text size</span>
+          <Segmented
+            ariaLabel="Text size"
+            value={settings.fontSize}
+            onChange={(v) => updateSetting("fontSize", v)}
+            options={[
+              { value: "small", label: "S" },
+              { value: "medium", label: "M" },
+              { value: "large", label: "L" },
+            ]}
+          />
+        </div>
+      </div>
+
+      {showVoiceReplies && (
+        <div className="cairn-settings-section">
+          <div className="cairn-settings-heading">Behavior</div>
+          <div className="cairn-settings-row">
+            <span className="cairn-settings-label">Voice replies</span>
+            <Toggle
+              ariaLabel="Speak answers aloud"
+              checked={settings.voiceReplies}
+              onChange={(v) => updateSetting("voiceReplies", v)}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="cairn-settings-section">
+        <div className="cairn-settings-heading">Accessibility</div>
+        <div className="cairn-settings-row">
+          <span className="cairn-settings-label">Reduce motion</span>
+          <Toggle
+            ariaLabel="Reduce motion and animation"
+            checked={settings.reduceMotion}
+            onChange={(v) => updateSetting("reduceMotion", v)}
+          />
+        </div>
+      </div>
+
+      <div className="cairn-settings-section">
+        <div className="cairn-settings-heading">Privacy</div>
+        <button type="button" className="cairn-clear-btn" onClick={onClear} disabled={!hasHistory}>
+          <Trash2 size={13} />
+          Clear conversation
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -2009,6 +2256,69 @@ export function savePersistedConversation(data: PersistedConversation): void {
     window.sessionStorage.setItem(CONVERSATION_STORAGE_KEY, JSON.stringify(data));
   } catch {
     // Storage unavailable/full — the conversation just won't survive a reload this time, never worth crashing the widget over.
+  }
+}
+
+export const SETTINGS_STORAGE_KEY = "cairn:settings:v1";
+
+export interface CairnSettings {
+  /** Panel width/padding/icon-button size. "compact" trims the widget down for small screens or users who find the default too roomy. */
+  density: "comfortable" | "compact";
+  /** Which bottom corner the FAB/panel anchor to. */
+  position: "right" | "left";
+  /** Base text size inside the panel — a real accessibility control, not decoration. */
+  fontSize: "small" | "medium" | "large";
+  /** Disables every animation the widget itself draws (panel-in, word-sweep, thinking dots, highlight pulse, cursor). Independent of and in addition to the OS-level prefers-reduced-motion query already respected. */
+  reduceMotion: boolean;
+  /** Gates the typed/HTTP path's own TTS narration (speak()/speakAndWait(), used for explain answers and tour steps when no live realtime call is open). Never touches an actual realtime voice call — muting narration mid-conversation there would be confusing, not helpful. Meaningless (and hidden in the UI) when the host app never configured speakEndpoint at all. */
+  voiceReplies: boolean;
+}
+
+export const DEFAULT_SETTINGS: CairnSettings = {
+  density: "comfortable",
+  position: "right",
+  fontSize: "medium",
+  reduceMotion: false,
+  voiceReplies: true,
+};
+
+/**
+ * `localStorage`, not `sessionStorage` — the deliberate opposite choice
+ * from the conversation store just above. A conversation is scoped to
+ * "this one visit"; a preference like "I want the compact widget" or "no
+ * animations" is scoped to "this person, on this browser, from now on" —
+ * it should still be in effect the next time they come back, not reset
+ * the moment they close the tab.
+ */
+export function loadSettings(): CairnSettings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_SETTINGS;
+    // Merged field-by-field against the defaults (not a blind spread) so a
+    // value saved by an older widget version that later drops or renames a
+    // setting degrades to the new default instead of carrying forward a
+    // now-meaningless stored value.
+    return {
+      density: parsed.density === "compact" ? "compact" : DEFAULT_SETTINGS.density,
+      position: parsed.position === "left" ? "left" : DEFAULT_SETTINGS.position,
+      fontSize: parsed.fontSize === "small" || parsed.fontSize === "large" ? parsed.fontSize : DEFAULT_SETTINGS.fontSize,
+      reduceMotion: typeof parsed.reduceMotion === "boolean" ? parsed.reduceMotion : DEFAULT_SETTINGS.reduceMotion,
+      voiceReplies: typeof parsed.voiceReplies === "boolean" ? parsed.voiceReplies : DEFAULT_SETTINGS.voiceReplies,
+    };
+  } catch {
+    return DEFAULT_SETTINGS; // private browsing, quota, or a genuinely corrupt value — never crash the widget over this
+  }
+}
+
+export function saveSettings(settings: CairnSettings): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Storage unavailable/full — the preference just won't survive this time, never worth crashing the widget over.
   }
 }
 
@@ -2080,14 +2390,24 @@ function summarizeVerbForHistory(raw: unknown): string {
  * the client today, so a true audio-locked sync isn't wired up anywhere in
  * this codebase yet.
  */
+// The word-sweep reveal is purely visual — one <span> per word so each can
+// carry its own animation-delay. A screen reader has no reason to visit
+// dozens of individual one-word nodes to get the same sentence a sighted
+// user reads in one glance, so the whole run is hidden from assistive tech
+// here; the caller puts the real, complete text on the wrapping element's
+// aria-label instead, which is what actually gets announced.
 function renderCaptionWords(text: string) {
   const words = text.split(" ");
-  return words.map((word, i) => (
-    <span key={i} className="cairn-word" style={{ animationDelay: `${Math.min(i * 55, 2800)}ms` }}>
-      {word}
-      {i < words.length - 1 ? " " : ""}
+  return (
+    <span aria-hidden="true">
+      {words.map((word, i) => (
+        <span key={i} className="cairn-word" style={{ animationDelay: `${Math.min(i * 55, 2800)}ms` }}>
+          {word}
+          {i < words.length - 1 ? " " : ""}
+        </span>
+      ))}
     </span>
-  ));
+  );
 }
 
 // "Waybalance" — three real, irregular stones (an ellipse plus a smaller
@@ -2197,8 +2517,8 @@ const COPILOT_STYLES = `
   40% { opacity: 0.9; transform: translateY(-3px); }
 }
 .cairn-glow {
-  animation: cairn-pulse-ember 1.1s ease-out 2;
-  outline: 2px solid #E07A3F;
+  animation: cairn-pulse-ember 1s ease-out 3;
+  outline: 3px solid #E07A3F;
   outline-offset: 3px;
   border-radius: 8px;
 }
@@ -2213,6 +2533,21 @@ const COPILOT_STYLES = `
     animation: none !important;
     transition: none !important;
   }
+}
+/* The explicit, user-facing twin of the OS-level query just above — set
+   from Settings > Accessibility > Reduce motion, applied to <html> because
+   the synthetic cursor overlay mounts on <body>, outside this component's
+   own tree, so nothing narrower would reach it (see the effect that toggles
+   this class in the component for the full reasoning). */
+html.cairn-reduce-motion .cairn-fab,
+html.cairn-reduce-motion .cairn-panel,
+html.cairn-reduce-motion .cairn-bubble,
+html.cairn-reduce-motion .cairn-word,
+html.cairn-reduce-motion .cairn-thinking-dot,
+html.cairn-reduce-motion .cairn-glow,
+html.cairn-reduce-motion #cairn-cursor {
+  animation: none !important;
+  transition: none !important;
 }
 
 .cairn-fab {
@@ -2237,6 +2572,10 @@ const COPILOT_STYLES = `
   transform: translateY(-1px);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
+.cairn-fab.cairn-pos-left {
+  right: auto;
+  left: 20px;
+}
 .cairn-fab-speaking {
   box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22), 0 6px 20px rgba(0, 0, 0, 0.25);
   animation: cairn-pulse-green 1.2s ease-out infinite;
@@ -2254,21 +2593,25 @@ const COPILOT_STYLES = `
   right: 20px;
   bottom: 92px;
   z-index: 2147483000;
-  width: min(340px, calc(100vw - 40px));
+  width: min(var(--cairn-w, 340px), calc(100vw - 40px));
   max-height: 480px;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px;
+  gap: var(--cairn-gap, 14px);
+  padding: var(--cairn-pad, 18px);
   background: rgba(255, 255, 255, 0.96);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
   backdrop-filter: blur(24px) saturate(160%);
   border-radius: 20px;
   box-shadow: 0 20px 50px rgba(15, 15, 25, 0.16), 0 2px 8px rgba(15, 15, 25, 0.06);
-  font: 13.5px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  font: var(--cairn-font, 13.5px)/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
   animation: cairn-panel-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cairn-panel.cairn-pos-left {
+  right: auto;
+  left: 20px;
 }
 @keyframes cairn-panel-in {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
@@ -2285,7 +2628,7 @@ const COPILOT_STYLES = `
 }
 .cairn-bubble {
   max-width: 92%;
-  font-size: 13.5px;
+  font-size: var(--cairn-font, 13.5px);
   line-height: 1.5;
   color: #0b0d12;
   animation: cairn-bubble-in 0.2s ease-out;
@@ -2388,8 +2731,8 @@ const COPILOT_STYLES = `
 }
 .cairn-icon-btn {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: var(--cairn-btn, 36px);
+  height: var(--cairn-btn, 36px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2423,8 +2766,8 @@ const COPILOT_STYLES = `
 }
 .cairn-send {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: var(--cairn-btn, 36px);
+  height: var(--cairn-btn, 36px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2476,5 +2819,133 @@ const COPILOT_STYLES = `
 .cairn-rt-controls {
   display: flex;
   gap: 6px;
+}
+
+.cairn-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cairn-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(11, 13, 18, 0.55);
+}
+.cairn-header-btn {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: rgba(11, 13, 18, 0.5);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.cairn-header-btn:hover {
+  background: rgba(11, 13, 18, 0.07);
+  color: #0b0d12;
+}
+
+.cairn-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cairn-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cairn-settings-heading {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(11, 13, 18, 0.4);
+}
+.cairn-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cairn-settings-label {
+  font-size: var(--cairn-font, 13.5px);
+  color: #0b0d12;
+}
+.cairn-segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(11, 13, 18, 0.06);
+}
+.cairn-segmented-btn {
+  border: none;
+  background: transparent;
+  color: rgba(11, 13, 18, 0.55);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.cairn-segmented-btn-active {
+  background: #14151b;
+  color: white;
+}
+.cairn-toggle {
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(11, 13, 18, 0.16);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  transition: background 0.15s ease;
+}
+.cairn-toggle-on {
+  background: #14151b;
+  justify-content: flex-end;
+}
+.cairn-toggle-knob {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+.cairn-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  border: none;
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.cairn-clear-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+}
+.cairn-clear-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 `;
