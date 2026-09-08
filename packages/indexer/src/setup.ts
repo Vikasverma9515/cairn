@@ -46,7 +46,7 @@ import { manifestWritePath } from "./cairn-dir";
 import { writeInstallManifest, type InstallManifest } from "./install-manifest";
 import { clack } from "./clack";
 
-const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexer"];
+export const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexer"];
 
 // Lower than cairn build's own default (6) — a first-time setup is exactly
 // the scenario most likely to be running on a free-tier key with a tight

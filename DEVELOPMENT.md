@@ -8032,6 +8032,65 @@ to a button beside the FAB instead.
 
 ---
 
+### `cairn update` — a real command to check and update the @cairnvibe packages, instead of pointing people at a raw npm install
+
+Direct ask, after being told the manual fix for VOXERA's stale sdk: "there
+should be a command to check all the updates and one single command to
+update everything to the latest." Fair complaint — the CLI already has
+`setup`/`remove`/`init`, but "am I current?" had no answer besides running
+`npm view` three times by hand and comparing versions yourself, and
+updating meant remembering the exact package list.
+
+**Built:** `packages/indexer/src/update.ts` (`cairn update [dir]`, alias
+`cairn upgrade`) — checks the REAL installed version of `@cairnvibe/core`,
+`@cairnvibe/sdk`, and `@cairnvibe/indexer` (read from `node_modules/<pkg>/
+package.json`, not the declared range in `package.json` — the same
+"trust what's actually installed, not what's merely declared" discipline
+this session's own workspace-link bug fix established) against the
+latest version each has published to npm (`npm view <pkg> version`,
+deliberately not a raw registry fetch, so it inherits whatever
+registry/proxy/auth config the machine's own npm is already set up
+with). Reports a clean per-package status line, then — run with no flags —
+ASKS before installing anything (`cairn update` alone is genuinely the
+one command that both checks and, with a yes, updates); `--apply` skips
+the prompt for scripted/CI use. `PACKAGES` (the canonical three-package
+list) was already a private constant in `setup.ts`; exported and reused
+here rather than re-declared, so the two commands can never drift apart
+on what "the @cairnvibe packages" means.
+
+**A real bug caught before shipping**: the first version only checked
+`<dir>/node_modules/<pkg>` directly and reported this repo's OWN demo-app
+as having core/sdk "not installed" — npm workspaces hoist shared deps to
+the monorepo ROOT `node_modules`, so a workspace member has no
+`node_modules/@cairnvibe` of its own at all. Fixed by walking up parent
+directories the same way Node's own module resolution actually does
+(`<dir>/node_modules/<pkg>`, then `<parent>/node_modules/<pkg>`, ... to
+the filesystem root) — the same real-world case any consumer's own
+monorepo/workspace setup would hit, not just this repo's.
+
+**Tests:** 7 new tests in `update.test.ts` (nothing-to-check, already-
+up-to-date, decline-to-install, confirm-and-install-everything-in-one-
+call, `--apply` skips the prompt, reports "not installed" instead of
+crashing, degrades cleanly when the registry lookup itself fails) — all
+passing on first real run. Full `packages/indexer` suite: 186/194 (the 8
+failures are the pre-existing, environment-only missing-Playwright-binary
+issue already documented earlier in this file, unrelated to this change).
+Full-repo `npm run typecheck` clean. Live-verified against the real CLI,
+not just the test suite: `node dist/cli.js update .` run against this
+repo's actual demo-app correctly found the real hoisted versions (core
+0.1.8, sdk 0.4.7, indexer 0.4.2) and reported "up to date," where the
+pre-fix version had wrongly said "not installed" for the same real
+directory.
+
+**Pending:** `npm publish` for indexer 0.4.3 needs the same explicit
+confirmation every prior publish this session has.
+
+**Failed:** the first version's node_modules lookup (see above) — caught
+by the CLI's own live smoke test against demo-app before it shipped, not
+by a user report.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

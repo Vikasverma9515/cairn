@@ -15,6 +15,7 @@ import { generateWebMcpComponent } from "./webmcp";
 import { runInit } from "./init";
 import { runSetup } from "./setup";
 import { runRemove } from "./remove";
+import { runUpdate } from "./update";
 import { manifestReadPath, manifestWritePath } from "./cairn-dir";
 import { clack } from "./clack";
 
@@ -174,6 +175,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "update" || command === "upgrade") {
+    await runUpdate(dir, { apply: "apply" in flags || "yes" in flags });
+    return;
+  }
+
   if (command === "init") {
     const result = runInit(dir);
     const lines = [
@@ -245,6 +251,7 @@ async function main(): Promise<void> {
     [
       "cairn setup [dir]   (the one-command path: installs deps, asks for keys — skippable, wires the widget in, builds once, auto-rebuilds on future `npm run build`)",
       "cairn remove [dir]   (undoes a `cairn setup` install in one command: the widget, config edits, generated files, the npm packages. Never touches real credentials in .env)",
+      "cairn update [dir]   (checks @cairnvibe/core, sdk, and indexer against the latest published versions, then asks before installing — pass --apply to skip the prompt and just update)",
       "cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)",
       "cairn scan <dir>",
       "cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)",
