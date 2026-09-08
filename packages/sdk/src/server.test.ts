@@ -103,6 +103,9 @@ function fakeMemoryStore() {
     searchTurns: vi.fn().mockReturnValue([]),
     archiveFact: vi.fn(),
     recallArchivedFacts: vi.fn().mockReturnValue({}),
+    savePendingTask: vi.fn(),
+    loadPendingTask: vi.fn().mockReturnValue(null),
+    clearPendingTask: vi.fn(),
   };
 }
 
@@ -234,6 +237,48 @@ describe("createCopilotHandlerWithLLM", () => {
     await handler({ route: "/invoices", question: "create a new invoice", visible: [], scopeId: "end-user-1" });
 
     expect(memory.recordTurn).not.toHaveBeenCalled();
+  });
+
+  it("checkpointing: a CONTINUING verb (click) saves a pending-task checkpoint before the turn is known to finish", async () => {
+    const memory = fakeMemoryStore();
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "click", target: "create-invoice" }), { memory });
+
+    await handler({ route: "/invoices", question: "create a new invoice for Acme", visible: [], scopeId: "end-user-1" });
+
+    expect(memory.savePendingTask).toHaveBeenCalledWith("end-user-1", "create a new invoice for Acme", expect.any(String));
+    expect(memory.clearPendingTask).not.toHaveBeenCalled();
+  });
+
+  it("checkpointing: a TERMINAL verb clears any pending-task checkpoint — nothing left to resume", async () => {
+    const memory = fakeMemoryStore();
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "Done — invoice created." }), { memory });
+
+    await handler({ route: "/invoices", question: "create a new invoice", visible: [], scopeId: "end-user-1" });
+
+    expect(memory.clearPendingTask).toHaveBeenCalledWith("end-user-1");
+    expect(memory.savePendingTask).not.toHaveBeenCalled();
+  });
+
+  it("checkpointing: a genuinely fresh session with a real pending task surfaces it in history, worded to prompt the model to bring it up unprompted", async () => {
+    const memory = fakeMemoryStore();
+    memory.loadPendingTask.mockReturnValue({ goal: "create a restaurant agent", lastStep: "opened the New Agent form", updatedAt: "t1" });
+    const { llm, calls } = capturingFakeLLM({ verb: "explain", text: "ok" });
+    const handler = createCopilotHandlerWithLLM(manifest, llm, { memory });
+
+    await handler({ route: "/invoices", question: "hi", visible: [], scopeId: "end-user-1" });
+
+    expect(memory.loadPendingTask).toHaveBeenCalledWith("end-user-1");
+    const seenHistory = JSON.parse(calls[0].userMessage).history;
+    expect(seenHistory.some((t: { text: string }) => t.text.includes("create a restaurant agent") && t.text.includes("don't wait to be asked"))).toBe(true);
+  });
+
+  it("checkpointing: an ONGOING session (non-empty history) never re-checks for a pending task — same fresh-session-only gate as facts", async () => {
+    const memory = fakeMemoryStore();
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "explain", text: "ok" }), { memory });
+
+    await handler({ route: "/invoices", question: "and then?", visible: [], scopeId: "end-user-1", history: [{ role: "user", text: "hi" }] });
+
+    expect(memory.loadPendingTask).not.toHaveBeenCalled();
   });
 
   it("Phase 5 step 4: memory configured but no scopeId on the request means no seeding and no recording at all", async () => {

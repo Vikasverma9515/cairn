@@ -34,7 +34,7 @@ import {
   type WebMcpTool,
 } from "@cairnvibe/core";
 import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
-import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+import { formatArchivedFacts, formatPendingTask, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 export { KeyRotator } from "./key-rotator";
 import { KeyRotator } from "./key-rotator";
 import type { SkillStore } from "./skill-store";
@@ -203,6 +203,14 @@ export function createCopilotHandlerWithLLM(
       effectiveHistory = seedHistoryFromMemory([], priorTurns, MAX_HISTORY_TURNS);
       const factsSummary = formatRememberedFacts(options.memory.recallFacts(input.scopeId));
       if (factsSummary) effectiveHistory = [{ role: "assistant", text: factsSummary }, ...effectiveHistory];
+      // Checkpointing — see PendingTask's own doc comment. Same
+      // fresh-session-only gate as the facts summary above: a task
+      // that's still genuinely in progress (this session's OWN history
+      // is non-empty) has no business being re-announced mid-flight,
+      // only surfaced on the "hi" that starts a new one after a real
+      // interruption.
+      const pending = options.memory.loadPendingTask(input.scopeId);
+      if (pending) effectiveHistory = [{ role: "assistant", text: formatPendingTask(pending) }, ...effectiveHistory];
     }
 
     // Architecture Pillar 5 — the Archive tier, checked on EVERY request
@@ -226,6 +234,21 @@ export function createCopilotHandlerWithLLM(
     if (options.memory && input.scopeId && isTerminalVerb(verb)) {
       options.memory.recordTurn(input.scopeId, "user", input.question);
       options.memory.recordTurn(input.scopeId, "assistant", summarizeVerbForHistory(verb));
+      // Checkpointing — a terminal verb means this goal is DONE (answered,
+      // or a real give-up), so whatever was pending is resolved either
+      // way; nothing left to resume.
+      options.memory.clearPendingTask(input.scopeId);
+    } else if (options.memory && input.scopeId) {
+      // A CONTINUING step (click/fill/read/call_tool/batch, or a
+      // continuing navigate) — written optimistically, before this
+      // multi-step turn is known to finish. `input.question` is the same
+      // real user goal across every continuing call in one loop (the
+      // client resends it unchanged per step — see index.tsx's own
+      // ask()), so it's the right value for "goal" here, not just this
+      // one step's own text. If the browser tab closes or the connection
+      // drops before a terminal verb is ever reached, this is exactly
+      // what should be left behind for the next session to resume from.
+      options.memory.savePendingTask(input.scopeId, input.question, summarizeVerbForHistory(verb));
     }
 
     return { status: 200, body: verb };

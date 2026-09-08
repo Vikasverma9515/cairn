@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createSqliteMemoryStore, formatArchivedFacts } from "./memory-sqlite";
+import { createSqliteMemoryStore, formatArchivedFacts, formatPendingTask } from "./memory-sqlite";
 
 describe("createSqliteMemoryStore", () => {
   let tmpDir: string;
@@ -246,6 +246,56 @@ describe("createSqliteMemoryStore", () => {
       expect(second.recallArchivedFacts("user-1", "value1")).toEqual({ key1: "value1" });
     });
   });
+
+  describe("pending task — checkpointing an interrupted goal", () => {
+    it("returns null when nothing has ever been saved for this scope", () => {
+      const store = createSqliteMemoryStore(dbPath);
+      expect(store.loadPendingTask("user-1")).toBeNull();
+    });
+
+    it("loads back exactly what was saved", () => {
+      const store = createSqliteMemoryStore(dbPath);
+      store.savePendingTask("user-1", "create a restaurant agent", "opened the New Agent form");
+      const task = store.loadPendingTask("user-1");
+      expect(task?.goal).toBe("create a restaurant agent");
+      expect(task?.lastStep).toBe("opened the New Agent form");
+      expect(typeof task?.updatedAt).toBe("string");
+    });
+
+    it("a later save OVERWRITES the previous one — only the most recent interruption is worth resuming", () => {
+      const store = createSqliteMemoryStore(dbPath);
+      store.savePendingTask("user-1", "create a restaurant agent", "opened the New Agent form");
+      store.savePendingTask("user-1", "create a restaurant agent", "typed the agent name");
+      const task = store.loadPendingTask("user-1");
+      expect(task?.lastStep).toBe("typed the agent name");
+    });
+
+    it("clearPendingTask removes it — nothing left to resume once a turn actually concludes", () => {
+      const store = createSqliteMemoryStore(dbPath);
+      store.savePendingTask("user-1", "create a restaurant agent", "opened the New Agent form");
+      store.clearPendingTask("user-1");
+      expect(store.loadPendingTask("user-1")).toBeNull();
+    });
+
+    it("clearing a scope with nothing pending is a harmless no-op", () => {
+      const store = createSqliteMemoryStore(dbPath);
+      expect(() => store.clearPendingTask("user-1")).not.toThrow();
+    });
+
+    it("is isolated per scope, same as every other tier", () => {
+      const store = createSqliteMemoryStore(dbPath);
+      store.savePendingTask("user-1", "user one's goal", "step one");
+      expect(store.loadPendingTask("user-2")).toBeNull();
+    });
+
+    it("survives a process restart — same as every other tier", () => {
+      const first = createSqliteMemoryStore(dbPath);
+      first.savePendingTask("user-1", "create a restaurant agent", "opened the New Agent form");
+
+      const second = createSqliteMemoryStore(dbPath);
+      expect(second.loadPendingTask("user-1")?.goal).toBe("create a restaurant agent");
+    });
+  });
 });
 
 describe("formatArchivedFacts", () => {
@@ -257,5 +307,16 @@ describe("formatArchivedFacts", () => {
 
   it("returns null for an empty fact set, so a caller can skip adding a turn at all", () => {
     expect(formatArchivedFacts({})).toBeNull();
+  });
+});
+
+describe("formatPendingTask", () => {
+  it("includes the real goal and last known step, and instructs the model to bring it up unprompted", () => {
+    const text = formatPendingTask({ goal: "create a restaurant agent", lastStep: "opened the New Agent form", updatedAt: "2026-09-08T00:00:00.000Z" });
+    expect(text).toContain("create a restaurant agent");
+    expect(text).toContain("opened the New Agent form");
+    // The whole point: a plain "hi" after a real interruption shouldn't
+    // need the user to ask "what were we doing" first.
+    expect(text.toLowerCase()).toContain("don't wait to be asked");
   });
 });

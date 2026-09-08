@@ -23,6 +23,7 @@ import type { HistoryTurn } from "@cairnvibe/core";
 const FACTS_TABLE = "cairn_memory_facts";
 const TURNS_TABLE = "cairn_memory_turns";
 const ARCHIVE_TABLE = "cairn_memory_archive";
+const PENDING_TASK_TABLE = "cairn_memory_pending_task";
 const DEFAULT_RECENT_TURNS = 20;
 const DEFAULT_SEARCH_LIMIT = 5;
 // Architecture Pillar 5 — MemGPT-shaped tiered memory. A REAL, measured
@@ -41,6 +42,24 @@ export interface MemoryTurnRecord {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+}
+
+/**
+ * A real, in-progress goal that got cut short — a dropped connection, a
+ * closed tab, a browser refresh mid-loop — rather than one that actually
+ * finished. Direct ask this closes: "if something happens, like a cut, if
+ * i say hi, it should have a memory... it should know what it was doing,
+ * what was pending, and what was cut, instead of feeling like a new
+ * thing." A fact ("prefers dark mode") and a turn log (raw past
+ * conversation text) are both the wrong shape for this — neither
+ * represents "here's the goal I was working on and how far I got,"
+ * which is what actually needs to survive an interruption and get
+ * surfaced again on the very next message, unprompted.
+ */
+export interface PendingTask {
+  goal: string;
+  lastStep: string;
+  updatedAt: string;
 }
 
 /** Real, significant (4+ letter) words, lowercased — the same crude but
@@ -94,6 +113,21 @@ export interface MemoryStore {
   archiveFact(scopeId: string, key: string, value: string): void;
   /** Keyword match against BOTH key and value, recency-ordered. Empty object for no match — never guesses at relevance. */
   recallArchivedFacts(scopeId: string, query: string, limit?: number): Record<string, string>;
+  /**
+   * Checkpointing — see PendingTask's own doc comment. A single slot per
+   * scope (not a log): a NEW in-progress goal overwrites whatever was
+   * pending before, since only the most recent interruption is worth
+   * resuming — an abandoned older one would just be confusing to bring
+   * back up. Written optimistically on every CONTINUING step of a
+   * multi-step turn (before the turn is known to finish), so a real
+   * interruption always leaves the last real progress behind, not
+   * nothing.
+   */
+  savePendingTask(scopeId: string, goal: string, lastStep: string): void;
+  /** null when nothing is pending — either nothing was ever in progress, or the last one finished and was cleared. */
+  loadPendingTask(scopeId: string): PendingTask | null;
+  /** Called once a turn reaches a real terminal verb — there's nothing left to resume. */
+  clearPendingTask(scopeId: string): void;
 }
 
 /**
@@ -134,6 +168,14 @@ export function createSqliteMemoryStore(target: string | Database.Database): Mem
       UNIQUE(scope_id, key)
     )
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${PENDING_TASK_TABLE} (
+      scope_id TEXT PRIMARY KEY,
+      goal TEXT NOT NULL,
+      last_step TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
 
   const upsertFact = db.prepare(`
     INSERT INTO ${FACTS_TABLE} (scope_id, key, value, updated_at) VALUES (?, ?, ?, ?)
@@ -157,6 +199,12 @@ export function createSqliteMemoryStore(target: string | Database.Database): Mem
     INSERT INTO ${ARCHIVE_TABLE} (scope_id, key, value, updated_at) VALUES (?, ?, ?, ?)
     ON CONFLICT(scope_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);
+  const upsertPendingTask = db.prepare(`
+    INSERT INTO ${PENDING_TASK_TABLE} (scope_id, goal, last_step, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(scope_id) DO UPDATE SET goal = excluded.goal, last_step = excluded.last_step, updated_at = excluded.updated_at
+  `);
+  const selectPendingTask = db.prepare(`SELECT goal, last_step, updated_at FROM ${PENDING_TASK_TABLE} WHERE scope_id = ?`);
+  const deletePendingTask = db.prepare(`DELETE FROM ${PENDING_TASK_TABLE} WHERE scope_id = ?`);
 
   function archiveFactImpl(scopeId: string, key: string, value: string, updatedAt: string): void {
     upsertArchiveFact.run(scopeId, key, value, updatedAt);
@@ -226,6 +274,16 @@ export function createSqliteMemoryStore(target: string | Database.Database): Mem
       }[];
       return Object.fromEntries(rows.map((r) => [r.key, r.value]));
     },
+    savePendingTask(scopeId, goal, lastStep) {
+      upsertPendingTask.run(scopeId, goal, lastStep, new Date().toISOString());
+    },
+    loadPendingTask(scopeId) {
+      const row = selectPendingTask.get(scopeId) as { goal: string; last_step: string; updated_at: string } | undefined;
+      return row ? { goal: row.goal, lastStep: row.last_step, updatedAt: row.updated_at } : null;
+    },
+    clearPendingTask(scopeId) {
+      deletePendingTask.run(scopeId);
+    },
   };
 }
 
@@ -280,4 +338,18 @@ export function formatArchivedFacts(facts: Readonly<Record<string, string>>): st
   const entries = Object.entries(facts);
   if (entries.length === 0) return null;
   return `Also found in older, archived memory (relevant to this question): ${entries.map(([key, value]) => `${key} — ${value}`).join("; ")}.`;
+}
+
+/**
+ * Checkpointing's own formatter — the same pure/standalone/directly-
+ * testable shape as its Core/Archive counterparts above. Worded so the
+ * model brings this up ON ITS OWN at the start of a fresh session
+ * ("Last time we were... want to pick that back up?") instead of waiting
+ * to be asked, which is the entire point: a plain "hi" after a real
+ * interruption should not feel like starting over. Null for no pending
+ * task (nothing was left mid-flight, or it already finished and got
+ * cleared) — the common case, not a gap.
+ */
+export function formatPendingTask(task: PendingTask): string {
+  return `We were in the middle of something last time that got cut off before finishing: "${task.goal}" — the last real progress was: ${task.lastStep}. Bring this up yourself at the start of your reply (don't wait to be asked) and offer to continue, unless the user's new message is clearly about something unrelated.`;
 }

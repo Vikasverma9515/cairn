@@ -66,6 +66,9 @@ function fakeMemoryStore() {
     searchTurns: vi.fn().mockReturnValue([]),
     archiveFact: vi.fn(),
     recallArchivedFacts: vi.fn().mockReturnValue({}),
+    savePendingTask: vi.fn(),
+    loadPendingTask: vi.fn().mockReturnValue(null),
+    clearPendingTask: vi.fn(),
   };
 }
 
@@ -328,6 +331,65 @@ describe("handleDeepgramMessage", () => {
     await expect(
       handleDeepgramMessage(resultsMessage("hi", { isFinal: true, speechFinal: true }), client, deps, getContext, async () => {}, [], { buffer: "" }, () => 0, neverCalledWaitForToolResult),
     ).resolves.not.toThrow();
+  });
+
+  // Checkpointing — see PendingTask's own doc comment in memory-sqlite.ts.
+  // The realtime relay's own version of the typed path's identical tests
+  // in server.test.ts: a CONTINUING step saves a checkpoint before the
+  // turn is known to finish (a dropped connection never gets a graceful
+  // "goodbye" here, so this is what's left behind for a real "cut"), and
+  // a terminal one clears it.
+  it("checkpointing: a CONTINUING step (click) saves a pending-task checkpoint", async () => {
+    const { client } = fakeClient();
+    let call = 0;
+    const respond = vi.fn().mockImplementation(async () => {
+      call++;
+      return call === 1 ? { verb: "click", target: "archive-btn" } : { verb: "explain", text: "Archived it." };
+    });
+    const deps = fakeDeps(respond);
+    const memory = fakeMemoryStore();
+    deps.memory = memory;
+
+    await handleDeepgramMessage(
+      resultsMessage("archive my oldest invoice", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContextWithArchiveBtn,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(memory.savePendingTask).toHaveBeenCalledWith("user-1", "archive my oldest invoice", expect.any(String));
+  });
+
+  it("checkpointing: a TERMINAL verb clears any pending-task checkpoint — nothing left to resume", async () => {
+    const { client } = fakeClient();
+    const respond = vi.fn().mockResolvedValue({ verb: "explain", text: "Here's what this page does." });
+    const deps = fakeDeps(respond);
+    const memory = fakeMemoryStore();
+    deps.memory = memory;
+
+    await handleDeepgramMessage(
+      resultsMessage("what does this page do?", { isFinal: true, speechFinal: true }),
+      client,
+      deps,
+      getContext,
+      async () => {},
+      [],
+      { buffer: "" },
+      () => 0,
+      neverCalledWaitForToolResult,
+      undefined,
+      () => "user-1",
+    );
+
+    expect(memory.clearPendingTask).toHaveBeenCalledWith("user-1");
+    expect(memory.savePendingTask).not.toHaveBeenCalled();
   });
 
   it("Phase 5 step 2: remember_fact is offered to the model only when memory AND a scopeId are both present", async () => {

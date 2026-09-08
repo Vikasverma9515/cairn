@@ -47,7 +47,7 @@ import {
   type CreateCopilotHandlerOptions,
 } from "./server";
 import { DeepgramSpeakStream } from "./tts-stream";
-import { formatArchivedFacts, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
+import { formatArchivedFacts, formatPendingTask, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 import type { SkillStore } from "./skill-store";
 
 const DEEPGRAM_LIVE_URL = "wss://api.deepgram.com/v1/listen";
@@ -598,6 +598,15 @@ async function handleConnection(client: WebSocket, deps: ConnectionDeps): Promis
             // new turns accumulate.
             const factsSummary = formatRememberedFacts(deps.memory.recallFacts(newScopeId));
             if (factsSummary) history.unshift({ role: "assistant", text: factsSummary });
+
+            // Checkpointing — see PendingTask's own doc comment in
+            // memory-sqlite.ts. A dropped connection (the concrete "cut"
+            // this closes) never gets a graceful "goodbye" from the
+            // client, so this is read once, right here, the FIRST time a
+            // real scopeId shows up on a fresh connection — exactly the
+            // "someone just said hi again after being cut off" moment.
+            const pending = deps.memory.loadPendingTask(newScopeId);
+            if (pending) history.unshift({ role: "assistant", text: formatPendingTask(pending) });
           }
         }
       } else if (msg.type === "tool_result" && typeof msg.observation === "string") {
@@ -910,6 +919,20 @@ async function finalizeTurn(
       onStep({ verb, iteration, terminal }) {
         if (myGeneration !== getGeneration()) return true; // superseded by a barge-in while this turn was resolving
 
+        // Checkpointing — written optimistically, on every CONTINUING
+        // step, before this multi-step turn is known to finish. A real
+        // interruption (the connection just drops — no graceful
+        // "goodbye" message exists for this transport) always leaves the
+        // real progress from the LAST completed step behind, never
+        // nothing. `transcript` (the user's own real goal) stays
+        // constant across every step of one loop, same as the typed
+        // path's `input.question` does. Cleared once this turn actually
+        // concludes, below (terminal or a genuine give-up either way).
+        if (!terminal) {
+          const scopeIdForCheckpoint = getScopeId?.();
+          if (deps.memory && scopeIdForCheckpoint) deps.memory.savePendingTask(scopeIdForCheckpoint, transcript, summarizeVerbForHistory(verb));
+        }
+
         // Phase 5 step 2 — a remember_fact call is handled entirely
         // server-side (see executeStep below) and must NEVER be sent to
         // the client: the client would try to look it up in its own
@@ -1067,6 +1090,13 @@ async function finalizeTurn(
       history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
       recordMemoryTurn?.("user", transcript);
       recordMemoryTurn?.("assistant", summarizeVerbForHistory(verb));
+      // Checkpointing — this goal is DONE (answered, or a real
+      // "I'm not sure how to help with that" give-up), so nothing about
+      // it is left to resume.
+      if (deps.memory) {
+        const scopeIdForCheckpoint = getScopeId?.();
+        if (scopeIdForCheckpoint) deps.memory.clearPendingTask(scopeIdForCheckpoint);
+      }
 
       if (ackPromise) {
         // Never start a second speakStreamed call before the first (the
@@ -1104,6 +1134,14 @@ async function finalizeTurn(
     history.splice(0, Math.max(0, history.length - MAX_HISTORY_TURNS));
     recordMemoryTurn?.("user", transcript);
     recordMemoryTurn?.("assistant", gaveUpSummary);
+    // Checkpointing — an explicit give-up is still a real resolution
+    // (not a silent "cut"), so there's nothing left to resume; re-
+    // surfacing an already-given-up-on goal next time would just be
+    // confusing, not helpful.
+    if (deps.memory) {
+      const scopeIdForCheckpoint = getScopeId?.();
+      if (scopeIdForCheckpoint) deps.memory.clearPendingTask(scopeIdForCheckpoint);
+    }
     safeSend(client, { type: "verb", verb: { verb: "explain", text: giveUpText }, generation: myGeneration });
     if (ackPromise) {
       await ackPromise;

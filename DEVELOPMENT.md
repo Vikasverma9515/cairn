@@ -8240,6 +8240,75 @@ and fixed before this was reported as done, not after.
 
 ---
 
+### Task-state checkpointing — "what was I doing, what was pending, what got cut" survives a real interruption
+
+Second of the four items from the same research pass: "if something
+happens, like a cut, if i say hi, it should have a memory... it should
+know what it was doing, what was pending, and what was cut, instead of
+feeling like a new thing." Existing memory (`memory-sqlite.ts`) already
+had two tiers — Core facts ("prefers dark mode") and a Recall turn log —
+but neither represents "here's the goal I was mid-way through and how
+far I got," which is the actual shape needed to survive a dropped
+connection or a closed tab and pick back up on the very next message.
+
+**Built**, general to `@cairnvibe/sdk`, both transports:
+1. **A new `PendingTask` concept** (`memory-sqlite.ts`) — `{goal,
+   lastStep, updatedAt}`, one slot per scope (not a log — only the most
+   recent interruption is worth resuming; an abandoned older one would
+   just be confusing to bring back up). New table
+   `cairn_memory_pending_task`, new `MemoryStore` methods
+   `savePendingTask`/`loadPendingTask`/`clearPendingTask`, and
+   `formatPendingTask()` — worded to make the model bring it up
+   UNPROMPTED at the start of its next reply ("don't wait to be asked"),
+   which is the entire point: a plain "hi" after a real interruption
+   shouldn't need the user to ask "what were we doing" first.
+2. **Written optimistically on every CONTINUING step** of a multi-step
+   turn (click/fill/read/call_tool/batch, or a continuing navigate) —
+   BEFORE the turn is known to finish. Neither transport has a graceful
+   "the user just walked away" signal (a dropped WebSocket, a closed
+   tab), so the only real option is to checkpoint after every real step
+   completes, leaving genuine last-known progress behind if the very
+   next step never happens. Cleared the instant a turn reaches a real
+   terminal verb OR an explicit give-up (both are real resolutions, not
+   silent cuts — re-surfacing a goal the agent already finished or
+   explicitly gave up on would be confusing, not helpful).
+3. **Wired into both transports**: typed/HTTP
+   (`createCopilotHandlerWithLLM` in `server.ts` — save/clear alongside
+   the existing terminal-verb `recordTurn` calls, load+inject alongside
+   the existing fresh-session facts-summary seeding) and the realtime
+   relay (`realtime-server.ts` — save/clear in `onStep`/`finalizeTurn`'s
+   two conclusion branches, load+inject the first time a real `scopeId`
+   arrives on a connection, same spot the existing facts-summary
+   seeding already happens).
+
+**Tests:** 7 new in `memory-sqlite.test.ts` (round-trip, overwrite-not-
+append, clear, clear-on-empty-is-a-no-op, per-scope isolation, survives
+a process restart, `formatPendingTask`'s own wording), 4 new in
+`server.test.ts` (continuing step saves, terminal clears, fresh session
+with a real pending task surfaces it worded correctly, an ONGOING
+session never re-checks — same fresh-session-only gate facts already
+use), 2 new in `realtime-server.test.ts` (continuing step saves via a
+real `handleDeepgramMessage` call, terminal clears). The realtime
+relay's own "load on first scopeId" seeding isn't independently unit-
+tested — that logic lives inline inside `handleConnection`'s WS message
+handler, not a separately-exported/testable function (same as the
+neighboring, already-existing facts-summary seeding it sits beside);
+covered instead by the identical, fully-testable logic on the typed
+path plus the underlying store methods' own full coverage. Full
+`packages/sdk` suite: 460/460. Full-repo typecheck clean.
+
+**Pending:** not yet live-verified against a real interruption (would
+need an actual dropped connection or closed tab mid-multi-step-turn,
+harder to stage live than the modal-detection feature was) — confidence
+here comes from the test suite, not a browser session. `npm publish`
+for sdk 0.4.10. Two items from the original research pass remain: a
+conversational-tone pass, and confirming whether VOXERA's own
+deployment has memory turned on at all.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
