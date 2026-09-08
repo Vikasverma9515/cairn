@@ -3,6 +3,7 @@ import { VerbResponseSchema, type Manifest, type SkillSummary, type Task } from 
 import {
   AnthropicStreamingTextLLM,
   AnthropicVerbLLM,
+  GeminiVerbLLM,
   GroqStreamingTextLLM,
   GroqVerbLLM,
   buildVerbToolSchema,
@@ -16,6 +17,7 @@ import {
   renderSkillSummaries,
   resolveCritic,
   resolvePlan,
+  type GeminiLikeClient,
   type GroqLikeClient,
   type GroqLikeStreamingClient,
   type MessagesClient,
@@ -1496,6 +1498,158 @@ describe("GroqVerbLLM", () => {
     expect(seenTools[0].function.name).toBe("create_plan");
     expect(seenTools[0].function.description).toBe("Submit a plan.");
     expect(seenToolChoice).toEqual({ type: "function", function: { name: "create_plan" } });
+  });
+});
+
+describe("GeminiVerbLLM", () => {
+  it("extracts the already-parsed functionCall.args from a Gemini-shaped response — confirmed live against the real API, no JSON.parse needed unlike Groq's stringified arguments", async () => {
+    const fakeClient: GeminiLikeClient = {
+      models: {
+        generateContent: async () => ({
+          functionCalls: [{ name: "respond_with_verb", args: { verb: "explain", text: "hi" } }],
+        }),
+      },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["fake-key"]), "gemini-flash-latest", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toEqual({ verb: "explain", text: "hi" });
+  });
+
+  it("returns undefined when there's no functionCalls in the response", async () => {
+    const fakeClient: GeminiLikeClient = {
+      models: { generateContent: async () => ({}) },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["fake-key"]), "gemini-flash-latest", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("system", "user")).resolves.toBeUndefined();
+  });
+
+  it("a custom toolName/toolDescription lets the same class serve the Planner/Critic's own forced tool, same as AnthropicVerbLLM/GroqVerbLLM", async () => {
+    let seenTools: any;
+    let seenToolConfig: any;
+    const fakeClient: GeminiLikeClient = {
+      models: {
+        generateContent: async (params: any) => {
+          seenTools = params.config.tools;
+          seenToolConfig = params.config.toolConfig;
+          return { functionCalls: [{ name: "create_plan", args: { goal: "x", facts: [], tasks: [] } }] };
+        },
+      },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["fake-key"]), "gemini-flash-latest", { type: "object", properties: {} }, () => fakeClient, "create_plan", "Submit a plan.");
+    await expect(llm.respond("system", "user")).resolves.toEqual({ goal: "x", facts: [], tasks: [] });
+    expect(seenTools[0].functionDeclarations[0].name).toBe("create_plan");
+    expect(seenTools[0].functionDeclarations[0].description).toBe("Submit a plan.");
+    expect(seenToolConfig).toEqual({ functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["create_plan"] } });
+  });
+
+  it("real, confirmed-live convention this closes: Gemini's invalid-key error is a 400 (NOT 401 like Anthropic/Groq) with 'API key not valid' in the message — still retries on a different configured key", async () => {
+    const seenKeys: string[] = [];
+    const fakeClient: GeminiLikeClient = {
+      models: { generateContent: async () => ({ functionCalls: [{ name: "x", args: { verb: "explain", text: "ok" } }] }) },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["key-a", "key-b"]), "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      if (key === "key-a") {
+        const err: any = new Error('{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}');
+        err.status = 400;
+        throw err;
+      }
+      return fakeClient;
+    });
+    await expect(llm.respond("s", "u")).resolves.toEqual({ verb: "explain", text: "ok" });
+    expect(seenKeys).toEqual(["key-a", "key-b"]);
+  });
+
+  it("a key confirmed dead is never handed out again on a LATER call — same markDead contract as GroqVerbLLM", async () => {
+    const seenKeys: string[] = [];
+    const rotator = new KeyRotator(["key-a", "key-b"]);
+    const fakeClient: GeminiLikeClient = {
+      models: { generateContent: async () => ({ functionCalls: [{ name: "x", args: { verb: "explain", text: "ok" } }] }) },
+    };
+    const llm = new GeminiVerbLLM(rotator, "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      if (key === "key-a") {
+        const err: any = new Error("API key not valid. Please pass a valid API key.");
+        err.status = 400;
+        throw err;
+      }
+      return fakeClient;
+    });
+    await llm.respond("s", "u");
+    await llm.respond("s", "u");
+    expect(seenKeys).toEqual(["key-a", "key-b", "key-b"]);
+    expect(rotator.liveSize).toBe(1);
+  });
+
+  it("a rate-limit (429) error retries on the NEXT configured key and succeeds", async () => {
+    const seenKeys: string[] = [];
+    const fakeClient: GeminiLikeClient = {
+      models: { generateContent: async () => ({ functionCalls: [{ name: "x", args: { verb: "explain", text: "ok" } }] }) },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["key-a", "key-b"]), "m", { type: "object", properties: {} }, (key) => {
+      seenKeys.push(key);
+      if (key === "key-a") {
+        const err: any = new Error('{"error":{"code":429,"message":"Resource exhausted","status":"RESOURCE_EXHAUSTED"}}');
+        err.status = 429;
+        throw err;
+      }
+      return fakeClient;
+    });
+    await expect(llm.respond("s", "u")).resolves.toEqual({ verb: "explain", text: "ok" });
+    expect(seenKeys).toEqual(["key-a", "key-b"]);
+  });
+
+  it("exhausts every configured key on a persistent, non-key-related failure, then throws — never retries more times than there are keys", async () => {
+    let attempts = 0;
+    const fakeClient: GeminiLikeClient = {
+      models: {
+        generateContent: async () => {
+          attempts++;
+          const err: any = new Error("500 internal error");
+          err.status = 500;
+          throw err;
+        },
+      },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["key-a", "key-b"]), "m", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("s", "u")).rejects.toThrow("500 internal error");
+    expect(attempts).toBe(1); // 500 isn't a key/rate-limit/overload condition — no retry
+  });
+
+  it("real bug found live testing this exact class against the real Gemini API right after writing it: a 503 'high demand' error (status UNAVAILABLE, common on the free-tier Flash models) retries once and succeeds — a separate retry policy from rate-limit/invalid-key, since it's model capacity, not this key's quota", async () => {
+    let attempt = 0;
+    const fakeClient: GeminiLikeClient = {
+      models: {
+        generateContent: async () => {
+          attempt++;
+          if (attempt === 1) {
+            const err: any = new Error('{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}');
+            err.status = 503;
+            throw err;
+          }
+          return { functionCalls: [{ name: "respond_with_verb", args: { verb: "explain", text: "recovered" } }] };
+        },
+      },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["fake-key"]), "m", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("s", "u")).resolves.toEqual({ verb: "explain", text: "recovered" });
+    expect(attempt).toBe(2);
+  });
+
+  it("the 503 overload retry fires only once — a second, persistent 503 still throws instead of retrying forever", async () => {
+    let attempts = 0;
+    const fakeClient: GeminiLikeClient = {
+      models: {
+        generateContent: async () => {
+          attempts++;
+          const err: any = new Error("high demand");
+          err.status = 503;
+          throw err;
+        },
+      },
+    };
+    const llm = new GeminiVerbLLM(new KeyRotator(["fake-key"]), "m", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("s", "u")).rejects.toThrow("high demand");
+    expect(attempts).toBe(2); // the one original attempt plus the one allowed retry
   });
 });
 

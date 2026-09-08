@@ -7,7 +7,7 @@ import { computeL2 } from "./l2-reachability";
 import { describeAll } from "./l3-describe";
 import { crawlSite } from "./crawl";
 import { describeCrawled } from "./crawl-describe";
-import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
+import { AnthropicDescribeClient, GeminiDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { diffManifests, formatDiffAsText } from "./diff";
 import { generateDocsMarkdown } from "./docs";
@@ -87,8 +87,13 @@ async function main(): Promise<void> {
   }
 
   if (command === "build") {
-    const provider = flags.provider === "groq" ? "groq" : "anthropic";
-    const keyMissing = provider === "anthropic" ? !process.env.ANTHROPIC_API_KEY : !process.env.GROQ_API_KEYS;
+    const provider = flags.provider === "groq" ? "groq" : flags.provider === "gemini" ? "gemini" : "anthropic";
+    const keyMissing =
+      provider === "anthropic"
+        ? !process.env.ANTHROPIC_API_KEY
+        : provider === "groq"
+          ? !process.env.GROQ_API_KEYS
+          : !process.env.GEMINI_API_KEYS && !process.env.GEMINI_API_KEY;
 
     if (keyMissing && "if-configured" in flags) {
       // Used by the prebuild hook `cairn setup` wires in: a deploy with no key
@@ -99,15 +104,19 @@ async function main(): Promise<void> {
       return;
     }
     if (provider === "anthropic" && keyMissing) {
-      p.log.error("cairn build: ANTHROPIC_API_KEY is not set. Export it, or pass --provider groq, and re-run.");
+      p.log.error("cairn build: ANTHROPIC_API_KEY is not set. Export it, or pass --provider groq/gemini, and re-run.");
       process.exit(1);
     }
     if (provider === "groq" && keyMissing) {
       p.log.error("cairn build --provider groq: GROQ_API_KEYS is not set (comma-separated). Export it and re-run.");
       process.exit(1);
     }
+    if (provider === "gemini" && keyMissing) {
+      p.log.error("cairn build --provider gemini: GEMINI_API_KEY (or GEMINI_API_KEYS, comma-separated) is not set. Export it and re-run.");
+      process.exit(1);
+    }
 
-    const client = provider === "groq" ? new GroqDescribeClient() : new AnthropicDescribeClient();
+    const client = provider === "groq" ? new GroqDescribeClient() : provider === "gemini" ? new GeminiDescribeClient() : new AnthropicDescribeClient();
 
     // Crawl mode: the positional is a URL to a running app, not a source
     // directory — auto-detected (a directory is never a URL), or forced

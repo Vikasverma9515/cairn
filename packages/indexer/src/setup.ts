@@ -38,7 +38,7 @@ import { ensureTranspilePackages } from "./ensure-transpile";
 import { scanL1 } from "./l1-scan";
 import { computeL2 } from "./l2-reachability";
 import { describeAll } from "./l3-describe";
-import { AnthropicDescribeClient, GroqDescribeClient } from "./llm";
+import { AnthropicDescribeClient, GeminiDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { ManifestSchema } from "@cairnvibe/core";
 import { classifyError } from "./ui";
@@ -55,7 +55,10 @@ export const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexe
 // default concurrency on a small handful of pages).
 const SETUP_BUILD_CONCURRENCY = 3;
 
-type Provider = "anthropic" | "groq";
+type Provider = "anthropic" | "groq" | "gemini";
+
+const PROVIDER_LABELS: Record<Provider, string> = { anthropic: "Anthropic (Claude)", groq: "Groq", gemini: "Gemini" };
+const PROVIDER_KEY_ENV: Record<Provider, string> = { anthropic: "ANTHROPIC_API_KEY", groq: "GROQ_API_KEYS", gemini: "GEMINI_API_KEY" };
 
 function readPackageJson(absDir: string): Record<string, any> | null {
   const p = path.join(absDir, "package.json");
@@ -100,11 +103,12 @@ async function attemptBuild(
 ): Promise<{ ok: true; pageCount: number } | { ok: false; error: unknown }> {
   if (provider === "anthropic") process.env.ANTHROPIC_API_KEY = key;
   if (provider === "groq") process.env.GROQ_API_KEYS = key;
+  if (provider === "gemini") process.env.GEMINI_API_KEYS = key;
 
   const s = p.spinner();
   s.start(`Building the manifest (${provider})`);
   try {
-    const client = provider === "anthropic" ? new AnthropicDescribeClient() : new GroqDescribeClient();
+    const client = provider === "anthropic" ? new AnthropicDescribeClient() : provider === "groq" ? new GroqDescribeClient() : new GeminiDescribeClient();
     const facts = scanL1(dir);
     const l2 = computeL2(dir, facts);
     const l3 = await describeAll(dir, facts, client, SETUP_BUILD_CONCURRENCY, (info) => {
@@ -140,18 +144,18 @@ async function recoverFromBuildFailure(
     classified.kind === "rate_limit"
       ? [
           { value: "retry", label: "Try again in a bit (same provider)" },
-          { value: "switch", label: "Switch to the other provider and try that instead" },
+          { value: "switch", label: "Switch to a different provider and try that instead" },
           { value: "skip", label: "Skip for now — I'll run `npx cairn build .` later" },
         ]
       : classified.kind === "auth"
         ? [
             { value: "rekey", label: "Paste the key again (I probably mistyped it)" },
-            { value: "switch", label: "Switch to the other provider instead" },
+            { value: "switch", label: "Switch to a different provider instead" },
             { value: "skip", label: "Skip for now — I'll run `npx cairn build .` later" },
           ]
         : [
             { value: "retry", label: "Try again" },
-            { value: "switch", label: "Switch to the other provider instead" },
+            { value: "switch", label: "Switch to a different provider instead" },
             { value: "skip", label: "Skip for now — I'll run `npx cairn build .` later" },
           ];
 
@@ -163,12 +167,16 @@ async function recoverFromBuildFailure(
     let nextProvider = provider;
     let nextKey = key;
 
-    if (choice === "switch" || choice === "rekey") {
-      if (choice === "switch") nextProvider = provider === "anthropic" ? "groq" : "anthropic";
-      const pasted = await checkCancel(
-        await p.password({ message: nextProvider === "anthropic" ? "Paste your ANTHROPIC_API_KEY" : "Paste your GROQ_API_KEYS" }),
+    if (choice === "switch") {
+      const otherProviders = (Object.keys(PROVIDER_LABELS) as Provider[]).filter((v) => v !== provider);
+      nextProvider = await checkCancel(
+        await p.select({ message: "Switch to which provider?", options: otherProviders.map((v) => ({ value: v, label: PROVIDER_LABELS[v] })) }),
         p,
       );
+    }
+
+    if (choice === "switch" || choice === "rekey") {
+      const pasted = await checkCancel(await p.password({ message: `Paste your ${PROVIDER_KEY_ENV[nextProvider]}` }), p);
       if (!pasted) {
         p.log.message("No key given — back to the menu.");
         continue;
@@ -285,6 +293,7 @@ export async function runSetup(dir: string): Promise<void> {
       options: [
         { value: "anthropic", label: "Anthropic (Claude)" },
         { value: "groq", label: "Groq" },
+        { value: "gemini", label: "Gemini" },
         { value: "skip", label: "Skip — I'll add one to .env later" },
       ],
       initialValue: "anthropic",
@@ -293,10 +302,7 @@ export async function runSetup(dir: string): Promise<void> {
   );
   if (llmChoice !== "skip") {
     provider = llmChoice as Provider;
-    const pasted = await checkCancel(
-      await p.password({ message: provider === "anthropic" ? "Paste your ANTHROPIC_API_KEY (or press enter to skip)" : "Paste your GROQ_API_KEYS (or press enter to skip)" }),
-      p,
-    );
+    const pasted = await checkCancel(await p.password({ message: `Paste your ${PROVIDER_KEY_ENV[provider]} (or press enter to skip)` }), p);
     providerKey = pasted || null;
   }
 
@@ -335,6 +341,7 @@ export async function runSetup(dir: string): Promise<void> {
   const envLines: string[] = [];
   if (provider === "anthropic") envLines.push(`ANTHROPIC_API_KEY=${providerKey ?? ""}`);
   if (provider === "groq") envLines.push(`GROQ_API_KEYS=${providerKey ?? ""}`);
+  if (provider === "gemini") envLines.push(`GEMINI_API_KEY=${providerKey ?? ""}`);
   if (deepgramKey) envLines.push(`DEEPGRAM_API_KEY=${deepgramKey}`);
   envLines.push("CAIRN_REGISTERED_ACTIONS=");
   const envPath = path.join(absDir, ".env");
@@ -410,7 +417,7 @@ export async function runSetup(dir: string): Promise<void> {
     const pkgPath = path.join(absDir, "package.json");
     const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
     fresh.scripts = fresh.scripts ?? {};
-    const providerFlag = provider === "groq" ? "groq" : "anthropic";
+    const providerFlag = provider ?? "anthropic";
     prebuildScriptAdded = !fresh.scripts.prebuild;
     fresh.scripts.prebuild = fresh.scripts.prebuild
       ? `${fresh.scripts.prebuild} && cairn build . --provider ${providerFlag} --if-configured`

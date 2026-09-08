@@ -53,19 +53,23 @@ export class KeyRotator {
   }
 
   /**
-   * Marks a key as confirmed invalid (a real 401 from the provider, not a
-   * rate limit) — excluded from `take()`'s rotation for the rest of this
-   * process's life. Logs once per key the first time it's marked, naming
-   * only its last 4 characters (never the real secret) and how many
-   * configured keys still remain live, so a real deployment's own logs
-   * show exactly what happened instead of a silent, confusing drop in
-   * capacity.
+   * Marks a key as confirmed invalid by the provider (not a rate limit) —
+   * excluded from `take()`'s rotation for the rest of this process's life.
+   * Logs once per key the first time it's marked, naming only its last 4
+   * characters (never the real secret) and how many configured keys still
+   * remain live, so a real deployment's own logs show exactly what
+   * happened instead of a silent, confusing drop in capacity. The caller
+   * decides what "confirmed invalid" means for its own provider (Groq: a
+   * real 401; Gemini: a real 400 with `API_KEY_INVALID` — genuinely
+   * different conventions, see server.ts's isInvalidKeyError/
+   * isGeminiInvalidKeyError) — this class stays provider-agnostic on
+   * purpose, so the log message doesn't name a specific status code.
    */
   markDead(key: string): void {
     if (this.deadKeys.has(key)) return;
     this.deadKeys.add(key);
     const remaining = this.keys.length - this.deadKeys.size;
-    console.warn(`[cairn] API key ending in "${key.slice(-4)}" is invalid (confirmed via a real 401) — excluded from rotation for the rest of this session. ${remaining} of ${this.keys.length} configured key(s) remain.`);
+    console.warn(`[cairn] API key ending in "${key.slice(-4)}" is invalid (confirmed by the provider) — excluded from rotation for the rest of this session. ${remaining} of ${this.keys.length} configured key(s) remain.`);
   }
 
   /** How many distinct keys are configured — callers use this to bound a

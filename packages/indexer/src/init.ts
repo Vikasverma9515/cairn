@@ -18,6 +18,8 @@ const ENV_TEMPLATE = `# Pick one LLM provider:
 ANTHROPIC_API_KEY=
 # or:
 # GROQ_API_KEYS=
+# or:
+# GEMINI_API_KEY=
 
 # Optional — voice (transcription/spoken answers/realtime conversation):
 DEEPGRAM_API_KEY=
@@ -159,7 +161,7 @@ function loadManifest(): Manifest {
 
 export async function POST(request: Request) {
   const handler = createCopilotHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
+    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq",
     registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
     capability: (process.env.CAIRN_CAPABILITY as "explain" | "guide" | "act" | undefined) ?? "act",
     persona: process.env.CAIRN_PERSONA || undefined,
@@ -190,7 +192,7 @@ function loadManifest(): Manifest {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
   const copilotHandler = createCopilotHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
+    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq",
     registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
     capability: (process.env.CAIRN_CAPABILITY as "explain" | "guide" | "act" | undefined) ?? "act",
     persona: process.env.CAIRN_PERSONA || undefined,
@@ -307,7 +309,7 @@ app.use(express.json());
 
 app.post("/api/copilot", async (req, res) => {
   const handler = createCopilotHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq",
+    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq",
     registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
     capability: process.env.CAIRN_CAPABILITY ?? "act",
     persona: process.env.CAIRN_PERSONA || undefined,

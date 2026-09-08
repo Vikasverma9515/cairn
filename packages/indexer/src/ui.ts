@@ -22,7 +22,13 @@ export function classifyError(err: unknown): ClassifiedError {
   if (status === 429 || /rate.?limit/i.test(message)) {
     return { kind: "rate_limit", summary: "the provider is rate-limiting requests — this key has hit its per-minute quota" };
   }
-  if (status === 401 || status === 403 || /invalid.*key|unauthorized|authentication/i.test(message)) {
+  // Gemini's own invalid-key convention is genuinely different from both
+  // Anthropic's and Groq's (confirmed live, not guessed): status 400, not
+  // 401/403, with a message like "API key not valid. Please pass a valid
+  // API key." / "API_KEY_INVALID" — neither the status check above nor the
+  // "invalid.*key" wording (it says "not valid", never "invalid") would
+  // have matched without checking for these two literal strings too.
+  if (status === 401 || status === 403 || /invalid.*key|unauthorized|authentication|API_KEY_INVALID|API key not valid/i.test(message)) {
     return { kind: "auth", summary: "that API key was rejected — check it's correct and active" };
   }
   if ((typeof status === "number" && status >= 500) || /ECONNRESET|ETIMEDOUT|network/i.test(message)) {

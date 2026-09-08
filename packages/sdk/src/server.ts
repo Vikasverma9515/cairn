@@ -4,6 +4,7 @@
 // independently of the client: never trust the browser to have checked.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
 import { z } from "zod";
 import {
@@ -65,8 +66,8 @@ const TIER_ALLOWED_VERBS: Record<CapabilityTier, ReadonlySet<string>> = {
 };
 
 export interface CreateCopilotHandlerOptions {
-  provider?: "anthropic" | "groq";
-  /** Single API key. For groq, prefer `apiKeys` to round-robin; falls back to GROQ_API_KEYS env. */
+  provider?: "anthropic" | "groq" | "gemini";
+  /** Single API key. For groq/gemini, prefer `apiKeys` to round-robin; falls back to GROQ_API_KEYS/GEMINI_API_KEYS env. */
   apiKey?: string;
   apiKeys?: string[];
   /**
@@ -566,6 +567,20 @@ function createToolLLM(options: CreateCopilotHandlerOptions, toolSchema: Record<
     }
     const model = options.model ?? process.env.GROQ_MODEL ?? GROQ_DEFAULT_MODEL;
     return new GroqVerbLLM(rotator, model, toolSchema, undefined, toolName, toolDescription);
+  }
+
+  if (provider === "gemini") {
+    const rotator = options.keyRotator
+      ?? (options.apiKeys
+        ? new KeyRotator(options.apiKeys)
+        : options.apiKey
+          ? new KeyRotator([options.apiKey])
+          : KeyRotator.fromEnvList(process.env.GEMINI_API_KEYS ?? process.env.GEMINI_API_KEY));
+    if (!rotator) {
+      throw new Error("createToolLLM: provider 'gemini' needs apiKey(s), or GEMINI_API_KEY(S) in env");
+    }
+    const model = options.model ?? process.env.GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL;
+    return new GeminiVerbLLM(rotator, model, toolSchema, undefined, toolName, toolDescription);
   }
 
   const client = new Anthropic({ apiKey: options.apiKey });
@@ -1198,6 +1213,165 @@ function isInvalidKeyError(err: unknown): boolean {
   if (code === "invalid_api_key") return true;
   const message = typeof e.message === "string" ? e.message : "";
   return message.includes("invalid_api_key") || message.includes("Invalid API Key");
+}
+
+// The Gemini API's forced-function-calling shape, confirmed live (not
+// guessed) against the real `@google/genai` SDK before writing this:
+// `models.generateContent({ config: { tools: [{ functionDeclarations }],
+// toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames }
+// } } })`, and the result comes back as `response.functionCalls[0].args` —
+// already a parsed JS object (unlike Groq's stringified `arguments`, closer
+// to Anthropic's `tool_use.input`), so `attemptRespond` needs no JSON.parse.
+// "gemini-flash-lite-latest", not "gemini-flash-latest" — live-tested
+// side by side (not guessed) after a real, live "high demand"/DEADLINE_EXCEEDED
+// failure surfaced against the full Flash alias: at the same moment,
+// full Flash (gemini-3.6-flash, what "-latest" currently resolves to)
+// was genuinely overloaded (11-15s to a 503/504), while Flash-Lite
+// answered in ~1s and handled the exact forced-function-call shape this
+// class needs correctly. Flash-Lite is also just the better fit for what
+// this call actually is — a single forced tool call, not open-ended
+// reasoning — the same latency-over-capability tradeoff GROQ_DEFAULT_MODEL
+// already makes for this exact role.
+const GEMINI_DEFAULT_MODEL = "gemini-flash-lite-latest"; // a real Google-maintained alias, always the current Flash-Lite release — deliberately not a dated model id that will eventually 404.
+
+/** Minimal shape GeminiVerbLLM needs — narrow enough to fake in tests. */
+export interface GeminiLikeClient {
+  models: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    generateContent: (params: any) => Promise<{ functionCalls?: Array<{ name?: string; args?: Record<string, unknown> }> }>;
+  };
+}
+
+/** Same key-rotation shape as GroqVerbLLM (see its own doc comment for the
+ * full reasoning) — Gemini's free tier is per-key rate-limited the same
+ * practical way Groq's is, so rotating across multiple configured keys on a
+ * 429 is just as real a win here. No tool-name-hallucination retry (that
+ * was a specific, live-found openai/gpt-oss-120b failure mode, not a
+ * general one) — Gemini's forced `mode: "ANY"` call either returns a real
+ * function call or the request itself fails; there's no third, malformed
+ * middle state to recover from here the way Groq's `tool_use_failed` had. */
+export class GeminiVerbLLM implements VerbLLM {
+  constructor(
+    private keys: KeyRotator,
+    private model: string,
+    private toolSchema: Record<string, unknown>,
+    // httpOptions.retryOptions.attempts: 1 — same real latency bug as
+    // GroqVerbLLM's own maxRetries: 0 (see its doc comment for the full
+    // reasoning), found live testing THIS class against the real API: the
+    // @google/genai SDK retries 5xx/408/429 up to 5 times by default, with
+    // exponential backoff up to 60s between attempts — stacking silently
+    // UNDERNEATH respond()'s own retry loop above. A real 503 "high
+    // demand" burst turned one request into the SDK's own ~30-60s blind
+    // backoff before respond() ever got the rejection it needed to run
+    // its own (much cheaper) overload retry. respond() is the sole source
+    // of retry policy here now — "1" per this field's own doc means no
+    // retries, not "1 retry".
+    private clientFactory: (apiKey: string) => GeminiLikeClient = (apiKey) => new GoogleGenAI({ apiKey, httpOptions: { retryOptions: { attempts: 1 } } }),
+    private toolName: string = VERB_TOOL_NAME,
+    private toolDescription: string = VERB_TOOL_DESCRIPTION,
+  ) {}
+
+  async respond(systemPrompt: string, userMessage: string): Promise<unknown> {
+    // Same two real retry policies as GroqVerbLLM's own (invalid-key and
+    // rate-limit, both retried on a different configured key) — see its
+    // doc comment for the full reasoning; omitted is only the
+    // Groq-specific tool-call-failure recovery, which doesn't apply (see
+    // this class's own doc comment).
+    //
+    // Plus one more, found live (not theoretical) testing this exact
+    // class against the real Gemini API right after writing it: a 503
+    // "This model is currently experiencing high demand... Please try
+    // again later" (status UNAVAILABLE) — a genuine, commonly-documented
+    // transient condition on Gemini's free-tier Flash models, distinct
+    // from both an invalid key and a per-key rate limit (it's model
+    // CAPACITY, not this key's quota — retrying a DIFFERENT key wouldn't
+    // help any more than retrying the same one). Gets exactly one retry
+    // regardless of configured key count, same shape as Groq's own
+    // tool-call-failure retry below.
+    const maxKeyAttempts = Math.max(this.keys.size, 1);
+    let keyAttempts = 0;
+    let usedOverloadRetry = false;
+
+    for (;;) {
+      const key = this.keys.take();
+      try {
+        return await this.attemptRespond(key, systemPrompt, userMessage);
+      } catch (err) {
+        if (isGeminiInvalidKeyError(err)) {
+          this.keys.markDead(key);
+          if (keyAttempts < maxKeyAttempts - 1) {
+            keyAttempts++;
+            continue;
+          }
+          throw err;
+        }
+        if (isGeminiRateLimitError(err) && keyAttempts < maxKeyAttempts - 1) {
+          keyAttempts++;
+          continue;
+        }
+        if (isGeminiOverloadedError(err) && !usedOverloadRetry) {
+          usedOverloadRetry = true;
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  private async attemptRespond(apiKey: string, systemPrompt: string, userMessage: string): Promise<unknown> {
+    const client = this.clientFactory(apiKey);
+    const response = await client.models.generateContent({
+      model: this.model,
+      contents: userMessage,
+      config: {
+        systemInstruction: systemPrompt,
+        tools: [{ functionDeclarations: [{ name: this.toolName, description: this.toolDescription, parametersJsonSchema: this.toolSchema }] }],
+        toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [this.toolName] } },
+      },
+    });
+
+    const call = response.functionCalls?.find((c) => c.name === this.toolName) ?? response.functionCalls?.[0];
+    return call?.args;
+  }
+}
+
+/** Confirmed live against the real Gemini API (not guessed — see
+ * DEVELOPMENT.md): an invalid API key throws with `.status === 400` (NOT
+ * 401 — genuinely different from both Anthropic's and Groq's convention)
+ * and a `.message` that's the full JSON-stringified error body, containing
+ * `"API_KEY_INVALID"` and `"API key not valid"`. */
+function isGeminiInvalidKeyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown };
+  if (e.status !== 400) return false;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("API_KEY_INVALID") || message.includes("API key not valid");
+}
+
+/** Standard Google API quota-exceeded convention: `.status === 429`,
+ * `RESOURCE_EXHAUSTED` in the error body. */
+function isGeminiRateLimitError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown };
+  if (e.status === 429) return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("RESOURCE_EXHAUSTED");
+}
+
+/** Real, live-found (not documented ahead of time — found running
+ * GeminiVerbLLM against the real API right after writing it): Gemini's
+ * free-tier Flash models return a 503 with status "UNAVAILABLE" and a
+ * "currently experiencing high demand... try again later" message under
+ * real load — common enough to be worth one automatic retry rather than
+ * failing the whole turn on it. See GeminiVerbLLM.respond's own doc
+ * comment for why this is a separate retry policy from the rate-limit one
+ * above (model capacity, not this key's quota). */
+function isGeminiOverloadedError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown };
+  if (e.status === 503) return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("UNAVAILABLE") || message.includes("overloaded") || message.includes("high demand");
 }
 
 // ---------------------------------------------------------------------------

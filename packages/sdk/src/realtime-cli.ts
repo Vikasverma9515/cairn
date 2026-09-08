@@ -122,12 +122,16 @@ function main(): void {
   const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
   if (!deepgramApiKey) return fail("DEEPGRAM_API_KEY is not set.");
 
-  const provider = process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : "groq";
+  const provider =
+    process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq";
   if (provider === "anthropic" && !process.env.ANTHROPIC_API_KEY) {
     return fail("ANTHROPIC_API_KEY is not set (CAIRN_RUNTIME_PROVIDER=anthropic).");
   }
   if (provider === "groq" && !process.env.GROQ_API_KEYS) {
     return fail("GROQ_API_KEYS is not set (comma-separated).");
+  }
+  if (provider === "gemini" && !process.env.GEMINI_API_KEYS && !process.env.GEMINI_API_KEY) {
+    return fail("GEMINI_API_KEY (or GEMINI_API_KEYS, comma-separated) is not set (CAIRN_RUNTIME_PROVIDER=gemini).");
   }
 
   const registeredActions = (process.env.CAIRN_REGISTERED_ACTIONS ?? "")

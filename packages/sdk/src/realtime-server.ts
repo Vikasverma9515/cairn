@@ -260,14 +260,17 @@ export function createRealtimeServer(options: CreateRealtimeServerOptions): http
   // CreateCopilotHandlerOptions.keyRotator's own doc comment for the real
   // gap this closes (a key one role confirmed dead used to stay invisible
   // to the other two, which kept rediscovering it fresh on every call).
-  // Only built for groq — anthropic's createXLLM calls ignore keyRotator
-  // entirely, so building one for it would be dead work. Respects a
-  // caller-supplied options.keyRotator (e.g. shared with the typed/HTTP
-  // transport in the same process) instead of always building a fresh one.
+  // Only built for groq/gemini — anthropic's createXLLM calls ignore
+  // keyRotator entirely, so building one for it would be dead work.
+  // Respects a caller-supplied options.keyRotator (e.g. shared with the
+  // typed/HTTP transport in the same process) instead of always building
+  // a fresh one.
   const sharedOptions: CreateRealtimeServerOptions =
     options.provider === "groq" && !options.keyRotator
       ? { ...options, keyRotator: options.apiKeys ? new KeyRotator(options.apiKeys) : options.apiKey ? new KeyRotator([options.apiKey]) : KeyRotator.fromEnvList(process.env.GROQ_API_KEYS) ?? undefined }
-      : options;
+      : options.provider === "gemini" && !options.keyRotator
+        ? { ...options, keyRotator: options.apiKeys ? new KeyRotator(options.apiKeys) : options.apiKey ? new KeyRotator([options.apiKey]) : KeyRotator.fromEnvList(process.env.GEMINI_API_KEYS ?? process.env.GEMINI_API_KEY) ?? undefined }
+        : options;
   const llm = createVerbLLM(sharedOptions);
   // Phase 3 steps 2-3 — real, separately-configured Planner/Critic LLMs.
   // See finalizeTurn's own doc comment for how they're actually used.

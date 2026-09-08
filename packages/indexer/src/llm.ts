@@ -2,6 +2,7 @@
 // and never need a real API key — see l3-describe.test.ts.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import Groq from "groq-sdk";
 import { KeyRotator } from "./key-rotator";
 
@@ -258,6 +259,104 @@ export class GroqDescribeClient implements DescribeClient {
         return toPageDescription(JSON.parse(toolCall.function.arguments) as RawDescribeResult);
       } catch (err) {
         if (isInvalidKeyError(err)) {
+          this.keys.markDead(key);
+          if (attempt < maxKeyAttempts - 1) continue;
+        }
+        throw err;
+      }
+    }
+  }
+}
+
+// Gemini's request/response shape confirmed live against the real
+// `@google/genai` SDK before writing this (same verification this session's
+// sdk/src/server.ts GeminiVerbLLM went through) — forced function calling
+// via `config: { tools: [{ functionDeclarations }], toolConfig:
+// { functionCallingConfig: { mode: "ANY", allowedFunctionNames } } }`, and
+// the result's `functionCalls[0].args` comes back already parsed (no
+// JSON.parse needed, unlike Groq's stringified arguments).
+// "gemini-flash-lite-latest", not "gemini-flash-latest" — live-tested
+// side by side after a real "high demand"/DEADLINE_EXCEEDED failure
+// against the full Flash alias (see sdk/src/server.ts's GEMINI_DEFAULT_MODEL
+// for the full comparison); Flash-Lite answered in ~1s where full Flash
+// took 11-15s before failing, and it's the better latency/cost fit for a
+// single forced tool call anyway.
+const GEMINI_DEFAULT_MODEL = "gemini-flash-lite-latest"; // a real Google-maintained alias for the current Flash-Lite release, not a dated id.
+
+/** Confirmed live against the real Gemini API: an invalid key throws with
+ * `.status === 400` (not 401 — a genuinely different convention from both
+ * Anthropic and Groq) and a `.message` containing `"API_KEY_INVALID"`. */
+function isGeminiInvalidKeyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown };
+  if (e.status !== 400) return false;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("API_KEY_INVALID") || message.includes("API key not valid");
+}
+
+/** Minimal shape GeminiDescribeClient needs — narrow enough to fake in tests, same pattern as GroqLikeClient above. */
+export interface GeminiLikeClient {
+  models: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    generateContent: (params: any) => Promise<{ functionCalls?: Array<{ name?: string; args?: Record<string, unknown> }> }>;
+  };
+}
+
+export class GeminiDescribeClient implements DescribeClient {
+  private keys: KeyRotator;
+  private model: string;
+  private clientFactory: (apiKey: string) => GeminiLikeClient;
+
+  // httpOptions.retryOptions.attempts: 1 — same real latency bug as
+  // GroqDescribeClient's own clientFactory default (maxRetries: 0) — see
+  // sdk/src/server.ts's GeminiVerbLLM for the full reasoning, found live
+  // testing that class: @google/genai retries 5xx/408/429 up to 5 times
+  // with exponential backoff (up to 60s between attempts) by default,
+  // underneath describePage's own key-rotation retry loop above. This
+  // describePage is already wrapped in concurrency.ts's withRetry one
+  // layer up at the caller — no reason to also pay the SDK's own blind
+  // backoff on the way there.
+  constructor(options?: { apiKeys?: string[]; model?: string }, clientFactory: (apiKey: string) => GeminiLikeClient = (apiKey) => new GoogleGenAI({ apiKey, httpOptions: { retryOptions: { attempts: 1 } } })) {
+    const rotator = options?.apiKeys
+      ? new KeyRotator(options.apiKeys)
+      : KeyRotator.fromEnvList(process.env.GEMINI_API_KEYS ?? process.env.GEMINI_API_KEY);
+    if (!rotator) {
+      throw new Error("GeminiDescribeClient: no API key — set GEMINI_API_KEY(S) or pass apiKeys");
+    }
+    this.keys = rotator;
+    this.model = options?.model ?? process.env.GEMINI_MODEL ?? GEMINI_DEFAULT_MODEL;
+    this.clientFactory = clientFactory;
+  }
+
+  async describePage(input: DescribeInput): Promise<PageDescription> {
+    const userContent = buildUserContent(input);
+    // Same real gap this closes as GroqDescribeClient's own retry loop —
+    // see its doc comment. Rate-limit/5xx retry is handled generically,
+    // one layer up, by concurrency.ts's withRetry (status-code based, not
+    // provider-specific — works unchanged for Gemini's ApiError too).
+    const maxKeyAttempts = Math.max(this.keys.size, 1);
+    for (let attempt = 0; ; attempt++) {
+      const key = this.keys.take();
+      try {
+        const client = this.clientFactory(key);
+        const response = await client.models.generateContent({
+          model: this.model,
+          contents: userContent,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            tools: [{ functionDeclarations: [{ name: DESCRIBE_TOOL_NAME, description: DESCRIBE_TOOL.description, parametersJsonSchema: DESCRIBE_TOOL.input_schema }] }],
+            toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [DESCRIBE_TOOL_NAME] } },
+          },
+        });
+
+        const call = response.functionCalls?.find((c) => c.name === DESCRIBE_TOOL_NAME) ?? response.functionCalls?.[0];
+        if (!call?.args) {
+          throw new Error(`L3 describe (gemini): no function call in response for ${input.route}`);
+        }
+
+        return toPageDescription(call.args as unknown as RawDescribeResult);
+      } catch (err) {
+        if (isGeminiInvalidKeyError(err)) {
           this.keys.markDead(key);
           if (attempt < maxKeyAttempts - 1) continue;
         }

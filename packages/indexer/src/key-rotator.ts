@@ -42,14 +42,18 @@ export class KeyRotator {
     return key;
   }
 
-  /** Marks a key as confirmed invalid (a real 401, not a rate limit) —
+  /** Marks a key as confirmed invalid by the provider (not a rate limit) —
    * excluded from `take()`'s rotation for the rest of this build. Logs
-   * once per key, naming only its last 4 characters. */
+   * once per key, naming only its last 4 characters. What "confirmed
+   * invalid" means is provider-specific (Groq: a real 401; Gemini: a real
+   * 400 with `API_KEY_INVALID` — genuinely different conventions, see
+   * llm.ts's isInvalidKeyError/isGeminiInvalidKeyError), so this class
+   * stays provider-agnostic and the log message doesn't name a status code. */
   markDead(key: string): void {
     if (this.deadKeys.has(key)) return;
     this.deadKeys.add(key);
     const remaining = this.keys.length - this.deadKeys.size;
-    console.warn(`[cairn] API key ending in "${key.slice(-4)}" is invalid (confirmed via a real 401) — excluded from rotation for the rest of this build. ${remaining} of ${this.keys.length} configured key(s) remain.`);
+    console.warn(`[cairn] API key ending in "${key.slice(-4)}" is invalid (confirmed by the provider) — excluded from rotation for the rest of this build. ${remaining} of ${this.keys.length} configured key(s) remain.`);
   }
 
   /** How many distinct keys are configured. */
