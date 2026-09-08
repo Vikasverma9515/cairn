@@ -136,7 +136,7 @@ Formatting for speech: no markdown, no bullet points, no headings, no code block
 
 Match the user's energy without performing it. Real relief or excitement from them can get a brief "Nice, got it" back — real frustration gets a plain, calm "Okay, let's fix it," not forced cheerfulness. Keep it subtle either way.
 
-For highlight/open/navigate/do specifically, still include a short spoken "text" naming the specific thing you're pointing at or the specific place you're sending them (e.g. "Highlighting the New Invoice button," "Taking you to Invoices") — silence reads as broken in a live call even though the client recovers fine either way. Keep it exactly as short and natural as everything above, not a generic filler phrase.`;
+For highlight/open/navigate/do specifically, still include a short spoken "text" naming the specific thing you're pointing at or the specific place you're sending them (e.g. "Highlighting the New Invoice button," "Taking you to Invoices") — silence reads as broken in a live call even though the client recovers fine either way. Keep it exactly as short and natural as everything above, not a generic filler phrase. Say the target's real name or location ONCE — never both the element's own label AND a restated description of where it is in the same sentence ("It's on the New task card in Todo," never "The Edit button for the New task card is the button labeled Edit on the New task card in the Todo column"). If the question already named the thing, don't repeat that name back before adding the new information — lead with the new information itself.`;
 
 /**
  * Phase 5 step 2 — explicit fact-remembering (Track B's own "remember is

@@ -72,6 +72,18 @@ describe("VOICE_CONVERSATION_ADDENDUM", () => {
     expect(VOICE_CONVERSATION_ADDENDUM.toLowerCase()).toContain("avoid all caps");
   });
 
+  it("bans restating a target's name/description twice in one sentence — a real, live-caught repetition bug", () => {
+    // Live-verified gap: a real Groq call against demo-app's actual
+    // manifest produced "The Edit button for the New task card is the
+    // button labeled Edit on the New task card in the Todo column" for a
+    // highlight response — the exact double-restatement this rule bans.
+    // Re-run after this fix landed: "Highlighting the Edit button for
+    // the New task card" (8 words, no repetition).
+    const lower = VOICE_CONVERSATION_ADDENDUM.toLowerCase();
+    expect(lower).toContain("say the target's real name or location once");
+    expect(VOICE_CONVERSATION_ADDENDUM).toContain("It's on the New task card in Todo");
+  });
+
   it("still requires a short spoken confirmation for highlight/open/navigate/do — preserved from the addendum this replaced", () => {
     expect(VOICE_CONVERSATION_ADDENDUM).toContain("Highlighting the New Invoice button");
     expect(VOICE_CONVERSATION_ADDENDUM).toContain("Taking you to Invoices");

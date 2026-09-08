@@ -8450,6 +8450,27 @@ not offered as guidance) before this was reported as done.
 
 ---
 
+### Actually testing the new voice tone against a real model — found and fixed one real repetition bug
+
+Direct follow-up: "is it like normal conversation now? what i wanted, test it." Fair — the prior stage only had prompt-content assertions (does the instruction exist), never a real model response to read. Wrote a throwaway script (not committed) that ran the REAL `resolveVerb` + `buildSystemPrompt` + `VOICE_CONVERSATION_ADDENDUM` through the REAL Groq LLM against demo-app's actual manifest, for six representative scenarios spanning a result count, a not-found case, a highlight/point-at, a pronoun follow-up against real conversation history, a plain explain, and a context-dependent follow-up.
+
+**Real results, read directly, not asserted on:**
+- Count: *"There are two cards in the To‑Do column."* — clean, no filler.
+- Not found: *"I don't see a card titled Migrate to Kubernetes on the board."* — honest, no apology.
+- Pronoun follow-up ("what column is it in" after real history): *"The New task card is in the Todo column."* — correctly resolved "it" without re-asking.
+- Plain explain: reasonable, no corporate phrasing, no banned openers.
+- **Highlight/point-at — a real, live-caught bug**: *"The Edit button for the New task card is the button labeled Edit on the New task card in the Todo column."* — 21 words, restates "New task card" and "Edit button" redundantly within one sentence. Not a prompt-content gap (the instruction to be short was already there) — a genuinely uncovered case: nothing told the model not to restate the same noun phrase twice when naming both WHAT it's pointing at and WHERE.
+
+**Built:** one more sentence in `VOICE_CONVERSATION_ADDENDUM` — say the target's name or its location once, never both, with a concrete before/after example lifted directly from the real bad output this found. Re-ran the identical scenario against the real model after the fix: *"Highlighting the Edit button for the New task card"* — 8 words, no repetition, correct verb chosen too (`highlight` instead of the looser `explain` from the first run).
+
+**Tests:** one new test in `realtime-voice-tone.test.ts` documenting the real before/after and asserting the new instruction's presence — 13/13 in that file. Full `packages/sdk` suite: 473/473. Full-repo typecheck clean.
+
+**Pending:** `npm publish` for sdk 0.4.13. This was one real live sample of six scenarios, not a full eval sweep — a broader eval-suite pass (packages/evals already has judge/scoring infrastructure) would catch more of these than a single manual round can, if worth the Groq quota cost to run at scale.
+
+**Failed:** the two non-terminal-verb scenarios in the first test run (`select`, `click`) don't reach `speakStreamed` in the real system at all — a scripting mistake in the test harness, not a real gap; caught by checking `TERMINAL_VERBS` before drawing any conclusion from them, and the retest scenarios were rebuilt around verbs that actually get spoken.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
