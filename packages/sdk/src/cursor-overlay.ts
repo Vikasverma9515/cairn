@@ -39,6 +39,13 @@ function prefersReducedMotion(): boolean {
 let lastX: number | null = null;
 let lastY: number | null = null;
 
+// A soft glowing dot, not a hard-edged pointer arrow — the flat, sharply
+// stroked cursor this replaced read as a mid-2000s OS mouse icon dropped
+// onto the page, not a synthetic marker for what an AI agent is looking
+// at. A radial-gradient dot with a diffuse halo reads as "AI attention," a
+// pattern already familiar from live multiplayer cursors (Figma/Framer)
+// and computer-use agent demos, without competing with the host page's own
+// real cursor or claiming to BE one.
 function ensureCursorEl(): HTMLElement | null {
   if (typeof document === "undefined" || !document.body) return null;
   let el = document.getElementById(CURSOR_ID);
@@ -46,15 +53,9 @@ function ensureCursorEl(): HTMLElement | null {
   el = document.createElement("div");
   el.id = CURSOR_ID;
   el.setAttribute("aria-hidden", "true");
-  // A simple filled pointer shape — matches the widget's own ember accent,
-  // with a thin dark stroke so it reads clearly on light AND dark pages
-  // (the host app's own background is never something this SDK controls).
-  el.innerHTML =
-    '<svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-    '<path d="M2 1.5 L2 18.2 L6.3 14.4 L9.1 20.6 L11.7 19.4 L8.9 13.3 L14.6 13.1 Z" fill="#E07A3F" stroke="#1B1815" stroke-width="1.1" stroke-linejoin="round"/>' +
-    "</svg>";
+  el.innerHTML = '<span class="cairn-cursor-halo"></span><span class="cairn-cursor-dot"></span>';
   el.style.cssText =
-    "position:fixed;left:0;top:0;z-index:2147483001;pointer-events:none;opacity:0;transition:opacity 180ms ease;will-change:transform;filter:drop-shadow(0 3px 6px rgba(0,0,0,0.35));";
+    "position:fixed;left:0;top:0;z-index:2147483001;pointer-events:none;opacity:0;transition:opacity 180ms ease;will-change:transform;width:0;height:0;";
   document.body.appendChild(el);
   return el;
 }

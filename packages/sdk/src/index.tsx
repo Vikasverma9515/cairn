@@ -1856,17 +1856,32 @@ export function Copilot({
   };
 
   const panelVars: PanelCSSVars = {
-    "--cairn-w": settings.density === "compact" ? "296px" : "340px",
-    "--cairn-pad": settings.density === "compact" ? "14px" : "18px",
-    "--cairn-gap": settings.density === "compact" ? "10px" : "14px",
-    "--cairn-btn": settings.density === "compact" ? "32px" : "36px",
-    "--cairn-font": settings.fontSize === "small" ? "12.5px" : settings.fontSize === "large" ? "15px" : "13.5px",
+    "--cairn-w": settings.density === "compact" ? "272px" : "312px",
+    "--cairn-pad": settings.density === "compact" ? "11px" : "15px",
+    "--cairn-gap": settings.density === "compact" ? "7px" : "11px",
+    "--cairn-btn": settings.density === "compact" ? "29px" : "33px",
+    "--cairn-font": settings.fontSize === "small" ? "12px" : settings.fontSize === "large" ? "14.5px" : "12.75px",
   };
   const posClass = settings.position === "left" ? " cairn-pos-left" : "";
 
   return (
     <>
       <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: COPILOT_STYLES }} />
+      {open && (
+        // A second, smaller floating control next to the main FAB, not a
+        // row inside the panel — the panel's own vertical space stays 100%
+        // conversation/transcript, nothing else. Only rendered while open:
+        // settings are about the current session, not something worth a
+        // permanent extra button on the closed launcher.
+        <button
+          type="button"
+          className={"cairn-settings-fab" + posClass}
+          aria-label={settingsOpen ? "Back to conversation" : "Open settings"}
+          onClick={() => setSettingsOpen((v) => !v)}
+        >
+          {settingsOpen ? <ArrowLeft size={14} /> : <Settings2 size={14} />}
+        </button>
+      )}
       <button
         className={(status === "rt-speaking" ? "cairn-fab cairn-fab-speaking" : "cairn-fab") + posClass}
         aria-label={open ? `Close ${persona} help` : `Open ${persona} help`}
@@ -1876,24 +1891,6 @@ export function Copilot({
       </button>
       {open && (
         <div className={"cairn-panel" + posClass} style={panelVars} role="dialog" aria-label={`${persona} help panel`} ref={panelRef}>
-          <div className="cairn-panel-header">
-            {settingsOpen ? (
-              <>
-                <button type="button" className="cairn-header-btn" aria-label="Back to conversation" onClick={() => setSettingsOpen(false)}>
-                  <ArrowLeft size={15} />
-                </button>
-                <span className="cairn-panel-title">Settings</span>
-              </>
-            ) : (
-              <>
-                <span className="cairn-panel-title">{persona}</span>
-                <button type="button" className="cairn-header-btn cairn-header-btn-end" aria-label="Open settings" onClick={() => setSettingsOpen(true)}>
-                  <Settings2 size={15} />
-                </button>
-              </>
-            )}
-          </div>
-
           {settingsOpen && (
             <SettingsView
               settings={settings}
@@ -1906,7 +1903,7 @@ export function Copilot({
 
           {!settingsOpen && (transcript.length > 0 || userCaption || answer || busy) && (
             <div className="cairn-stack">
-              {transcript.length > 0 && (
+              {transcript.length > 0 && !realtimeActive && (
                 <button
                   type="button"
                   className="cairn-history-toggle"
@@ -1917,7 +1914,12 @@ export function Copilot({
                   {historyExpanded ? "Hide earlier" : `${transcript.length} earlier`}
                 </button>
               )}
-              {historyExpanded &&
+              {
+                // A live call reads as one continuous transcript, not a
+                // collapsed history behind a toggle — the toggle above is
+                // hidden for the same reason, this is what makes hiding it
+                // not just leave the turns unreachable.
+                (historyExpanded || realtimeActive) &&
                 transcript.map((entry) => (
                   <div
                     className={entry.role === "user" ? "cairn-bubble cairn-bubble-user cairn-bubble-past" : "cairn-bubble cairn-bubble-agent cairn-bubble-past"}
@@ -2275,7 +2277,11 @@ export interface CairnSettings {
 }
 
 export const DEFAULT_SETTINGS: CairnSettings = {
-  density: "comfortable",
+  // Compact by default — direct, repeated ask across two rounds of
+  // feedback ("make it smaller," then "make the text and everything
+  // small"). Comfortable stays available in Settings for anyone who wants
+  // the extra room back.
+  density: "compact",
   position: "right",
   fontSize: "medium",
   reduceMotion: false,
@@ -2492,8 +2498,12 @@ const COPILOT_STYLES = `
   70% { box-shadow: 0 0 0 10px rgba(224, 122, 63, 0); }
 }
 @keyframes cairn-cursor-arrive {
-  0% { box-shadow: 0 0 0 0 rgba(224, 122, 63, 0.55); }
-  100% { box-shadow: 0 0 0 9px rgba(224, 122, 63, 0); }
+  0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+}
+@keyframes cairn-cursor-pulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.12); }
 }
 @keyframes cairn-spin {
   from { transform: rotate(0deg); }
@@ -2522,14 +2532,37 @@ const COPILOT_STYLES = `
   outline-offset: 3px;
   border-radius: 8px;
 }
-.cairn-cursor-hover {
-  animation: cairn-cursor-arrive 0.3s ease-out;
+#cairn-cursor .cairn-cursor-dot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 32% 32%, #f5a876, #e07a3f 55%, #c7642f 100%);
+  box-shadow: 0 2px 6px rgba(224, 122, 63, 0.45);
+  animation: cairn-cursor-pulse 1.6s ease-in-out infinite;
+}
+#cairn-cursor .cairn-cursor-halo {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(224, 122, 63, 0.3) 0%, rgba(224, 122, 63, 0) 72%);
+}
+#cairn-cursor.cairn-cursor-hover .cairn-cursor-halo {
+  animation: cairn-cursor-arrive 0.45s ease-out;
 }
 .cairn-spin {
   animation: cairn-spin 0.8s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, #cairn-cursor {
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot,
+  #cairn-cursor, #cairn-cursor .cairn-cursor-dot, #cairn-cursor .cairn-cursor-halo {
     animation: none !important;
     transition: none !important;
   }
@@ -2538,14 +2571,18 @@ const COPILOT_STYLES = `
    from Settings > Accessibility > Reduce motion, applied to <html> because
    the synthetic cursor overlay mounts on <body>, outside this component's
    own tree, so nothing narrower would reach it (see the effect that toggles
-   this class in the component for the full reasoning). */
+   this class in the component for the full reasoning). Reaches the dot/halo
+   spans explicitly — a parent's animation:none does not stop a CHILD
+   element's own separately-declared animation. */
 html.cairn-reduce-motion .cairn-fab,
 html.cairn-reduce-motion .cairn-panel,
 html.cairn-reduce-motion .cairn-bubble,
 html.cairn-reduce-motion .cairn-word,
 html.cairn-reduce-motion .cairn-thinking-dot,
 html.cairn-reduce-motion .cairn-glow,
-html.cairn-reduce-motion #cairn-cursor {
+html.cairn-reduce-motion #cairn-cursor,
+html.cairn-reduce-motion #cairn-cursor .cairn-cursor-dot,
+html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   animation: none !important;
   transition: none !important;
 }
@@ -2591,10 +2628,13 @@ html.cairn-reduce-motion #cairn-cursor {
 .cairn-panel {
   position: fixed;
   right: 20px;
-  bottom: 92px;
+  /* Clears the FAB row below it: 20px bottom + 52px fab height + 10px gap
+     — the settings FAB sits beside the main one now, not stacked above
+     it, so the panel only needs to clear a single row's height. */
+  bottom: 82px;
   z-index: 2147483000;
   width: min(var(--cairn-w, 340px), calc(100vw - 40px));
-  max-height: 480px;
+  max-height: 420px;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -2624,25 +2664,37 @@ html.cairn-reduce-motion #cairn-cursor {
 .cairn-stack {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
+/* Real bubbles, not just aligned/colored text — a floating widget this
+   narrow is exactly the case where a bubble still reads as a bubble
+   instead of a messenger cliché (a full-width transcript needs the room
+   this panel doesn't have). Tail corner (4px vs 14px) on the side that
+   faces the other party is what makes the two roles legible as a shape,
+   not just a color, at a glance and mid-scroll — the same asymmetry
+   iMessage/WhatsApp use. */
 .cairn-bubble {
-  max-width: 92%;
+  max-width: 86%;
   font-size: var(--cairn-font, 13.5px);
-  line-height: 1.5;
-  color: #0b0d12;
+  line-height: 1.45;
+  padding: 7px 11px;
+  border-radius: 14px;
   animation: cairn-bubble-in 0.2s ease-out;
 }
 .cairn-bubble-user {
   align-self: flex-end;
-  text-align: right;
-  color: #33384a;
+  background: #14151b;
+  color: #f2f2f4;
+  border-bottom-right-radius: 4px;
 }
 .cairn-bubble-agent {
   align-self: flex-start;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  background: rgba(11, 13, 18, 0.055);
+  color: #0b0d12;
+  border-bottom-left-radius: 4px;
 }
 .cairn-bubble-text {
   white-space: pre-wrap;
@@ -2821,34 +2873,40 @@ html.cairn-reduce-motion #cairn-cursor {
   gap: 6px;
 }
 
-.cairn-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.cairn-panel-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: rgba(11, 13, 18, 0.55);
-}
-.cairn-header-btn {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
+/* A second, smaller launcher beside the main FAB (the "logo" button) — same
+   row, not stacked above it — instead of a row inside the panel: the
+   panel's own vertical space stays 100% conversation, and this reads as a
+   normal secondary control the way a video call's "settings" cog sits
+   beside, not inside, the call window. Same bottom offset as the main FAB
+   (20px), pushed inward by the FAB's own width plus a 10px gap
+   (52 + 10 = 62px) so the two sit side by side. */
+.cairn-settings-fab {
+  position: fixed;
+  right: 82px;
+  bottom: 20px;
+  z-index: 2147483000;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  border: none;
-  background: transparent;
-  color: rgba(11, 13, 18, 0.5);
+  background: rgba(255, 255, 255, 0.96);
+  color: #33384a;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.cairn-header-btn:hover {
-  background: rgba(11, 13, 18, 0.07);
-  color: #0b0d12;
+.cairn-settings-fab:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+}
+.cairn-settings-fab.cairn-pos-left {
+  right: auto;
+  left: 82px;
 }
 
 .cairn-settings {

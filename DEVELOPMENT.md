@@ -7959,6 +7959,79 @@ explicit confirmation the previous stage's publish did.
 
 ---
 
+### A second design pass on the same widget, driven by real screenshots from a live deployment (not demo-app) — remove the header row, real bubble contrast, a modernized cursor, settings moved beside the FAB
+
+Direct feedback, across two follow-up messages, the second with real
+screenshots from the user's own separate deployment: "make the text and
+the everything small, remove the upper part... find another place to
+place the settings tab... differentiate between user and agent... even
+the mouse is... old make it modern," then, after seeing the settings
+button floating above the FAB, "settings button can be in the side of the
+logo, not at the top," then a screenshot showing plain, low-contrast
+"Something went wrong" text and unstyled user/agent lines with no visual
+separation at all.
+
+**Built, all in `packages/sdk/src/index.tsx` and `cursor-overlay.ts`:**
+1. **The panel header row is gone entirely.** No "Cairn" title bar, no
+   in-panel settings row — the panel's vertical space is 100% conversation
+   now. Settings moved OUT of the panel to a small (30px) secondary
+   circular button that lives beside the main FAB — same bottom offset,
+   pushed inward by the FAB's own width + a 10px gap — not stacked above
+   it (the first attempt at this, corrected after direct feedback that a
+   stacked button read as being "at the top").
+2. **Real, high-contrast chat bubbles**, the actual fix for "differentiate
+   between user and agent" and the illegible-text screenshots: user
+   messages are a solid near-black bubble (`#14151b`) with near-white text
+   (`#f2f2f4`), right-aligned with a bottom-right tail corner; agent
+   messages are a very light neutral bubble with near-black text,
+   left-aligned with a bottom-left tail corner — both comfortably above
+   WCAG AA contrast, replacing the old plain colored text with no
+   background at all (which is what the screenshots' low-contrast lines
+   actually were — a real deployment on an OLD, not-yet-updated sdk
+   version, before this bubble treatment existed).
+3. **Further, real compacting**: default `density` flipped from
+   "comfortable" to "compact" (direct, repeated ask across two rounds);
+   compact/comfortable pixel values tightened again (panel width
+   340/296px → 312/272px, `max-height` 480px → 420px, icon buttons
+   36/32px → 33/29px).
+4. **A modernized synthetic cursor** (`cursor-overlay.ts`): the old flat,
+   hard-stroked pointer-arrow SVG — genuinely dated, the direct "even the
+   mouse is... so old" complaint — replaced with a soft radial-gradient
+   dot plus a diffuse halo that briefly expands and fades on arrival, the
+   same visual language live-collaborative cursors (Figma/Framer) and
+   computer-use agent demos already use for "an AI is pointing here,"
+   researched via web search before building rather than guessed.
+5. **Voice-call transcript simplified**: while `realtimeActive`, the
+   "N earlier / Hide earlier" collapse toggle is hidden and the transcript
+   renders fully expanded instead — a live call reads as one continuous
+   flow, not something behind a manual disclosure toggle. Typed-mode
+   history keeps the collapse-by-default behavior unchanged.
+
+**Tests:** full `packages/sdk` suite 437/437, full-repo `npm run
+typecheck` clean, both before and after rebuild. Live-verified: confirmed
+via `getBoundingClientRect()` that the settings button and main FAB now
+share the same `bottom` (700px in the test viewport) with a clean 10px gap
+between them, not stacked; sent a real click-verb request and confirmed
+via `getComputedStyle` that the new cursor's dot (11px, radial-gradient)
+and halo (26px) render with the intended structure at the real click
+coordinates; visually confirmed the new tail-corner bubbles render
+correctly differentiated (dark/right for user, light/left for agent) in a
+real exchange.
+
+**Pending:** the user's own separate deployment (outside this repo) needs
+to update its `@cairnvibe/sdk` dependency to pick this up — the
+low-contrast bubbles in their screenshots are what an OLDER, already-
+published sdk version renders, not a bug still present in this code.
+`web-component.ts` (`<cairn-widget>`) still doesn't have parity with any
+of this — same known gap as the previous stage.
+
+**Failed:** the first attempt at relocating Settings (a button stacked
+directly above the main FAB) didn't match what "find another place, not
+at the top" actually meant — corrected immediately once shown the result,
+to a button beside the FAB instead.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
