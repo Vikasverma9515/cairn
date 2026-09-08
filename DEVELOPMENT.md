@@ -8309,6 +8309,48 @@ deployment has memory turned on at all.
 
 ---
 
+### The conversational-tone pass — mostly already done; one real, small gap closed
+
+Third of the four items: "the conversation are still not feeling like
+human." Checked the actual system prompt (`buildSystemPrompt`,
+`server.ts`) before touching anything — it already carries a genuinely
+thorough, research-backed tone spec from earlier this session: no
+markdown, short natural sentences, no corporate-speak or disclaimers, no
+hedging, no over-apologizing, tone matched to stakes, and even
+occasional real hesitation ("um," a self-correction, a trailing pause,
+capped at roughly 1-in-3-or-4 answers). This was NOT rebuilt — a
+prompt this deliberately tuned gets a targeted addition where a real
+gap exists, not a rewrite that risks undoing already-verified work.
+
+**Researched** (WebSearch) specifically for what's still commonly
+missing even with good style rules: the consistent finding is that
+remaining "still sounds robotic" gaps are mostly IMPLEMENTATION
+(response timing, monolithic replies) or CONTINUITY (referencing prior
+context) rather than prompt wording — and continuity is exactly what
+the checkpointing work just above this entry already addresses. The one
+genuinely uncovered, real gap: nothing in the existing spec addressed
+varying an answer's OPENING across a real back-and-forth — a person
+doesn't start every reply with the same sentence shape.
+
+**Built:** one new bullet in `buildSystemPrompt`'s tone spec — don't
+open every answer the same way; vary based on what's being answered,
+and open differently on purpose if the last two answers in `history`
+both used the same shape. No new tests (this is prose guidance to the
+LLM, not testable logic — same as the rest of that block, which relies
+on the eval suite/live judgment, not unit tests). Full `packages/sdk`
+suite still 460/460 (nothing else touched), full-repo typecheck clean.
+Bumps sdk to 0.4.11.
+
+**Pending:** the honest, most likely explanation for "still doesn't
+feel human" is that VOXERA hasn't actually picked up the tone work from
+earlier this session yet (same root cause as the bubble-contrast
+issue) — worth running `cairn update` there before assuming the prompt
+itself needs more work.
+
+**Failed:** nothing shipped incorrectly.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
