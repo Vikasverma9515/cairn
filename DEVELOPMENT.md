@@ -8091,6 +8091,49 @@ by a user report.
 
 ---
 
+### The "N earlier" collapse toggle was unreachable, not missing — a real, live-reported bug, fixed with a sticky header instead of a redesign
+
+Direct report, with real screenshots of a long conversation: "there is
+no, collapse... this ui is looking shitty." The toggle was never actually
+gone — `historyExpanded` still defaults to `false` and the button still
+renders whenever `transcript.length > 0`. The real bug: `.cairn-history-
+toggle` is the FIRST child of `.cairn-stack`, and the panel's own
+auto-scroll effect (`el.scrollTop = el.scrollHeight` on every new
+message) keeps pinning the view to the BOTTOM as a conversation grows.
+Once expanded, the toggle scrolls further out of reach with every new
+exchange — reachable only by manually scrolling all the way back up,
+which is exactly what "there is no collapse" was describing: a control
+that exists in the DOM but is, in practice, unreachable.
+
+Researched before fixing (`WebSearch`, not guessed): modern chat-
+component kits (e.g. shadcn's newer chat primitives) converge on a
+`MessageScroller` pattern — persistent controls anchored to the SCROLL
+CONTAINER, not the content, so they survive however much content the
+container ends up holding.
+
+**Built:** `.cairn-history-toggle` in `packages/sdk/src/index.tsx` is now
+`position: sticky; top: 0` relative to `.cairn-panel` (its nearest
+scrolling ancestor), with an opaque background + backdrop blur + a
+hairline bottom border so it reads as a small pinned bar once bubbles
+scroll underneath it, instead of transparent button text with other
+bubbles' text visibly passing through it.
+
+**Tests:** full `packages/sdk` suite 437/437, typecheck clean. Live-
+verified the actual failure mode, not just the fix in isolation: expanded
+a real 6-exchange history, sent a new message to trigger auto-scroll-to-
+bottom, and confirmed via screenshot that "Hide earlier" stayed visible
+and clickable at the top the whole time — then clicked it and confirmed
+collapse still works correctly (back to "N earlier," only the latest
+exchange showing).
+
+**Pending:** `npm publish` for sdk 0.4.8 needs the same explicit
+confirmation every prior publish this session has.
+
+**Failed:** nothing shipped incorrectly — the underlying toggle logic was
+already correct; only its reachability under scroll was broken.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

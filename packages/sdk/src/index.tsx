@@ -2714,18 +2714,38 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   text-transform: uppercase;
   color: rgba(11, 13, 18, 0.48);
 }
+/* Sticky, not just inline — a real, live-found bug this fixes: as a
+   conversation grows and stays expanded, autoscroll-to-newest keeps
+   pinning the view to the BOTTOM, pushing this toggle (the first child of
+   .cairn-stack, at the top) further and further out of reach — reachable
+   only by manually scrolling all the way back up, which reads as "there
+   is no collapse" even though the control was always technically there.
+   Sticking it to the scroll container's own top edge (.cairn-panel is the
+   nearest scrolling ancestor) keeps it clickable at every scroll
+   position, the same "MessageScroller" pattern (an always-reachable
+   control anchored to the scroll container, not the content) modern chat
+   UI kits converged on — researched before building, not guessed. An
+   opaque background + a hairline bottom border read as a small pinned
+   bar once bubbles scroll underneath it, instead of stacked bubble text
+   visibly passing through transparent button text. */
 .cairn-history-toggle {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   align-self: center;
   display: inline-flex;
   align-items: center;
   gap: 3px;
   border: none;
-  background: none;
-  padding: 2px 8px;
+  border-bottom: 1px solid rgba(11, 13, 18, 0.06);
+  background: rgba(255, 255, 255, 0.96);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  padding: 3px 10px;
   font: inherit;
   font-size: 11px;
   font-weight: 600;
-  color: rgba(11, 13, 18, 0.4);
+  color: rgba(11, 13, 18, 0.55);
   cursor: pointer;
   border-radius: 999px;
   transition: background 0.15s ease, color 0.15s ease;
