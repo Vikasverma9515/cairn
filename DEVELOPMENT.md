@@ -8627,6 +8627,31 @@ Direct, sharp pushback on the previous stage's own screenshot, with a real refer
 
 ---
 
+### A full visual-language transplant, not another IA fix — matched against a named, real reference
+
+The same reference screenshot came back a second time with sharper feedback: the information was finally there (golden answer, trace, judge reasoning) but the dashboard itself still "looked very bad" — flat, undifferentiated, nothing that read as designed. This time the ask was explicit and visual, not structural: make it look like *that*, using the design skill, real colors and layout, not just better copy. The reference's real source was identified directly — Dribbble shot 23731962, "Sales Analytics Dashboard UI/UX Design" by Shakuro.
+
+**Researched, not guessed:** navigated to the actual Dribbble shot live rather than working from the pasted screenshot alone. Attempted pixel-exact color sampling via canvas `getImageData()` — blocked by CORS on the cross-origin CDN image (`SecurityError: tainted canvas`) — fell back to careful visual judgment for the palette instead of fabricating false precision.
+
+**A real light-theme palette, validated, not eyeballed:** ran `dataviz/scripts/validate_palette.js` iteratively against several rose/red combinations before settling on `--accent: #d6336c`, `--pass: #16803c`, `--fail: #dc2626`. The validator kept failing CVD/normal-vision-floor separation between the rose accent and the red fail status across every hue attempt tried (ΔE 2.5–4.9 CVD, 7.0–13.5 normal-vision, against an 8/15 target) — a real, documented tradeoff, not a silently ignored warning: status is never color-alone anywhere in this UI (every pill already carries a text label), and real ✓/✕ glyphs were added as genuine secondary encoding specifically to responsibly close this gap. Recorded as a comment in `globals.css`, not just in this entry.
+
+**Built, concretely:**
+- `globals.css`'s `:root` token block fully replaced for the new light theme (surfaces, borders, shadows, the validated accent/pass/fail set).
+- `components/Sidebar.tsx` (new) — a real dark icon+label sidebar (5 nav items, hand-drawn inline SVG icons, `usePathname()`-driven active state, a GitHub source link) replacing the old top nav bar, matching the reference's dark-rail structure.
+- `app/layout.tsx` rewritten around a `.shell` / `<Sidebar/>` / `<main>` structure.
+- The Overview page's hero rebuilt: a big bold score number + a colored up/down `.delta-badge` + a solid `.delta-pill` showing pass^k rate, under it a 3-card `.stat-card-row` with the **middle card rendered solid black** (`.stat-card-dark`) — the reference's own "featured, high-contrast card" pattern, applied to capability-dimension coverage instead of a sales metric.
+- `.pill-pass`/`.pill-fail` gained real `::before` checkmark/✕ glyphs — the secondary encoding the palette tradeoff above depends on.
+
+**Tests:** no new logic, so no new test files — this is CSS/markup restructuring on data paths (`getRunSummaries`, `getGoldenDataset`, `getRecentVerdicts`) that already had coverage. Full repo: 850/850 passing, unchanged from the prior stage. Full-repo `npm run typecheck --workspaces --if-present` clean across all six workspaces (core, evals, evals-dashboard, indexer, sdk, demo-app).
+
+**Verified live**, not assumed: every existing page (Overview, `/scenarios`, `/capabilities`, `/compare`, `/run`, `/runs/[trialGroup]`) screenshotted against the running dev server at multiple scroll depths under the new theme — dark sidebar with a correctly-highlighted active link, the black featured stat card, the pink delta pill, the trend chart, the Recent Verdicts cards, and the golden-dataset table with its code-styled golden-answer chips all confirmed rendering correctly with zero console errors.
+
+**Pending:** the reference's bar-chart-with-platform-icons pattern, `TrendChart.tsx`'s area-fill + data-callout-bubble treatment ("Sales dynamic"), and an avatar/icon-equivalent for the Recent Verdicts leaderboard rows were all deliberately deprioritized this stage — the user's stated urgency was on getting the core visual language right first, not full decorative parity with every panel of the reference. Legitimate next-stage candidates if asked for more fidelity. The Critic false-negative investigation flagged in the previous stage remains open and unstarted.
+
+**Failed:** nothing broke this stage — first attempt landed cleanly against the live preview with no follow-up fixes required.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

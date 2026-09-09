@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Sidebar } from "../components/Sidebar";
 
 export const metadata: Metadata = {
   title: "Cairn Evals",
@@ -10,19 +11,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <nav className="nav">
-          <div className="nav-brand">
-            cairn<span>evals</span>
-          </div>
-          <div className="nav-links">
-            <a href="/">Overview</a>
-            <a href="/scenarios">Scenarios</a>
-            <a href="/capabilities">Capabilities</a>
-            <a href="/compare">Compare</a>
-            <a href="/run">Run</a>
-          </div>
-        </nav>
-        <main>{children}</main>
+        <div className="shell">
+          <Sidebar />
+          <main>{children}</main>
+        </div>
       </body>
     </html>
   );

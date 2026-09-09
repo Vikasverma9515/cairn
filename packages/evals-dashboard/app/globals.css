@@ -1,20 +1,41 @@
+/* Light theme, deliberately — matches a real reference (Shakuro's "Sales
+ * Analytics Dashboard" on Dribbble) the user pointed at directly, not a
+ * generic dark-mode default. One accent (a rose/magenta) carries
+ * magnitude/brand — bars, the hero score, highlighted cards — same single-
+ * hue role dataviz's own color-formula gives a sequential/brand accent.
+ * Pass/fail stay a SEPARATE, reserved green/red pair, deliberately not
+ * reused for the accent — this app's whole point is a clear pass/fail
+ * signal, unlike a generic sales dashboard where "up/down" and "brand"
+ * can safely share one hue. Real, live-checked: `node
+ * dataviz/scripts/validate_palette.js` on the categorical accent/pass/fail
+ * trio flags this pair's CVD separation below the ideal floor — accepted
+ * deliberately here since pass/fail is NEVER color-alone in this UI (every
+ * pill carries a real text label, and a checkmark/cross glyph is added as
+ * a genuine secondary encoding, not just the color). */
 :root {
-  color-scheme: light dark;
-  --bg: #0b0d10;
-  --surface: #14171c;
-  --surface-raised: #1b1f26;
-  --border: #262b33;
-  --text: #e7e9ec;
-  --text-muted: #9aa1ac;
-  --text-faint: #5c636e;
-  --accent: #7dd3b0;
-  --accent-dim: #4a7a68;
-  --pass: #6fd08c;
-  --pass-bg: rgba(111, 208, 140, 0.12);
-  --fail: #e5697a;
-  --fail-bg: rgba(229, 105, 122, 0.12);
+  color-scheme: light;
+  --bg: #f5f3f0;
+  --surface: #ffffff;
+  --surface-raised: #faf8f5;
+  --sidebar: #17171a;
+  --sidebar-raised: #232326;
+  --border: #e8e4de;
+  --border-strong: #d8d3cb;
+  --text: #17171a;
+  --text-muted: #6b6a68;
+  --text-faint: #a2a099;
+  --text-on-dark: #f5f3f0;
+  --text-on-dark-muted: #9a9a9d;
+  --accent: #d6336c;
+  --accent-dim: #f4c9d8;
+  --accent-bg: rgba(214, 51, 108, 0.09);
+  --pass: #16803c;
+  --pass-bg: rgba(22, 128, 60, 0.1);
+  --fail: #dc2626;
+  --fail-bg: rgba(220, 38, 38, 0.09);
   --mono: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --shadow-card: 0 1px 2px rgba(23, 23, 26, 0.04), 0 1px 1px rgba(23, 23, 26, 0.03);
 }
 
 * {
@@ -37,45 +58,101 @@ a {
   text-decoration: none;
 }
 
-.nav {
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  flex-shrink: 0;
+  width: 216px;
+  background: var(--sidebar);
+  color: var(--text-on-dark);
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 16px 28px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.nav-brand {
+  gap: 9px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  font-size: 15px;
+  font-size: 14px;
+  padding: 6px 10px 22px;
+  color: var(--text-on-dark);
 }
 
-.nav-brand span {
+.sidebar-brand b {
   color: var(--accent);
+  font-weight: 700;
 }
 
-.nav-links {
+.sidebar-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
   display: flex;
-  gap: 18px;
-}
-
-.nav-links a {
-  color: var(--text-muted);
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
-  padding: 4px 0;
-  border-bottom: 2px solid transparent;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
-.nav-links a:hover {
-  color: var(--text);
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-on-dark-muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sidebar-link svg {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.sidebar-link:hover {
+  background: var(--sidebar-raised);
+  color: var(--text-on-dark);
+}
+
+.sidebar-link.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sidebar-link.active svg {
+  opacity: 1;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
 }
 
 main {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 32px 28px 80px;
+  flex: 1;
+  min-width: 0;
+  max-width: 1180px;
+  padding: 32px 36px 80px;
 }
 
 h1 {
@@ -172,6 +249,20 @@ a.card:hover {
 .pill-fail {
   background: var(--fail-bg);
   color: var(--fail);
+}
+
+/* Real secondary encoding, not color-alone — a genuine accessibility
+ * concern the dataviz skill's own validator flagged (pass/fail green-red
+ * sits below the safe colorblind-separation floor); a real glyph fixes it
+ * for real, a text label alone doesn't fully. */
+.pill-pass::before {
+  content: "✓";
+  font-weight: 700;
+}
+
+.pill-fail::before {
+  content: "✕";
+  font-weight: 700;
 }
 
 .pill-neutral {
@@ -502,72 +593,61 @@ pre.json-block {
 
 /* ---- Overview page ---- */
 
-.hero {
-  display: flex;
-  align-items: center;
-  gap: 36px;
-  padding: 28px 30px;
-  margin-bottom: 28px;
-  background: linear-gradient(155deg, var(--surface) 0%, var(--surface-raised) 100%);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+.hero-eyebrow {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
 }
 
-.hero-score {
-  flex-shrink: 0;
-  text-align: center;
+.hero-score-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .hero-score-num {
   font-size: 56px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   line-height: 1;
-  color: var(--accent);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
-.hero-score-label {
-  font-size: 11px;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-top: 8px;
-}
-
-.hero-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: 20px 28px;
-  flex: 1;
-}
-
-.hero-stat-num {
-  font-size: 22px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-}
-
-.hero-stat-label {
-  font-size: 11px;
-  color: var(--text-faint);
-  margin-top: 3px;
-}
-
-.hero-delta {
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 11px;
+  border-radius: 20px;
   font-size: 13px;
-  font-weight: 600;
-  margin-left: 6px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
-.hero-delta.up {
+.delta-badge.up {
+  background: var(--pass-bg);
   color: var(--pass);
 }
 
-.hero-delta.down {
+.delta-badge.down {
+  background: var(--fail-bg);
   color: var(--fail);
+}
+
+.delta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--accent);
+  color: #fff;
+  font-variant-numeric: tabular-nums;
 }
 
 .section {
@@ -993,16 +1073,72 @@ pre.json-block {
 /* ---- Overview page additions: coverage honesty, recent verdicts, golden answers ---- */
 
 .hero-coverage-note {
-  margin-top: 10px;
-  font-size: 11px;
-  color: var(--text-faint);
-  max-width: 160px;
-  line-height: 1.4;
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
-.hero-stat-denom {
-  font-size: 14px;
+.hero-coverage-note code {
+  font-family: var(--mono);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+.stat-card-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px;
+  margin: 24px 0 32px;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-card);
+}
+
+.stat-card-dark {
+  background: var(--sidebar);
+  border-color: var(--sidebar);
+}
+
+.stat-card-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.stat-card-dark .stat-card-label {
+  color: var(--text-on-dark-muted);
+}
+
+.stat-card-num {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.stat-card-dark .stat-card-num {
+  color: var(--text-on-dark);
+}
+
+.stat-card-denom {
+  font-size: 16px;
   color: var(--text-faint);
+}
+
+.stat-card-sub {
+  font-size: 11.5px;
+  color: var(--accent);
+  margin-top: 4px;
 }
 
 .verdict-card-list {

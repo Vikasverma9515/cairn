@@ -69,47 +69,38 @@ export default function OverviewPage() {
         How well Cairn's agent actually completes real goals in a real app — LLM-judged against real final state, run over run.
       </p>
 
-      <div className="hero">
-        <div className="hero-score">
-          <div className="hero-score-num">{latest.overallScore}</div>
-          <div className="hero-score-label">
-            Overall score
-            {scoreDelta !== null && (
-              <span className={`hero-delta ${scoreDelta > 0 ? "up" : scoreDelta < 0 ? "down" : ""}`}>
-                {scoreDelta > 0 ? "▲" : scoreDelta < 0 ? "▼" : "="} {scoreDelta > 0 ? "+" : ""}
-                {scoreDelta}
-              </span>
-            )}
-          </div>
-          <div className="hero-coverage-note">
-            based on <strong>{evaluatedScenarioIds.size} of {totalScenarios}</strong> golden scenarios evaluated so far — not the full suite yet
+      <div className="hero-eyebrow">Overall score</div>
+      <div className="hero-score-row">
+        <div className="hero-score-num">{latest.overallScore}</div>
+        {scoreDelta !== null && (
+          <span className={`delta-badge ${scoreDelta > 0 ? "up" : scoreDelta < 0 ? "down" : "flat"}`}>
+            {scoreDelta > 0 ? "▲" : scoreDelta < 0 ? "▼" : "="} {scoreDelta > 0 ? "+" : ""}
+            {scoreDelta}
+          </span>
+        )}
+        <span className="delta-pill">{Math.round(latest.passRate * 100)}% pass^k</span>
+      </div>
+      <div className="hero-coverage-note">
+        based on <strong>{evaluatedScenarioIds.size} of {totalScenarios}</strong> golden scenarios evaluated so far · latest commit{" "}
+        <code>{latest.commit}</code> · {fmtDate(latest.ranAt)}
+      </div>
+
+      <div className="stat-card-row">
+        <div className="stat-card">
+          <div className="stat-card-label">Scenarios evaluated</div>
+          <div className="stat-card-num">
+            {evaluatedScenarioIds.size}
+            <span className="stat-card-denom">/{totalScenarios}</span>
           </div>
         </div>
-        <div className="hero-stats">
-          <div>
-            <div className="hero-stat-num">{Math.round(latest.passRate * 100)}%</div>
-            <div className="hero-stat-label">pass^k, scenarios run</div>
-          </div>
-          <div>
-            <div className="hero-stat-num">
-              {evaluatedScenarioIds.size}<span className="hero-stat-denom">/{totalScenarios}</span>
-            </div>
-            <div className="hero-stat-label">scenarios evaluated</div>
-          </div>
-          <div>
-            <div className="hero-stat-num">{capabilitiesCovered}</div>
-            <div className="hero-stat-label">capability dimensions</div>
-          </div>
-          <div>
-            <div className="hero-stat-num">{runs.length}</div>
-            <div className="hero-stat-label">{runs.length === 1 ? "run recorded" : "runs recorded"}</div>
-          </div>
-          <div>
-            <div className="hero-stat-num" style={{ fontFamily: "var(--mono)", fontSize: 15 }}>
-              {latest.commit}
-            </div>
-            <div className="hero-stat-label">latest commit · {fmtDate(latest.ranAt)}</div>
-          </div>
+        <div className="stat-card stat-card-dark">
+          <div className="stat-card-label">Capability dimensions</div>
+          <div className="stat-card-num">{capabilitiesCovered}</div>
+          <div className="stat-card-sub">WebArena + τ-bench taxonomy</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-card-label">{runs.length === 1 ? "Run recorded" : "Runs recorded"}</div>
+          <div className="stat-card-num">{runs.length}</div>
         </div>
       </div>
 
