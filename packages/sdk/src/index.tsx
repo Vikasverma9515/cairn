@@ -998,7 +998,15 @@ export function Copilot({
       // anything in it.
       executeStep: (verb) => executeToolStep(verb, pathnameRef.current, liveRegistryRef.current.getSnapshot().byId, (route) => router.push(route), confirmToolCall).then((r) => r?.observation),
       runCritic: plannerEnabled
-        ? async ({ verb, observation }) => {
+        ? async ({ verb, observation, terminal }) => {
+            // Same real latency guard as realtime-server.ts's own runCritic
+            // closure (see its doc comment) — driveAgentLoop now checks a
+            // terminal verb too, and forcing a Plan into existence just to
+            // critic-check an ordinary one-turn answer ("hello") would add
+            // a real, unnecessary round trip even for a deployment that
+            // opted into Planner/Critic. Skip when nothing so far actually
+            // signaled a multi-step goal.
+            if (terminal && !plan && !planPromise) return undefined;
             // Real state, not the Executor's self-report — see
             // resolveCritic's own doc comment (server.ts) for why this is
             // a genuinely separate pass, same precedent realtime already

@@ -1072,7 +1072,24 @@ async function finalizeTurn(
       onEvent: emitEvent,
       runCritic:
         planLLM && criticLLM
-          ? async ({ verb, observation }) => {
+          ? async ({ verb, observation, terminal }) => {
+              // Real, live-found latency regression this guards against:
+              // driveAgentLoop now runs the Critic on a TERMINAL verb too
+              // (see its own doc comment), and planLLM/criticLLM are built
+              // UNCONDITIONALLY for the realtime relay (no opt-in gate the
+              // way the typed transport has) — without this check, even
+              // "hello" would force a Plan into existence just to
+              // critic-check an ordinary one-turn answer, undoing the
+              // exact "answer instantly, don't force extra round trips"
+              // latency work already done this session. Skip entirely
+              // when nothing so far has actually signaled a multi-step
+              // goal (no plan built yet, none in flight) — a genuinely
+              // multi-step goal either got caught eagerly by
+              // looksMultiStep, or already produced at least one
+              // CONTINUING step first, either of which means `plan` or
+              // `planPromise` is already real by the time a terminal
+              // answer arrives.
+              if (terminal && !plan && !planPromise) return undefined;
               // Real state, not the Executor's self-report — see
               // resolveCritic's own doc comment for why this is a
               // genuinely separate pass, mirroring judge.ts's own

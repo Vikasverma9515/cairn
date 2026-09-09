@@ -45,7 +45,19 @@ export const MAX_HISTORY_TURNS = 8;
  * server-only file (server.ts imports the Anthropic/Groq SDKs) can never
  * be imported from the client widget.
  */
-const MULTI_STEP_SIGNAL = /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b)\b/;
+// Widened once, live-found (not theoretical): a real "create an agent that
+// could call the patient and check if they're okay" was missed entirely by
+// the original connector-word-only version (no "then"/"after that" anywhere
+// in it) — a create/build/set-up goal described by WHAT it should end up
+// doing ("that can/could/should/would ..."), not by narrating its own
+// steps, is exactly as multi-step as one with explicit sequencing words,
+// and just as common a real phrasing. Still deliberately conservative and
+// cheap (no model call) — see this function's own doc comment above for
+// why a false negative here is zero-regression (falls back to the lazy,
+// after-step-1 kickoff) while a false positive only costs one Planner call
+// starting a moment earlier than it otherwise would.
+const MULTI_STEP_SIGNAL =
+  /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b|(create|build|set up|make) (a|an|.*) .*\b(that|which|who) (can|could|should|would)\b)\b/;
 export function looksMultiStep(question: string): boolean {
   return MULTI_STEP_SIGNAL.test(question.toLowerCase());
 }
@@ -99,6 +111,17 @@ export interface AgentLoopStepResultEvent {
   verb: VerbResponse;
   iteration: number;
   observation: string | null | undefined;
+  /** True when this is the terminal-verb Critic check (see driveAgentLoop's
+   * own terminal branch) rather than a continuing step's real execution
+   * result. A caller's runCritic closure needs this explicitly — checking
+   * `observation === undefined` isn't reliable, since a continuing step's
+   * own executeStep can legitimately return undefined too ("no result").
+   * A closure should use this to decide whether it's safe to SKIP the
+   * check (no Plan already active/in-flight for this turn — see
+   * runCritic's own doc comment for why forcing one into existence just
+   * to critic-check an ordinary one-turn answer like "hello" would be a
+   * real, live-relevant latency regression, not a theoretical one). */
+  terminal: boolean;
 }
 
 export interface AgentLoopDeps {
@@ -178,7 +201,15 @@ export type AgentLoopOutcome =
   | { outcome: "aborted"; workingHistory: HistoryTurn[] };
 
 export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentLoopDeps): Promise<AgentLoopOutcome> {
-  const maxIterations = deps.maxIterations ?? 6;
+  // 25, not 6 — the real, live-found ceiling on a genuine multi-step goal
+  // (a real deployment reported a ~20-step "build me a voice agent for X"
+  // task hitting "gave-up" long before it could finish, even though the
+  // Planner/Critic themselves were working correctly). The stall fail-safe
+  // inside each caller's own runCritic closure (STALL_THRESHOLD, 3
+  // non-progressing attempts) is the actual thing that stops a genuinely
+  // broken loop — this cap only needs to be high enough to never be the
+  // limiting factor on a real, progressing goal.
+  const maxIterations = deps.maxIterations ?? 25;
   let loopHistory = initialHistory;
 
   for (let i = 0; i < maxIterations; i++) {
@@ -193,12 +224,55 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
     deps.onEvent?.({ type: "act", verb, at: Date.now() });
 
     if (terminal) {
+      // Real, live-found bug this closes: a terminal verb (the model
+      // deciding to just ANSWER, e.g. "explain") used to return
+      // immediately, before runCritic was even reachable — so the one
+      // failure mode 2026 agent research calls out by name
+      // (self-evaluation bias: an agent's own claim of success, ungraded
+      // by anything else, is frequently wrong) had NO check at all on the
+      // most common path an answer actually ships through. Only runs when
+      // a caller actually wired a Critic (deps.runCritic present) — a
+      // deployment with no Planner/Critic configured behaves exactly as
+      // before, zero regression. `observation` is intentionally
+      // undefined: a terminal verb has no separate execution result the
+      // way a continuing verb does — summarizeVerbForHistory(verb)
+      // (folded into "action" server-side) already carries the model's
+      // own claim, which is exactly what's being scrutinized here.
+      if (deps.runCritic) {
+        const verdict = await deps.runCritic({ verb, iteration: i, observation: undefined, terminal: true });
+        if (verdict?.verdict === "task_complete") {
+          return { outcome: "terminal", finalVerb: verb, workingHistory: loopHistory };
+        }
+        if (verdict?.verdict === "give_up") {
+          return { outcome: "critic-give-up", verdict, workingHistory: loopHistory };
+        }
+        if (verdict) {
+          // "continue" (or "replan", already coerced to "continue" by the
+          // caller's own closure — see AgentLoopDeps.runCritic's doc
+          // comment) — the Critic caught a claim that doesn't actually
+          // satisfy the task, so it doesn't ship. Fold the rejection and
+          // WHY into history, exactly like a continuing step's real
+          // observation, so the next getNextStep call has real, specific
+          // feedback to correct against instead of repeating the same
+          // unverified claim.
+          loopHistory = [
+            ...loopHistory,
+            { role: "assistant" as const, text: `${summarizeVerbForHistory(verb)}. (Not actually complete yet: ${verdict.reasoning})` },
+          ].slice(-MAX_HISTORY_TURNS);
+          deps.onEvent?.({ type: "obs", observation: `Not actually complete yet: ${verdict.reasoning}`, ok: false, at: Date.now() });
+          continue;
+        }
+        // No verdict at all (runCritic returned null/undefined — a
+        // caller's own choice not to check this particular terminal
+        // answer, e.g. no active Plan yet) — ship it unchecked, same as
+        // before this fix existed.
+      }
       return { outcome: "terminal", finalVerb: verb, workingHistory: loopHistory };
     }
 
     const observation = await deps.executeStep(verb, i);
     if (deps.onStepResult) {
-      const abort = await deps.onStepResult({ verb, iteration: i, observation });
+      const abort = await deps.onStepResult({ verb, iteration: i, observation, terminal: false });
       if (abort) return { outcome: "aborted", workingHistory: loopHistory };
     }
     deps.onEvent?.({ type: "obs", observation: observation ?? "no result", ok: observation !== null && observation !== undefined, at: Date.now() });
@@ -209,7 +283,7 @@ export async function driveAgentLoop(initialHistory: HistoryTurn[], deps: AgentL
     ].slice(-MAX_HISTORY_TURNS);
 
     if (deps.runCritic) {
-      const verdict = await deps.runCritic({ verb, iteration: i, observation });
+      const verdict = await deps.runCritic({ verb, iteration: i, observation, terminal: false });
       if (verdict?.verdict === "task_complete") return { outcome: "critic-complete", verdict, workingHistory: loopHistory };
       if (verdict?.verdict === "give_up") return { outcome: "critic-give-up", verdict, workingHistory: loopHistory };
       // "continue", "replan" (already handled inside the caller's own

@@ -16,6 +16,14 @@ describe("looksMultiStep", () => {
     expect(looksMultiStep("show me clients and invoices")).toBe(false);
   });
 
+  it("real, live-found gap this widening closes: a create/build goal described by what it should end up DOING, not by narrating its own steps, is just as multi-step as one with explicit sequencing words — missed entirely before this fix", () => {
+    expect(looksMultiStep("I wanted to create an agent for the healthcare that could call the patient and check if they're okay")).toBe(true);
+    expect(looksMultiStep("build me an agent that can answer billing questions")).toBe(true);
+    expect(looksMultiStep("set up an assistant who should greet new patients")).toBe(true);
+    // Still conservative on a genuinely single-step create — no "that/which/who can/could/should/would" clause describing further behavior.
+    expect(looksMultiStep("create a new agent")).toBe(false);
+  });
+
   it("is case-insensitive", () => {
     expect(looksMultiStep("CHECK THE PRICE AND THEN BUY IT")).toBe(true);
   });
@@ -93,7 +101,7 @@ describe("driveAgentLoop", () => {
     expect(calls).toBe(3);
   });
 
-  it("defaults maxIterations to 6, matching both original drivers' hard cap", async () => {
+  it("defaults maxIterations to 25 — real, live-found fix: a genuine ~20-step goal was hitting the old cap of 6 long before the Planner/Critic could actually finish it", async () => {
     let calls = 0;
     await driveAgentLoop([], {
       getNextStep: async () => {
@@ -102,7 +110,7 @@ describe("driveAgentLoop", () => {
       },
       executeStep: async () => "v",
     });
-    expect(calls).toBe(6);
+    expect(calls).toBe(25);
   });
 
   it("onStep can abort the loop before the terminal/continuing branch runs — no executeStep call, outcome 'aborted'", async () => {
@@ -257,7 +265,7 @@ describe("driveAgentLoop", () => {
       expect(getNextStepCalls).toBe(1);
     });
 
-    it("a continue verdict keeps the loop going exactly as if runCritic were absent", async () => {
+    it("a continue verdict keeps the loop going exactly as if runCritic were absent — for a CONTINUING step; the caller confirms the eventual terminal answer with task_complete once it's actually satisfied", async () => {
       let call = 0;
       const result = await driveAgentLoop([], {
         getNextStep: async () => {
@@ -265,10 +273,53 @@ describe("driveAgentLoop", () => {
           return call === 1 ? { verb: "click", target: "x" } : { verb: "explain", text: "done for real" };
         },
         executeStep: async () => "step 1 done",
-        runCritic: async () => verdict("continue", "Real progress, but the doneContract isn't satisfied yet."),
+        runCritic: async ({ terminal }) => (terminal ? verdict("task_complete") : verdict("continue", "Real progress, but the doneContract isn't satisfied yet.")),
       });
       expect(result.outcome).toBe("terminal");
       expect(call).toBe(2);
+    });
+
+    it("real fix this whole block exists for: a terminal verb's OWN claim now gets critic-checked too — a rejected claim (continue) doesn't ship, it loops again with the rejection folded into history as real feedback", async () => {
+      let call = 0;
+      let criticCallsOnTerminal = 0;
+      const result = await driveAgentLoop([], {
+        getNextStep: async () => {
+          call++;
+          return { verb: "explain", text: `Attempt ${call}: it's set up.` };
+        },
+        executeStep: async () => "unused",
+        runCritic: async ({ terminal, verb }) => {
+          expect(terminal).toBe(true); // every call here is a first-try terminal answer
+          criticCallsOnTerminal++;
+          if (call < 3) return verdict("continue", `Attempt ${call} doesn't actually satisfy the goal — ${JSON.stringify(verb)}`);
+          return verdict("task_complete", "Now it genuinely matches the doneContract.");
+        },
+      });
+      expect(result.outcome).toBe("terminal");
+      expect(call).toBe(3);
+      expect(criticCallsOnTerminal).toBe(3);
+      if (result.outcome === "terminal") expect(result.finalVerb).toEqual({ verb: "explain", text: "Attempt 3: it's set up." });
+      // The two rejected attempts are real, visible feedback in history — not silently discarded.
+      expect(result.workingHistory.some((h) => h.text.includes("Not actually complete yet") && h.text.includes("Attempt 1"))).toBe(true);
+    });
+
+    it("a give_up verdict on a TERMINAL claim ends with critic-give-up, distinct from letting a wrong claim ship as 'terminal'", async () => {
+      const result = await driveAgentLoop([], {
+        getNextStep: async () => ({ verb: "explain", text: "It's done." }),
+        executeStep: async () => "unused",
+        runCritic: async ({ terminal }) => (terminal ? verdict("give_up", "That claim doesn't hold up and nothing suggests it ever will.") : verdict("continue")),
+      });
+      expect(result.outcome).toBe("critic-give-up");
+    });
+
+    it("a null/undefined verdict on a terminal claim ships it unchecked — a caller's own deliberate choice not to check this particular answer (e.g. no Plan active for an ordinary one-turn question), zero regression from before this fix", async () => {
+      const finalVerb: VerbResponse = { verb: "explain", text: "Hi, how can I help?" };
+      const result = await driveAgentLoop([], {
+        getNextStep: async () => finalVerb,
+        executeStep: async () => "unused",
+        runCritic: async () => undefined,
+      });
+      expect(result).toEqual({ outcome: "terminal", finalVerb, workingHistory: [] });
     });
 
     it("a null/undefined verdict (the caller chose not to run the Critic this step) behaves exactly like continue", async () => {
@@ -294,29 +345,30 @@ describe("driveAgentLoop", () => {
           return call === 1 ? { verb: "click", target: "wrong-element" } : { verb: "explain", text: "done after replanning" };
         },
         executeStep: async () => "nothing happened",
-        runCritic: async () => {
-          const v = verdict("replan", "Wrong element targeted — replanning.");
+        runCritic: async ({ terminal }) => {
+          const v = terminal ? verdict("task_complete") : verdict("replan", "Wrong element targeted — replanning.");
           seenVerdicts.push(v.verdict);
           return v; // driveAgentLoop treats a bare "replan" the same as "continue" — it never inspects verdict.verdict beyond task_complete/give_up
         },
       });
       expect(result.outcome).toBe("terminal");
       expect(call).toBe(2);
-      expect(seenVerdicts).toEqual(["replan"]);
+      expect(seenVerdicts).toEqual(["replan", "task_complete"]);
     });
 
-    it("runCritic never fires for a terminal-on-first-call turn — nothing to critique when there was no continuing step at all", async () => {
+    it("runCritic now DOES fire for a terminal-on-first-call turn — real fix for self-evaluation bias (2026 agent research: an agent's own unchecked claim of success is frequently wrong). Only skipped when a caller genuinely has nothing to check it against (see the null/undefined-verdict test above).", async () => {
       let criticCalls = 0;
       const result = await driveAgentLoop([], {
         getNextStep: async () => ({ verb: "explain", text: "Quick answer." }),
         executeStep: async () => "unused",
-        runCritic: async () => {
+        runCritic: async ({ terminal }) => {
+          expect(terminal).toBe(true);
           criticCalls++;
           return verdict("task_complete");
         },
       });
       expect(result.outcome).toBe("terminal");
-      expect(criticCalls).toBe(0);
+      expect(criticCalls).toBe(1);
     });
 
     it("the working history already includes this step's real result by the time runCritic sees it", async () => {
@@ -407,9 +459,9 @@ describe("driveAgentLoop", () => {
           return false;
         },
         executeStep: async () => "v",
-        runCritic: async () => {
+        runCritic: async ({ terminal }) => {
           emitEvent({ type: "thk", text: "Real progress, not done yet.", at: Date.now() });
-          return verdict("continue");
+          return terminal ? verdict("task_complete") : verdict("continue");
         },
         onEvent: emitEvent,
       });

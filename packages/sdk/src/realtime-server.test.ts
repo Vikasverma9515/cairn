@@ -1448,8 +1448,11 @@ describe("handleDeepgramMessage", () => {
       waitForToolResult,
     );
 
-    // Never loops unboundedly even though the model never terminates.
-    expect(respond.mock.calls.length).toBeLessThanOrEqual(6);
+    // Never loops unboundedly even though the model never terminates —
+    // bounded by driveAgentLoop's own maxIterations default (25, raised
+    // from 6 so a genuine ~20-step goal can actually finish — see
+    // agent-loop.ts's own doc comment).
+    expect(respond.mock.calls.length).toBeLessThanOrEqual(25);
     expect(speakStreamed).toHaveBeenCalledWith(expect.stringContaining("wasn't able to finish"));
   });
 });
