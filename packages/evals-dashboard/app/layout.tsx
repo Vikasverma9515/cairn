@@ -15,7 +15,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             cairn<span>evals</span>
           </div>
           <div className="nav-links">
-            <a href="/">Scenarios</a>
+            <a href="/">Overview</a>
+            <a href="/scenarios">Scenarios</a>
             <a href="/capabilities">Capabilities</a>
             <a href="/compare">Compare</a>
             <a href="/run">Run</a>

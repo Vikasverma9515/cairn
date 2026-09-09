@@ -9,11 +9,13 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { runScenarioRepeated, type RunnerOptions } from "./runner";
-import { judgeScenario, passAtK, type Verdict } from "./judge";
+import { judgeScenario, passAtK, type Verdict, type JudgeClient } from "./judge";
 import { openStore, previousTrialGroup, recordRun } from "./store";
 import { scenarios } from "./scenarios";
 import type { Transport } from "./scenario";
 import { runBargeInProbe } from "./barge-in-probes";
+import { createGeminiJudgeClient, createGeminiSimulatedUserClient } from "./gemini-clients";
+import type { SimulatedUserClient } from "./simulated-user";
 
 function currentCommit(): string {
   try {
@@ -30,6 +32,41 @@ function requireEnv(name: string): string {
     process.exit(1);
   }
   return value;
+}
+
+/** The judge (and the simulated-user persona) both need a REAL model
+ * capable of a forced/near-forced structured tool call — this repo has
+ * never had a real ANTHROPIC_API_KEY configured anywhere (confirmed live,
+ * not assumed), so Gemini is a real, working substitute via
+ * gemini-clients.ts's own Anthropic-shaped adapter, not a second-class
+ * fallback. Prefers Anthropic when a real key IS configured (its own
+ * `judgeScenario`/`nextSimulatedUserTurn` defaults stay untouched then);
+ * exits with a clear message only when NEITHER is available.
+ *
+ * Deliberately a DIFFERENT Gemini model than the playground app's own
+ * runtime provider likely uses (gemini-flash-lite-latest) — real, live-found
+ * on the first full suite run using this file: Gemini's free-tier RPM cap
+ * is scoped per (project, MODEL), not per project overall (confirmed via
+ * the real 429's own `quotaDimensions: {model: "..."}` field), so the
+ * agent-under-test and the judge sharing one model shares one 15-RPM
+ * budget between them — the agent alone can burn through it inside a
+ * single scenario's own multi-step loop. Using the full "-latest" Flash
+ * alias here (not "-lite") gives the judge its own separate bucket at
+ * zero extra key/account cost. */
+function resolveJudgeProvider(): { apiKey: string; model: string; judgeClientFactory?: (apiKey: string) => JudgeClient; simulatedUserClientFactory?: (apiKey: string) => SimulatedUserClient } {
+  if (process.env.ANTHROPIC_API_KEY) {
+    return { apiKey: process.env.ANTHROPIC_API_KEY, model: "claude-opus-5" };
+  }
+  if (process.env.GEMINI_API_KEY) {
+    return {
+      apiKey: process.env.GEMINI_API_KEY,
+      model: "gemini-flash-latest",
+      judgeClientFactory: createGeminiJudgeClient,
+      simulatedUserClientFactory: createGeminiSimulatedUserClient,
+    };
+  }
+  console.error("cairn-evals: neither ANTHROPIC_API_KEY nor GEMINI_API_KEY is set — the judge/simulated-user roles need a real model. Export one and re-run.");
+  process.exit(1);
 }
 
 function fmt(n: number | null): string {
@@ -50,7 +87,7 @@ function diffLine(label: string, before: number | null, after: number | null): s
 
 async function main(): Promise<void> {
   const deepgramApiKey = requireEnv("DEEPGRAM_API_KEY");
-  const anthropicApiKey = requireEnv("ANTHROPIC_API_KEY");
+  const judgeProvider = resolveJudgeProvider();
   const commit = currentCommit();
   const dbPath = path.join(process.cwd(), "data", "evals.db");
   const db = openStore(dbPath);
@@ -59,13 +96,30 @@ async function main(): Promise<void> {
   // checking is what should run before a publish.
   const k = Number(process.env.CAIRN_EVALS_K ?? "3") || 3;
 
-  const runnerOptions: RunnerOptions = { deepgramApiKey, anthropicApiKey, headless: process.env.CAIRN_EVALS_HEADED !== "1" };
+  const runnerOptions: RunnerOptions = {
+    deepgramApiKey,
+    headless: process.env.CAIRN_EVALS_HEADED !== "1",
+    simulatedUserApiKey: judgeProvider.apiKey,
+    simulatedUserModel: judgeProvider.model,
+    simulatedUserClientFactory: judgeProvider.simulatedUserClientFactory,
+  };
 
   let totalGroups = 0;
   let totalPassedAtK = 0;
 
+  // Real, live-found need: a full run against a free-tier-only provider
+  // budget (no ANTHROPIC_API_KEY/paid Groq tier configured anywhere in
+  // this repo) can genuinely exhaust a provider's rate limit partway
+  // through — not a code bug, a real capacity constraint. Restricting to
+  // one transport (typically "typed", cheaper and faster than voice's
+  // real audio round trips) is a real, deliberate way to get a clean,
+  // trustworthy run within that budget rather than a run half-poisoned by
+  // 429s. Unset (the default) runs every scenario's own configured
+  // transports, unchanged.
+  const transportFilter = process.env.CAIRN_EVALS_TRANSPORT as Transport | undefined;
+
   for (const scenario of scenarios) {
-    const transports: Transport[] = scenario.transports ?? ["typed", "voice"];
+    const transports: Transport[] = (scenario.transports ?? ["typed", "voice"]).filter((t) => !transportFilter || t === transportFilter);
     for (const transport of transports) {
       totalGroups++;
       process.stdout.write(`\n${scenario.name} [${transport}] (${k}x) ... `);
@@ -79,7 +133,7 @@ async function main(): Promise<void> {
           console.log(`\n  trial ${i + 1}/${k} RUN FAILED: ${result.runError}`);
           continue;
         }
-        const verdict = await judgeScenario(scenario, result, { apiKey: anthropicApiKey });
+        const verdict = await judgeScenario(scenario, result, { apiKey: judgeProvider.apiKey, model: judgeProvider.model, clientFactory: judgeProvider.judgeClientFactory });
         verdicts.push(verdict);
         recordRun(db, commit, result, verdict, { group: trialGroup, index: i + 1 });
       }
@@ -119,15 +173,23 @@ async function main(): Promise<void> {
   // LLM-judged — a mechanical, objectively-checkable protocol assertion,
   // same reasoning matchesExpectation/computeVoiceLatencies already use.
   const baseUrl = process.env.CAIRN_EVALS_BASE_URL ?? "http://localhost:3000";
-  console.log(`\nBarge-in probes [voice] ...`);
-  const probeResults = await Promise.all([
-    runBargeInProbe("interrupt", "barge-in-interrupt", { deepgramApiKey, baseUrl, path: "/invoices" }),
-    runBargeInProbe("noise", "barge-in-noise", { deepgramApiKey, baseUrl, path: "/invoices" }),
-  ]);
-  for (const result of probeResults) {
-    console.log(`  ${result.passed ? "pass" : "FAIL"}: ${result.probeId} — ${result.reasoning}`);
-  }
-  const probesPassed = probeResults.every((r) => r.passed);
+  // These are real realtime-relay turns too (same transportFilter reasoning
+  // as the scenario loop above) — skip them under a typed-only filter
+  // instead of spending more of an already-tight rate-limit budget on a
+  // voice-only check.
+  const probesPassed = transportFilter && transportFilter !== "voice"
+    ? true
+    : await (async () => {
+        console.log(`\nBarge-in probes [voice] ...`);
+        const probeResults = await Promise.all([
+          runBargeInProbe("interrupt", "barge-in-interrupt", { deepgramApiKey, baseUrl, path: "/invoices" }),
+          runBargeInProbe("noise", "barge-in-noise", { deepgramApiKey, baseUrl, path: "/invoices" }),
+        ]);
+        for (const result of probeResults) {
+          console.log(`  ${result.passed ? "pass" : "FAIL"}: ${result.probeId} — ${result.reasoning}`);
+        }
+        return probeResults.every((r) => r.passed);
+      })();
 
   db.close();
   if (totalPassedAtK < totalGroups || !probesPassed) process.exit(1);

@@ -24,11 +24,18 @@ export interface RunnerOptions {
    * considered finished, ms. */
   quietMs?: number;
   /** Required only for a scenario that sets `simulatedUser` — the key the
-   * simulated-user model itself is called with (simulated-user.ts). */
-  anthropicApiKey?: string;
+   * simulated-user model itself is called with (simulated-user.ts).
+   * Provider-neutral on purpose (renamed from `anthropicApiKey`): whatever
+   * key matches `simulatedUserClientFactory`, Anthropic's own default or a
+   * real substitute (see gemini-clients.ts) when no Anthropic key exists. */
+  simulatedUserApiKey?: string;
   /** DI hook for tests, same reasoning as judgeScenario's clientFactory —
    * no real ANTHROPIC_API_KEY exists anywhere in this repo. */
   simulatedUserClientFactory?: (apiKey: string) => SimulatedUserClient;
+  /** Model id for the simulated-user call — defaults to nextSimulatedUserTurn's
+   * own "claude-opus-5" when absent, which is WRONG for a non-Anthropic
+   * clientFactory (see cli.ts's own provider-selection logic). */
+  simulatedUserModel?: string;
 }
 
 // Groq calls have measured up to ~30s elsewhere this session under load —
@@ -262,7 +269,7 @@ async function runSimulatedUserConversation(
 ): Promise<ConversationTurn[]> {
   const config = scenario.simulatedUser;
   if (!config) throw new Error("runSimulatedUserConversation: scenario has no simulatedUser config");
-  if (!options.anthropicApiKey) throw new Error("runSimulatedUserConversation: options.anthropicApiKey is required for a simulated-user scenario");
+  if (!options.simulatedUserApiKey) throw new Error("runSimulatedUserConversation: options.simulatedUserApiKey is required for a simulated-user scenario");
 
   const maxTurns = config.maxTurns ?? DEFAULT_SIMULATED_USER_MAX_TURNS;
   const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
@@ -311,7 +318,8 @@ async function runSimulatedUserConversation(
     history.push({ speaker: "agent", text: agentText });
 
     const turnResult = await nextSimulatedUserTurn(config, priorHistory, agentText, {
-      apiKey: options.anthropicApiKey,
+      apiKey: options.simulatedUserApiKey,
+      model: options.simulatedUserModel,
       clientFactory: options.simulatedUserClientFactory,
     });
     if (turnResult.done) break;

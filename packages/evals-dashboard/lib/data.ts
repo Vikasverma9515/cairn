@@ -214,6 +214,110 @@ function compareStatus(a: CommitScenarioStat | null, b: CommitScenarioStat | nul
   return "unchanged";
 }
 
+export interface DimensionAverages {
+  taskSuccess: number;
+  efficiency: number;
+  correctness: number;
+  safety: number;
+  latency: number | null;
+  persona: number | null;
+  policyCompliance: number | null;
+}
+
+export interface RunSummary {
+  commit: string;
+  /** The latest ran_at among this commit's rows — when this run finished. */
+  ranAt: string;
+  /** 0-100 — the four dimensions every verdict always carries
+   * (taskSuccess/efficiency/correctness/safety), averaged then scaled.
+   * latency/persona/policyCompliance are real but only apply to a subset
+   * of runs (voice-only, policy-constraint-only) — shown alongside, never
+   * folded into the headline number, so a suite with few voice/policy
+   * scenarios isn't penalized for dimensions that don't apply to it. */
+  overallScore: number;
+  /** Fraction of scenario×transport groups that passed pass^k under this commit. */
+  passRate: number;
+  scenarioGroupCount: number;
+  dimensionAverages: DimensionAverages;
+}
+
+function avgOrNull(values: (number | null)[]): number | null {
+  const real = values.filter((v): v is number => v !== null);
+  return real.length ? real.reduce((a, b) => a + b, 0) / real.length : null;
+}
+
+/** One row per commit that has recorded runs — the real, run-over-run
+ * trend: overall score, pass rate, and the full dimension breakdown, so
+ * "did we actually get better" has one real number to point at instead of
+ * a wall of individual scenario pass/fails. Oldest first (a trend chart's
+ * natural reading order). */
+export function getRunSummaries(): RunSummary[] {
+  const runs = allRuns(getDb());
+  const byCommit = new Map<string, StoredRun[]>();
+  for (const run of runs) {
+    const existing = byCommit.get(run.commit);
+    if (existing) existing.push(run);
+    else byCommit.set(run.commit, [run]);
+  }
+
+  const summaries: RunSummary[] = [];
+  for (const [commit, commitRuns] of byCommit) {
+    const byGroup = new Map<string, StoredRun[]>();
+    for (const r of commitRuns) {
+      const key = `${r.scenarioId}::${r.transport}::${r.trialGroup}`;
+      const existing = byGroup.get(key);
+      if (existing) existing.push(r);
+      else byGroup.set(key, [r]);
+    }
+    let passed = 0;
+    for (const groupRuns of byGroup.values()) {
+      if (groupRuns.every((r) => r.verdict.pass)) passed++;
+    }
+
+    const verdicts = commitRuns.map((r) => r.verdict);
+    const dimensionAverages: DimensionAverages = {
+      taskSuccess: avgOrNull(verdicts.map((v) => v.taskSuccess)) ?? 0,
+      efficiency: avgOrNull(verdicts.map((v) => v.efficiency)) ?? 0,
+      correctness: avgOrNull(verdicts.map((v) => v.correctness)) ?? 0,
+      safety: avgOrNull(verdicts.map((v) => v.safety)) ?? 0,
+      latency: avgOrNull(verdicts.map((v) => v.latency)),
+      persona: avgOrNull(verdicts.map((v) => v.persona)),
+      policyCompliance: avgOrNull(verdicts.map((v) => v.policyCompliance)),
+    };
+    const core = [dimensionAverages.taskSuccess, dimensionAverages.efficiency, dimensionAverages.correctness, dimensionAverages.safety];
+    const overallScore = Math.round((core.reduce((a, b) => a + b, 0) / core.length) * 100);
+    const ranAt = commitRuns.reduce((latest, r) => (r.ranAt > latest ? r.ranAt : latest), commitRuns[0].ranAt);
+
+    summaries.push({ commit, ranAt, overallScore, passRate: byGroup.size ? passed / byGroup.size : 0, scenarioGroupCount: byGroup.size, dimensionAverages });
+  }
+
+  summaries.sort((a, b) => a.ranAt.localeCompare(b.ranAt));
+  return summaries;
+}
+
+export interface GoldenScenario {
+  id: string;
+  name: string;
+  goal: string;
+  capabilities: CapabilityTag[];
+  transports: string[];
+  rubricNotes: string | null;
+}
+
+/** The golden dataset itself, straight from the real scenario fixtures
+ * (@cairnvibe/evals/scenarios) — never derived from run history, so this
+ * lists what's EVALUATED regardless of whether it's ever been run yet. */
+export function getGoldenDataset(): GoldenScenario[] {
+  return scenarios.map((s) => ({
+    id: s.id,
+    name: s.name,
+    goal: s.goal,
+    capabilities: s.capabilities,
+    transports: s.transports ?? ["typed", "voice"],
+    rubricNotes: s.rubricNotes ?? null,
+  }));
+}
+
 /** Side-by-side score/latency diff per scenario between two commits, with
  * regressions flagged — the plan's comparison-view spec. */
 export function getComparisonRows(commitA: string, commitB: string): ComparisonRow[] {
