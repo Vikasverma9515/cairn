@@ -8602,6 +8602,31 @@ Direct ask: "where are the evals system and benchmark score for our cairn agent,
 
 ---
 
+### The dashboard, made honest — a real reference (Braintrust's own trace-card pattern), a readable trace view, and a genuine dashboard bug caught by the very fix that surfaced it
+
+Direct, sharp pushback on the previous stage's own screenshot, with a real reference image (a polished analytics dashboard) attached: the numbers-only Overview didn't show the golden answer, didn't show what the agent actually did turn by turn, and a 91 next to "12 golden scenarios" read as "12/12 passed" when only 4 had run — exactly the "shown some numbers, not a proper system" complaint. Explicit ask to actually research real eval/trace UIs this time, not just read about them.
+
+**Real visual research this time**, not text summaries: navigated to Braintrust's own marketing site and found its real product screenshot of a trace/log inspector — one card per real interaction, a clear Input → Output line, full payload NOT shown by default. That's the concrete pattern this stage builds toward: readable narrative first, raw JSON one click away, never the reverse.
+
+**The real gap:** `app/runs/[trialGroup]/page.tsx` already existed and already stored the FULL real trace (every round trip, the judge's reasoning, the final state) — but rendered it as raw `<pre>` JSON blocks by default, with the judge's reasoning buried inside a collapsed `<details>`. The data was real; the presentation made it unreadable, which is indistinguishable from "not there" to anyone who isn't grepping JSON by hand.
+
+**Fixed, concretely:**
+- `lib/trace-summary.ts` (new) — turns one real round trip into a plain-English line ("clicked X", "typed Y into Z", "batch (3 steps): ..."), mirroring the verb-summary shapes `@cairnvibe/sdk`'s own `agent-loop.ts` already established (not re-exported from the SDK's package.json exports map, so duplicated rather than reaching into internals).
+- **A real bug found by writing this**, not before: `copilotRoundTrips` records every HTTP round trip a turn makes — not just `/api/copilot`'s own verb calls, but `/api/copilot/plan` and `/api/copilot/critic` too (Architecture Pillar 4's own Planner/Critic loop, shipped two stages ago). Those have genuinely different response shapes (`{tasks: [...]}`, `{verdict: "continue"|"replan", reasoning}`) with no `verb` field — the first version of this summarizer treated every one of those as "no valid verb in response — unparseable," painting real, correct Planner/Critic calls bright red as if the agent were failing to respond, on every single trace. Confirmed live against a real stored trial (a real Slack-notification scenario, 58 real round trips) before shipping the fix — not assumed. Now classifies three real shapes (`plan`/`critic`/`verb`) plus a genuinely narrower `unparseable` case, and a batch verb's own headline lists each of its real sub-actions instead of just a count.
+- The Overview page's hero no longer lets a rolled-up score imply full coverage: "based on **4 of 12** golden scenarios evaluated so far — not the full suite yet" sits directly under the number, and a real "scenarios evaluated" stat (`4/12`) replaced the bare, misleading "12 golden scenarios" one.
+- A new **Recent verdicts** panel (Braintrust-card shape) — scenario, pass/fail, the judge's real reasoning quoted inline, a direct link to the full trace — so "what did the agent do and what did the model that scored it say" is answered without opening anything.
+- The golden dataset table gained a real **golden answer** column — `scenario.verify.expectContains`, the literal string(s) checked against real app state, not the goal restated — plus a `policyConstraint` row where one exists, and every scenario's pass/fail pill now links straight to its own trace instead of dead-ending at a badge.
+
+**What the fixed trace view actually revealed, honestly reported:** re-reading the earlier-flagged "Critic false-negative" scenario through the now-readable trace confirms it's real, not a misreading — the agent produced a genuinely correct, complete answer at step 9 ("the connection has been saved and tested"), the Critic rejected it one step later ("nothing was added to the workflow list"), and the loop spent the rest of its ~25-iteration budget re-attempting and re-explaining before the FINAL state check (independent of both the agent and the Critic) confirmed the original answer had actually been right all along. A real, concrete, now fully-traceable case of the exact self-evaluation-bias literature Pillar 4 itself was built to guard against — just on the Critic's side this time, not the agent's — worth a direct follow-up investigation with this trace as the starting evidence.
+
+**Tests:** `trace-summary.test.ts` (new, 7 tests) — the plan/critic misclassification bug gets its own dedicated regression tests (a real Plan/Critic-shaped response, asserted NOT to fall into "unparseable"), plus batch sub-action listing, verb-specific headlines, and question attachment. Required widening the root `vitest.config.ts` include glob — `evals-dashboard` is a Next.js app with no `src/` directory (its real logic lives in `lib/`), so it had zero test coverage until now, not by choice but because it never matched the `packages/*/src/` convention every other package follows. Full repo: 850/850 (up from 843 — the 7 new tests). Full-repo typecheck clean.
+
+**Pending:** the Critic false-negative case above is now fully evidenced but still not root-caused — worth a direct look at whether it's a timing issue (checking state before a save genuinely persisted) or a real prompt/judgment gap in `resolveCritic`. The remaining 8 scenarios (and all of voice) still need a real run. Not yet committed/pushed as of writing this entry.
+
+**Failed:** the previous stage's Overview page shipped with a real, valid criticism attached — numbers without evidence, coverage implied rather than stated — corrected in this stage rather than defended.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

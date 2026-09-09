@@ -1,4 +1,4 @@
-import { getRunSummaries, getGoldenDataset, getScenarioSummaries } from "../lib/data";
+import { getRunSummaries, getGoldenDataset, getScenarioSummaries, getRecentVerdicts } from "../lib/data";
 import { TrendChart } from "../components/TrendChart";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +21,21 @@ function fmtDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 export default function OverviewPage() {
   const runs = getRunSummaries();
   const dataset = getGoldenDataset();
   const scenarioSummaries = getScenarioSummaries();
+  const recentVerdicts = getRecentVerdicts(8);
 
   if (runs.length === 0) {
     return (
@@ -43,6 +54,13 @@ export default function OverviewPage() {
   const scoreDelta = previous ? latest.overallScore - previous.overallScore : null;
   const totalScenarios = dataset.length;
   const capabilitiesCovered = new Set(dataset.flatMap((s) => s.capabilities)).size;
+  // Real coverage, not implied by a bare "12 golden scenarios" stat sitting
+  // next to a 91 score — a real, live-reported concern this closes: a
+  // rolled-up score next to the full dataset size reads as "12/12", not
+  // "4 of 12 have actually been run." scenarioSummaries is already scoped
+  // to scenario+transport pairs that have at least one real run.
+  const evaluatedScenarioIds = new Set(scenarioSummaries.map((s) => s.scenarioId));
+  const coveragePct = Math.round((evaluatedScenarioIds.size / totalScenarios) * 100);
 
   return (
     <>
@@ -63,15 +81,20 @@ export default function OverviewPage() {
               </span>
             )}
           </div>
+          <div className="hero-coverage-note">
+            based on <strong>{evaluatedScenarioIds.size} of {totalScenarios}</strong> golden scenarios evaluated so far — not the full suite yet
+          </div>
         </div>
         <div className="hero-stats">
           <div>
             <div className="hero-stat-num">{Math.round(latest.passRate * 100)}%</div>
-            <div className="hero-stat-label">pass^k rate, latest run</div>
+            <div className="hero-stat-label">pass^k, scenarios run</div>
           </div>
           <div>
-            <div className="hero-stat-num">{totalScenarios}</div>
-            <div className="hero-stat-label">golden scenarios</div>
+            <div className="hero-stat-num">
+              {evaluatedScenarioIds.size}<span className="hero-stat-denom">/{totalScenarios}</span>
+            </div>
+            <div className="hero-stat-label">scenarios evaluated</div>
           </div>
           <div>
             <div className="hero-stat-num">{capabilitiesCovered}</div>
@@ -99,6 +122,33 @@ export default function OverviewPage() {
         </div>
         <div className="chart-card">
           <TrendChart points={runs.map((r) => ({ commit: r.commit, ranAt: r.ranAt, overallScore: r.overallScore, passRate: r.passRate }))} />
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-title">
+          <h2>Recent verdicts</h2>
+          <span className="section-link">what the agent did, and what the judge said about it — click through for the full step-by-step trace</span>
+        </div>
+        <div className="verdict-card-list">
+          {recentVerdicts.map((v) => (
+            <a key={`${v.scenarioId}::${v.transport}`} className="verdict-card" href={`/runs/${v.trialGroup}`}>
+              <div className="verdict-card-top">
+                <div>
+                  <div className="verdict-card-title">{v.scenarioName}</div>
+                  <div className="card-meta">
+                    {v.transport} · {relativeTime(v.ranAt)}
+                  </div>
+                </div>
+                <span className={`pill ${v.pass ? "pill-pass" : "pill-fail"}`}>{v.pass ? "pass" : "fail"}</span>
+              </div>
+              <div className="verdict-card-reasoning">&ldquo;{v.reasoning}&rdquo;</div>
+              <div className="verdict-card-footer">
+                <span>taskSuccess {Math.round(v.taskSuccess * 100)}%</span>
+                <span className="verdict-card-link">view full trace →</span>
+              </div>
+            </a>
+          ))}
         </div>
       </div>
 
@@ -176,8 +226,9 @@ export default function OverviewPage() {
               <tr>
                 <th>Scenario</th>
                 <th>Goal</th>
+                <th>Golden answer (verify.expectContains)</th>
                 <th>Capabilities</th>
-                <th>Transports</th>
+                <th>Result</th>
               </tr>
             </thead>
             <tbody>
@@ -187,9 +238,19 @@ export default function OverviewPage() {
                   <tr key={s.id}>
                     <td>
                       <div style={{ fontWeight: 500 }}>{s.name}</div>
-                      <div className="dataset-id">{s.id}</div>
+                      <div className="dataset-id">
+                        {s.id} · {s.transports.join(" + ")}
+                      </div>
                     </td>
                     <td className="dataset-goal">&ldquo;{s.goal}&rdquo;</td>
+                    <td className="dataset-goal">
+                      {s.expectContains.map((e) => (
+                        <code key={e} className="golden-answer">
+                          {e}
+                        </code>
+                      ))}
+                      {s.policyConstraint && <div className="dataset-policy">rule: {s.policyConstraint}</div>}
+                    </td>
                     <td>
                       <div className="tag-row" style={{ marginTop: 0 }}>
                         {s.capabilities.map((c) => (
@@ -200,15 +261,14 @@ export default function OverviewPage() {
                       </div>
                     </td>
                     <td>
-                      {s.transports.join(" + ")}
-                      {runsForScenario.length > 0 && (
-                        <div style={{ marginTop: 4 }}>
-                          {runsForScenario.map((r) => (
-                            <span key={r.transport} className={`pill ${r.passAtK ? "pill-pass" : "pill-fail"}`} style={{ marginRight: 4 }}>
-                              {r.transport}: {r.passAtK ? "pass" : "fail"}
-                            </span>
-                          ))}
-                        </div>
+                      {runsForScenario.length > 0 ? (
+                        runsForScenario.map((r) => (
+                          <a key={r.transport} href={`/runs/${r.latestTrialGroup}`} className={`pill ${r.passAtK ? "pill-pass" : "pill-fail"}`} style={{ marginRight: 4, marginBottom: 4 }}>
+                            {r.transport}: {r.passAtK ? "pass" : "fail"}
+                          </a>
+                        ))
+                      ) : (
+                        <span className="pill pill-neutral">not yet run</span>
                       )}
                     </td>
                   </tr>

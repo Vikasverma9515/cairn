@@ -779,3 +779,303 @@ pre.json-block {
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* ---- Readable trace steps (runs/[trialGroup]) ---- */
+
+.verdict-dim-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.verdict-dim-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+}
+
+.verdict-dim-label {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.verdict-dim-val {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.reasoning-label {
+  display: block;
+  font-size: 10.5px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.conversation-turn {
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  max-width: 85%;
+}
+
+.conversation-turn.agent {
+  background: var(--surface-raised);
+  color: var(--text);
+  align-self: flex-start;
+}
+
+.conversation-turn.simulated-user {
+  background: rgba(125, 211, 176, 0.1);
+  color: var(--text);
+  align-self: flex-end;
+}
+
+.conversation-speaker {
+  display: block;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+
+.trace-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.trace-step-empty {
+  padding: 14px 16px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  background: var(--surface-raised);
+}
+
+.trace-step {
+  display: flex;
+  gap: 12px;
+  background: var(--surface-raised);
+  padding: 12px 16px;
+}
+
+.trace-step-num {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.trace-step-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.trace-step-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.trace-step-question {
+  display: block;
+  width: 100%;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.trace-step-verb {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.trace-step-verb.verb-explain {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.trace-step-verb.kind-plan,
+.trace-step-verb.kind-critic {
+  color: var(--text-faint);
+  border-style: dashed;
+}
+
+.trace-step-verb.kind-unparseable {
+  color: var(--fail);
+  border-color: var(--fail);
+}
+
+.trace-step[data-kind="plan"],
+.trace-step[data-kind="critic"] {
+  opacity: 0.72;
+}
+
+.trace-step-text {
+  color: var(--text-muted);
+}
+
+.trace-step-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+
+.trace-step-raw {
+  display: inline-block;
+  margin-left: 10px;
+}
+
+.trace-step-raw summary {
+  display: inline;
+  cursor: pointer;
+  color: var(--text-faint);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+.trace-step-raw summary:hover {
+  color: var(--accent);
+}
+
+.trace-step-raw[open] summary {
+  display: block;
+  margin-bottom: 4px;
+}
+
+/* ---- Overview page additions: coverage honesty, recent verdicts, golden answers ---- */
+
+.hero-coverage-note {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-faint);
+  max-width: 160px;
+  line-height: 1.4;
+}
+
+.hero-stat-denom {
+  font-size: 14px;
+  color: var(--text-faint);
+}
+
+.verdict-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.verdict-card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  transition: border-color 0.12s ease;
+}
+
+.verdict-card:hover {
+  border-color: var(--accent-dim);
+}
+
+.verdict-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.verdict-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.verdict-card-reasoning {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.verdict-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.verdict-card-link {
+  color: var(--accent);
+  font-family: var(--sans);
+}
+
+.golden-answer {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--pass);
+  background: var(--pass-bg);
+  padding: 2px 7px;
+  border-radius: 5px;
+  margin: 0 4px 4px 0;
+}
+
+.dataset-policy {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 4px;
+  font-style: italic;
+}

@@ -111,6 +111,40 @@ export function getTrialGroup(trialGroup: string): StoredRun[] {
   return trialGroupResults(getDb(), trialGroup);
 }
 
+export interface RecentVerdict {
+  scenarioId: string;
+  scenarioName: string;
+  transport: string;
+  trialGroup: string;
+  pass: boolean;
+  taskSuccess: number;
+  reasoning: string;
+  ranAt: string;
+}
+
+/** The most recent judged trial (one per scenario+transport, its own
+ * MOST RECENT trial group, first trial of it) with the judge's real
+ * reasoning attached — direct answer to "what did the agent do, and what
+ * did the model that scored it actually say" without opening a trace. */
+export function getRecentVerdicts(limit = 8): RecentVerdict[] {
+  const summaries = getScenarioSummaries();
+  const withRuns = summaries.filter((s) => s.latestRuns.length > 0);
+  withRuns.sort((a, b) => b.latestRanAt.localeCompare(a.latestRanAt));
+  return withRuns.slice(0, limit).map((s) => {
+    const run = s.latestRuns[0];
+    return {
+      scenarioId: s.scenarioId,
+      scenarioName: s.scenarioName,
+      transport: s.transport,
+      trialGroup: s.latestTrialGroup,
+      pass: run.verdict.pass,
+      taskSuccess: run.verdict.taskSuccess,
+      reasoning: run.verdict.reasoning,
+      ranAt: run.ranAt,
+    };
+  });
+}
+
 export interface CapabilityBreakdownRow {
   tag: CapabilityTag;
   passed: number;
@@ -302,6 +336,13 @@ export interface GoldenScenario {
   capabilities: CapabilityTag[];
   transports: string[];
   rubricNotes: string | null;
+  /** The real pass criteria (scenario.verify) — what the app's own real
+   * state must contain for this to count as achieved. This IS the golden
+   * answer: not a guess, the literal string(s) checked against
+   * scenario.verify.path after the run, independent of anything the
+   * judge or the agent claims. */
+  expectContains: string[];
+  policyConstraint: string | null;
 }
 
 /** The golden dataset itself, straight from the real scenario fixtures
@@ -315,6 +356,8 @@ export function getGoldenDataset(): GoldenScenario[] {
     capabilities: s.capabilities,
     transports: s.transports ?? ["typed", "voice"],
     rubricNotes: s.rubricNotes ?? null,
+    expectContains: Array.isArray(s.verify.expectContains) ? s.verify.expectContains : [s.verify.expectContains],
+    policyConstraint: s.policyConstraint ?? null,
   }));
 }
 
