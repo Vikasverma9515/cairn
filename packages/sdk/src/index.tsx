@@ -2293,8 +2293,21 @@ export function Copilot({
                 // entrance actually replay on every new line instead of
                 // only the very first one a call ever shows.
               }
-              <div key={movieCaptionText} className="cairn-movie-caption-pill" style={{ color: movieCaptionColor }}>
-                <span className={speakingNow ? "cairn-movie-caption-dot cairn-movie-caption-dot-agent" : "cairn-movie-caption-dot"} aria-hidden="true" />
+              <div
+                key={movieCaptionText}
+                className="cairn-movie-caption-pill"
+                style={{ color: movieCaptionColor }}
+                // An unusually long single line (capped at ~3 lines tall by
+                // its own CSS, see that rule's own comment) should show its
+                // most RECENT words — the part still being said — not get
+                // cut off at whichever part happened to render first. Runs
+                // once, the instant this line's own element mounts (its
+                // layout height is already final at that point — the word-
+                // by-word reveal only changes opacity, never height).
+                ref={(el) => {
+                  if (el) el.scrollTop = el.scrollHeight;
+                }}
+              >
                 {renderCaptionWords(movieCaptionText)}
               </div>
             </div>
@@ -3187,47 +3200,48 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   bottom: max(28px, env(safe-area-inset-bottom, 0px) + 16px);
   transform: translateX(-50%);
   z-index: 2147483000;
-  max-width: min(86vw, 620px);
+  max-width: min(92vw, 720px);
   pointer-events: none;
   display: flex;
   justify-content: center;
 }
 /* The keyed, per-line element (see the render site's own comment) — a
-   light frosted-glass pill, not a solid box: real subtitles read best
+   light frosted-glass panel, not a solid box: real subtitles read best
    floating just barely separated from the scene behind them, not boxed
-   off from it. Kept deliberately small (see font-size below, a real, live
-   request to keep this from ever reading as a banner) and re-mounts fresh
-   on every new line, which is what makes the slide-up actually repeat
-   per turn rather than only the first line a call ever shows. */
+   off from it. A rounded RECTANGLE, not a full pill — a pill shape
+   stretches oddly the moment text wraps past one line, which real speech
+   does often enough to matter. Kept deliberately small (see font-size
+   below, a real, live request to keep this from ever reading as a
+   banner) and re-mounts fresh on every new line, which is what makes the
+   slide-up actually replay per turn rather than only the first line a
+   call ever shows. Real, live-found gap this height cap + scroll closes:
+   an unusually long single utterance (a run of Deepgram transcript
+   fragments arriving as one caption) used to grow this box tall enough
+   to break the page's own layout underneath it — capped at ~3 lines and
+   scrolled to its own bottom the instant it mounts (see the render
+   site's own ref callback), so a long line shows its most RECENT words —
+   the part still being said — instead of stretching the whole page or
+   showing only the oldest, already-spoken part. */
 .cairn-movie-caption-pill {
   max-width: 100%;
-  padding: 7px 18px;
-  border-radius: 999px;
+  max-height: 4.6em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 8px 20px;
+  border-radius: 16px;
   background: rgba(10, 11, 15, 0.32);
   backdrop-filter: blur(7px);
   -webkit-backdrop-filter: blur(7px);
   font-size: 15px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.45;
   text-align: center;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55), 0 0 18px rgba(0, 0, 0, 0.35);
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 8px;
   animation: cairn-caption-rise 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.cairn-movie-caption-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  border: 1.5px solid currentColor;
-  opacity: 0.75;
-  align-self: center;
-}
-.cairn-movie-caption-dot-agent {
-  background: currentColor;
+.cairn-movie-caption-pill::-webkit-scrollbar {
+  display: none;
 }
 @keyframes cairn-caption-rise {
   from {
@@ -3242,12 +3256,12 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
 
 @media (max-width: 480px) {
   .cairn-movie-caption {
-    max-width: 92vw;
+    max-width: 94vw;
     bottom: max(20px, env(safe-area-inset-bottom, 0px) + 12px);
   }
   .cairn-movie-caption-pill {
     font-size: 13.5px;
-    padding: 6px 14px;
+    padding: 7px 16px;
   }
 }
 

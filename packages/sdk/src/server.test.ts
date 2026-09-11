@@ -1384,6 +1384,39 @@ describe("GroqVerbLLM", () => {
     expect(attempts).toBe(3);
   });
 
+  it("real, live-found bug: a genuinely oversized request (413, 'Request too large... reduce your message size') fails immediately instead of burning every rotated key on a request that can never succeed", async () => {
+    // The exact real error a live realtime voice call produced, captured
+    // directly from the running server's own log — Groq reuses the SAME
+    // `code: "rate_limit_exceeded"` a real, retryable 429 uses, even
+    // though this is a 413 the payload will keep failing regardless of
+    // which key sends it (the request's own size is the problem, not the
+    // key's remaining quota). Before this fix, isRateLimitError alone
+    // correctly matched this (so a genuine 429 still retries — see the
+    // test above) but nothing distinguished "wait and retry" from "this
+    // exact request can never succeed" — so a real voice call hit all 4
+    // configured keys in sequence, each with an identical "Request too
+    // large... Requested 8872" failure, before finally giving up.
+    let attempts = 0;
+    const fakeClient: GroqLikeClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            attempts++;
+            const err: any = new Error(
+              'Request too large for model `openai/gpt-oss-120b` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 8872, please reduce your message size and try again.',
+            );
+            err.status = 413;
+            err.error = { error: { code: "rate_limit_exceeded", type: "tokens" } };
+            throw err;
+          },
+        },
+      },
+    };
+    const llm = new GroqVerbLLM(new KeyRotator(["key-a", "key-b", "key-c"]), "m", { type: "object", properties: {} }, () => fakeClient);
+    await expect(llm.respond("s", "u")).rejects.toThrow("Request too large");
+    expect(attempts).toBe(1); // never retried on another key — every key would fail identically
+  });
+
   it("real, live-found fix: retries a 401 (invalid key) on a different configured key, same as a 429", async () => {
     const seenKeys: string[] = [];
     const fakeClient: GroqLikeClient = {

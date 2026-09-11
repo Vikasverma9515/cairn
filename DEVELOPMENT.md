@@ -8779,6 +8779,31 @@ Direct follow-up, with a real phone screenshot: on a real device, tapping the Ca
 
 ---
 
+### The first real end-to-end voice test, on the user's own device — two real bugs found: one root-caused and fixed, one worked around
+
+The pending item above got answered directly: a real phone, real microphone, a real call. Typed chat worked; voice didn't — "Something went wrong on my end" — and separately, once the caption UI itself came through, it was showing a huge run-on paragraph that broke the page layout underneath it.
+
+**Bug 1, root-caused from the real server log, not guessed at:** `APIError: 413 "Request too large for model \`openai/gpt-oss-120b\`... Limit 8000, Requested 8872, please reduce your message size and try again."` — a SINGLE realtime turn's own payload (system prompt + page directory + this page's own live elements + capped history) exceeded Groq's 8000-token-per-request ceiling outright. The real bug underneath that: Groq reuses the exact same `code: "rate_limit_exceeded"` for this 413 that a genuinely retryable 429 uses, so `isRateLimitError` (correctly, for the 429 case) matched it too — and the retry-on-a-different-key loop burned all 4 rotated keys in sequence, each failing with the identical "Request too large" error, before finally giving up. Retrying never had a chance: the payload size is the same no matter which key sends it.
+
+**Fixed, generally, in `packages/sdk/src/server.ts`:** added `isRequestTooLargeError` (checks the one field that actually distinguishes this from a real 429 — `status === 413` — with the same message-text fallback this file's other error checks already use) and excluded it from both retry-on-a-different-key loops (`GroqVerbLLM.respond`, `GroqStreamingTextLLM`'s streaming retry). A genuinely oversized request now fails fast instead of wasting 4x the latency and quota on a guaranteed repeat failure.
+
+**Not fully solved, worked around instead, honestly:** the fix above makes the failure faster and cheaper, not successful — the underlying request is still too large for Groq's model on a live-element-dense page like this one (VOXERA's own dashboard). `LiveElementSchema` caps at 60 elements × up to 370 chars each — worst case alone is ~5,500 tokens, before the rest of the prompt. Properly trimming that safely (without silently making some elements unaddressable) is real, scoped follow-up work, not attempted under this session's time budget. Switched VOXERA's `CAIRN_RUNTIME_PROVIDER` to `gemini` for realtime specifically — Gemini's much larger context window doesn't hit this particular wall, which is a genuine, immediate way to unblock a real user right now, not a permanent fix for the underlying prompt-size issue on Groq.
+
+**Bug 2, a real, live UI break, also fixed:** the movie caption had no defense against an unusually long single utterance — confirmed live, a real caption grew to 8+ lines, stretching over and overlapping the real page content underneath it. Also, two direct style requests from watching it live: the dot indicator felt unnecessary, and the pill was forced to a fixed, often mostly-empty width instead of shrink-wrapping its own text.
+
+**Fixed:**
+- `.cairn-movie-caption-pill` capped to `max-height: 4.6em` (~3 lines) with `overflow-y: auto` and a hidden scrollbar, scrolled to its own bottom the INSTANT it mounts (a ref callback on the pill — its layout height is already final at mount time, only the word-reveal opacity animates afterward) — so an unusually long line shows its most RECENT words, the part still being said, rather than the page breaking or the oldest words winning a losing scroll position.
+- Removed the dot indicator (JSX span + its two CSS rules) entirely.
+- The pill went from `border-radius: 999px` (a true pill, which stretched oddly once text wrapped past one line) to a `16px` rounded rectangle, and from a fixed `width: 100%` of its (also widened) container to `max-width: 100%` with no explicit width — it now shrink-wraps to its actual text, a five-word line no longer forces the same wide bar an eight-word line does.
+
+**Tests:** `server.test.ts` (+1) — the exact real 413 error captured from the live log, asserting it fails on the FIRST attempt (`attempts === 1`) rather than retrying across all 3 configured keys, directly regression-testing the wasted-retry bug. No new tests for the caption CSS/shrink-wrap changes — presentation-only, verified live instead (see below). Full repo: 872/872. Full-repo typecheck clean.
+
+**Verified live against VOXERA** by injecting markup matching the real render structure (both the exact long, garbled real caption text from the live bug report, and a short one) directly into the running page: the long case now shows only its tail, correctly capped, page layout intact; the short case now shrink-wraps tightly around "Hi! How can I help?" instead of stretching across a fixed wide bar. Still couldn't exercise a real live call end-to-end myself (this sandbox still blocks microphone access) — this whole investigation was only possible because the user tested on their own real device and reported back the actual server-log-visible failure.
+
+**Pending:** a real, safe token-budget trim for `liveElements` on element-dense pages (the actual root cause of bug 1, not just its symptom) — needs real design work to avoid silently making some elements unaddressable, not something to rush. A second real live-call confirmation on the user's own device, now that both fixes are in.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

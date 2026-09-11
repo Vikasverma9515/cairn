@@ -989,7 +989,7 @@ export class GroqVerbLLM implements VerbLLM {
           }
           throw err;
         }
-        if (isRateLimitError(err) && keyAttempts < maxKeyAttempts - 1) {
+        if (isRateLimitError(err) && !isRequestTooLargeError(err) && keyAttempts < maxKeyAttempts - 1) {
           keyAttempts++;
           continue;
         }
@@ -1135,7 +1135,7 @@ export class GroqStreamingTextLLM implements StreamingTextLLM {
         lastErr = err;
         if (emittedAnyChunk) throw err;
         if (isInvalidKeyError(err)) this.keys.markDead(key);
-        if ((isInvalidKeyError(err) || isRateLimitError(err)) && attempt < maxAttempts - 1) continue;
+        if ((isInvalidKeyError(err) || (isRateLimitError(err) && !isRequestTooLargeError(err))) && attempt < maxAttempts - 1) continue;
         throw err;
       }
     }
@@ -1220,6 +1220,32 @@ function isRateLimitError(err: unknown): boolean {
   if (code === "rate_limit_exceeded") return true;
   const message = typeof e.message === "string" ? e.message : "";
   return message.includes("rate_limit_exceeded") || message.includes("Rate limit reached");
+}
+
+/**
+ * Real, live-found bug this closes: Groq throws a 413 for a genuinely
+ * oversized single request ("Request too large for model ... please
+ * reduce your message size and try again") using the EXACT SAME
+ * `code: "rate_limit_exceeded"` a real, retryable 429 uses — so
+ * isRateLimitError above (correctly, for the 429 case) returns true for
+ * this too, and the retry-on-a-different-key loop treated a request that
+ * can NEVER succeed the same as one that just needs a fresh quota bucket.
+ * Confirmed live: a real realtime voice call kept failing with "Something
+ * went wrong on my end," and the actual server log showed all 4 rotated
+ * keys hit in sequence, each with the identical "Request too large...
+ * Requested 8872" error — the payload size is the same regardless of
+ * which key sends it, so every one of those retries was guaranteed to
+ * fail before it even ran, just burning latency and quota for nothing.
+ * `status === 413` is the one field that actually distinguishes this from
+ * a real 429; the message-text checks are the same defensive fallback
+ * this file's other error-shape checks already use.
+ */
+function isRequestTooLargeError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown };
+  if (e.status === 413) return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.includes("Request too large") || message.includes("reduce your message size");
 }
 
 /**
