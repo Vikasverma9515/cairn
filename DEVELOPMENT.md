@@ -13,7 +13,7 @@ this repo belongs to "Cairn the product."
 | Lives in | `packages/core`, `packages/sdk`, `packages/indexer`, `examples/demo-app` | `services/graph` |
 | Language | TypeScript | Python |
 | Built for | Companies embedding Cairn in their product, and their end customers | AI coding agents exploring a codebase — not an end customer |
-| Is this the landing page? | **Yes.** `site/index.html` and the root [README.md](./README.md) describe this. | No. Not customer-facing, no landing page, no install pitch. |
+| Is this the landing page? | **Yes.** `site/` (a Next.js app, statically exported) and the root [README.md](./README.md) describe this. | No. Not customer-facing, no landing page, no install pitch. |
 | Status | Working end to end, MIT licensed, real install docs. | Working, real tests, never shipped to a customer — an internal exploration. |
 
 They share a repo because Track B started as a question: could the same

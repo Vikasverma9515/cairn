@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "-w", "@cairnvibe/evals-dashboard", "--", "--port", "3210"],
       "port": 3210
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "site", "run", "dev", "--", "--port", "3300"],
+      "port": 3300
     }
   ]
 }

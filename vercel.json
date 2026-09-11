@@ -1,6 +1,6 @@
 {
   "framework": null,
-  "buildCommand": "true",
+  "buildCommand": "cd site && npm install && npm run build",
   "installCommand": "true",
-  "outputDirectory": "site"
+  "outputDirectory": "site/out"
 }

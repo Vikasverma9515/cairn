@@ -223,7 +223,8 @@ syntactically valid.
 Done: CI (`.github/workflows/ci.yml` — typecheck, test, determinism check,
 builds `@cairnvibe/indexer`, installs Chromium for `crawl.test.ts`),
 `CONTRIBUTING.md`, GitHub issue templates (`.github/ISSUE_TEMPLATE/`), a
-real landing page (`site/index.html`, deployed at
+real landing page (`site/`, a componentized Next.js app statically
+exported and deployed at
 [cairn-phi-flame.vercel.app](https://cairn-phi-flame.vercel.app)), and
 **`npm publish`** itself — `@cairnvibe/core`, `@cairnvibe/indexer`, and
 `@cairnvibe/sdk` are live on the registry, verified with a real install

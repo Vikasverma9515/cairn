@@ -12,6 +12,7 @@ CAIRN_DOCS.md
 *.tsbuildinfo
 examples/demo-app/data/
 .vercel
+site/out
 packages/evals/data/
 packages/evals/.cache/
 packages/evals-dashboard/.run-logs/
