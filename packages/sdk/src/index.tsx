@@ -465,6 +465,29 @@ export function Copilot({
   const touring = tourStep !== null;
   const busy = asking || status === "rt-thinking" || touring;
 
+  // Movie-caption color adaptation (see sampleAncestorBackgroundColor's own
+  // doc comment) — sampled once per call, not on every render/word: the
+  // host page's real background behind a fixed-position overlay doesn't
+  // change mid-conversation, so re-sampling continuously would just spend
+  // cycles re-deriving the same answer. White is the starting default (most
+  // real host apps + this widget's own dark FAB skew dark), corrected the
+  // instant a real ancestor color is found.
+  const movieCaptionRef = useRef<HTMLDivElement | null>(null);
+  const [movieCaptionColor, setMovieCaptionColor] = useState("#ffffff");
+  useEffect(() => {
+    if (!realtimeActive || typeof document === "undefined") return;
+    // The caption element itself isn't mounted on the FIRST render where
+    // realtimeActive just became true (it renders conditionally on having
+    // real text too) — a rAF gives the DOM one paint to catch up before
+    // sampling, cheap insurance against reading a stale/null ref.
+    const raf = requestAnimationFrame(() => {
+      const anchor = movieCaptionRef.current?.parentElement ?? null;
+      const sampled = sampleAncestorBackgroundColor(anchor);
+      if (sampled) setMovieCaptionColor(pickReadableCaptionColor(sampled.r, sampled.g, sampled.b));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [realtimeActive]);
+
   // `caption` is overloaded by design (see its setters above): during a
   // tour it's a step-progress label ("Step 1 of 2"), not user speech, so it
   // reads as a small chip over the agent's bubble instead. While actively
@@ -2137,57 +2160,105 @@ export function Copilot({
               </div>
             </div>
           ) : (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const trimmed = question.trim();
-                if (trimmed) void ask(trimmed);
-              }}
-            >
-              <div className="cairn-input-row">
-                <input
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="What do you need help with?"
-                  aria-label={`Ask ${persona} a question`}
-                  disabled={recording || touring}
-                  autoFocus
-                />
-                {realtimeUrl && micSupported && (
-                  <button
-                    type="button"
-                    className="cairn-icon-btn"
-                    aria-label="Start realtime conversation"
-                    onClick={() => void startRealtime()}
-                    disabled={busy || recording}
-                  >
-                    <PhoneCall size={16} />
-                  </button>
-                )}
-                {transcribeEndpoint && micSupported && (
-                  <button
-                    type="button"
-                    className={recording ? "cairn-icon-btn cairn-icon-btn-recording" : "cairn-icon-btn"}
-                    aria-label={recording ? "Stop recording" : "Ask by voice"}
-                    onClick={() => (recording ? stopRecording() : void startRecording())}
-                    disabled={touring}
-                  >
-                    {recording ? <Square size={16} /> : <Mic size={16} />}
-                  </button>
-                )}
-                <button
-                  type="submit"
-                  className="cairn-send"
-                  aria-label="Send"
-                  disabled={!question.trim() || busy || recording}
-                >
-                  {asking ? <Loader2 size={16} className="cairn-spin" /> : <Send size={16} />}
+            <>
+              {/* Real, live-requested mobile shape: a small phone screen has
+                  no room to spare for a text-input row AND a bubble stack —
+                  on a narrow viewport this CTA takes over as the ONLY way
+                  in, one tap straight into a live call, while the form
+                  below stays in the DOM (still what a wider viewport shows)
+                  rather than being conditionally unmounted, so nothing about
+                  focus/autofill/typed history changes based on window
+                  width alone. Pure CSS media-query toggle, not a JS
+                  width check — avoids a hydration mismatch between server
+                  and whatever the client's real viewport turns out to be. */}
+              {realtimeUrl && micSupported && (
+                <button type="button" className="cairn-mobile-voice-cta" onClick={() => void startRealtime()} aria-label="Start talking">
+                  <PhoneCall size={22} />
+                  <span>Tap to talk</span>
                 </button>
-              </div>
-            </form>
+              )}
+              <form
+                className="cairn-typed-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const trimmed = question.trim();
+                  if (trimmed) void ask(trimmed);
+                }}
+              >
+                <div className="cairn-input-row">
+                  <input
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder="What do you need help with?"
+                    aria-label={`Ask ${persona} a question`}
+                    disabled={recording || touring}
+                    autoFocus
+                  />
+                  {realtimeUrl && micSupported && (
+                    <button
+                      type="button"
+                      className="cairn-icon-btn"
+                      aria-label="Start realtime conversation"
+                      onClick={() => void startRealtime()}
+                      disabled={busy || recording}
+                    >
+                      <PhoneCall size={16} />
+                    </button>
+                  )}
+                  {transcribeEndpoint && micSupported && (
+                    <button
+                      type="button"
+                      className={recording ? "cairn-icon-btn cairn-icon-btn-recording" : "cairn-icon-btn"}
+                      aria-label={recording ? "Stop recording" : "Ask by voice"}
+                      onClick={() => (recording ? stopRecording() : void startRecording())}
+                      disabled={touring}
+                    >
+                      {recording ? <Square size={16} /> : <Mic size={16} />}
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    className="cairn-send"
+                    aria-label="Send"
+                    disabled={!question.trim() || busy || recording}
+                  >
+                    {asking ? <Loader2 size={16} className="cairn-spin" /> : <Send size={16} />}
+                  </button>
+                </div>
+              </form>
+            </>
           ))}
         </div>
       )}
+      {realtimeActive &&
+        (() => {
+          // Real, live-requested shape: "feels like a movie transcript" —
+          // ONE line at a time (whoever's actually talking right now), not
+          // a scrolling log, no bubble/box, no avatar — open captions sit
+          // directly over the page the same way they sit over a film
+          // frame. Independent of whether the chat panel itself is open:
+          // an ambient caption during a live call is the whole point, not
+          // something tucked behind a click.
+          const speakingNow = status === "rt-speaking";
+          const movieCaptionText = speakingNow ? (answer ?? "") : userCaption;
+          if (!movieCaptionText) return null;
+          return (
+            <div className="cairn-movie-caption" ref={movieCaptionRef} aria-live="polite" aria-label={movieCaptionText}>
+              {
+                // Keyed by the line's own text — a real, deliberate remount
+                // per turn, not just a style update: only ONE line is ever
+                // on screen (the previous one is simply gone, never stacked
+                // underneath), and re-mounting is what makes the slide-up
+                // entrance actually replay on every new line instead of
+                // only the very first one a call ever shows.
+              }
+              <div key={movieCaptionText} className="cairn-movie-caption-pill" style={{ color: movieCaptionColor }}>
+                <span className={speakingNow ? "cairn-movie-caption-dot cairn-movie-caption-dot-agent" : "cairn-movie-caption-dot"} aria-hidden="true" />
+                {renderCaptionWords(movieCaptionText)}
+              </div>
+            </div>
+          );
+        })()}
     </>
   );
 }
@@ -2554,6 +2625,60 @@ function renderCaptionWords(text: string) {
   );
 }
 
+/**
+ * Movie-caption color adaptation. The caption overlay (see
+ * .cairn-movie-caption below) deliberately carries no background box of its
+ * own — real open captions sit directly over whatever's playing — so
+ * legibility depends entirely on picking a text color that actually
+ * contrasts with what's really behind it, not a fixed light/dark choice
+ * that goes invisible the instant the host app's own theme doesn't match.
+ *
+ * WCAG's own relative-luminance formula (sRGB, gamma-corrected) — real
+ * perceptual math, not a naive (r+g+b)/3 average, which misjudges pure
+ * blues/reds badly enough to flip the wrong way on real brand colors.
+ */
+export function relativeLuminance(r: number, g: number, b: number): number {
+  const linear = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+/** White on a dark background, near-black on a light one — the same real
+ * threshold (not the arithmetic midpoint 0.5) real accessible-contrast
+ * tooling converges on, since human contrast perception isn't linear in
+ * luminance. */
+export function pickReadableCaptionColor(r: number, g: number, b: number): string {
+  return relativeLuminance(r, g, b) > 0.4 ? "#0a0b0e" : "#ffffff";
+}
+
+/** Walks real DOM ancestors from `start` up to `<html>`, reading each one's
+ * OWN computed background-color, and returns the first genuinely opaque one
+ * found — that's the real color the caption overlay is actually sitting on
+ * top of in THIS host page, not a guess. Skips fully/mostly transparent
+ * layers (alpha <= 0.5) since those aren't what a viewer's eye actually
+ * perceives as "the background." Real limitation, not silently pretended
+ * away: an image/gradient/video background has no single computed color at
+ * all — getComputedStyle can't see pixels, only declared CSS — so this
+ * returns null for that case, and the caller falls back to a fixed choice
+ * plus the text-shadow halo every caption gets regardless, the same real
+ * technique broadcast captions use to stay legible over footage a flat
+ * color guess never could. */
+export function sampleAncestorBackgroundColor(start: Element | null): { r: number; g: number; b: number } | null {
+  let node: Element | null = start;
+  while (node && node !== document.documentElement) {
+    const bg = getComputedStyle(node).backgroundColor;
+    const match = bg.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+    if (match) {
+      const alpha = match[4] !== undefined ? parseFloat(match[4]) : 1;
+      if (alpha > 0.5) return { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]) };
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
 // "Waybalance" — three real, irregular stones (an ellipse plus a smaller
 // bump, not a rectangle), stacked slightly off-center the way a hiker
 // actually balances a trail cairn, instead of the perfectly centered flat
@@ -2699,7 +2824,7 @@ const COPILOT_STYLES = `
   animation: cairn-spin 0.8s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot,
+  .cairn-fab, .cairn-panel, .cairn-bubble, .cairn-word, .cairn-thinking-dot, .cairn-movie-caption-pill,
   #cairn-cursor, #cairn-cursor .cairn-cursor-dot, #cairn-cursor .cairn-cursor-halo {
     animation: none !important;
     transition: none !important;
@@ -2716,6 +2841,7 @@ html.cairn-reduce-motion .cairn-fab,
 html.cairn-reduce-motion .cairn-panel,
 html.cairn-reduce-motion .cairn-bubble,
 html.cairn-reduce-motion .cairn-word,
+html.cairn-reduce-motion .cairn-movie-caption-pill,
 html.cairn-reduce-motion .cairn-thinking-dot,
 html.cairn-reduce-motion .cairn-glow,
 html.cairn-reduce-motion #cairn-cursor,
@@ -2997,6 +3123,113 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   color: rgba(11, 13, 18, 0.35);
   box-shadow: none;
   cursor: not-allowed;
+}
+
+/* Movie caption — deliberately no background box (see the color-adaptation
+   comment on sampleAncestorBackgroundColor). Fixed to the viewport, not the
+   panel, so it reads during a call whether or not the chat panel itself is
+   open; the text-shadow halo is the same real technique broadcast captions
+   use for legibility over footage no single flat color guess could ever
+   match — a deliberate second line of defense alongside the adaptive color,
+   not a decoration. Capped width + centered so a long sentence wraps into
+   a real caption block instead of stretching edge-to-edge like a banner. */
+.cairn-movie-caption {
+  position: fixed;
+  left: 50%;
+  bottom: max(28px, env(safe-area-inset-bottom, 0px) + 16px);
+  transform: translateX(-50%);
+  z-index: 2147483000;
+  max-width: min(86vw, 620px);
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+}
+/* The keyed, per-line element (see the render site's own comment) — a
+   light frosted-glass pill, not a solid box: real subtitles read best
+   floating just barely separated from the scene behind them, not boxed
+   off from it. Kept deliberately small (see font-size below, a real, live
+   request to keep this from ever reading as a banner) and re-mounts fresh
+   on every new line, which is what makes the slide-up actually repeat
+   per turn rather than only the first line a call ever shows. */
+.cairn-movie-caption-pill {
+  max-width: 100%;
+  padding: 7px 18px;
+  border-radius: 999px;
+  background: rgba(10, 11, 15, 0.32);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55), 0 0 18px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  animation: cairn-caption-rise 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cairn-movie-caption-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  opacity: 0.75;
+  align-self: center;
+}
+.cairn-movie-caption-dot-agent {
+  background: currentColor;
+}
+@keyframes cairn-caption-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Mobile voice CTA — hidden on a normal-width viewport (the typed form is
+   the default there); a narrow phone screen swaps in this single, large,
+   one-tap "start talking" affordance instead, per the real, live request:
+   on a phone there usually isn't room to spare for a text row AND a
+   caption/bubble stack, so voice becomes the primary, not secondary, path
+   in. Toggled purely by @media, never a JS width check — see the render
+   site's own comment on why (hydration-safety). */
+.cairn-mobile-voice-cta {
+  display: none;
+}
+@media (max-width: 480px) {
+  .cairn-typed-form {
+    display: none;
+  }
+  .cairn-mobile-voice-cta {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 14px;
+    border-radius: 999px;
+    border: none;
+    background: #14151b;
+    color: #f2f2f4;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  }
+  .cairn-movie-caption {
+    max-width: 92vw;
+    bottom: max(20px, env(safe-area-inset-bottom, 0px) + 12px);
+  }
+  .cairn-movie-caption-pill {
+    font-size: 13.5px;
+    padding: 6px 14px;
+  }
 }
 
 .cairn-rt-bar {
