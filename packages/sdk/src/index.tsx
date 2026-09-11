@@ -376,6 +376,27 @@ export function Copilot({
     setMicSupported(!!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined");
   }, []);
 
+  // Real, live-reported gap this closes: on a real phone, opening the full
+  // panel (settings FAB, chat-bubble stack, the rt-bar's own mic/speaker/
+  // end-call row) just to start a call, THEN having the movie caption
+  // ALSO show on top of all of it, is exactly the "taking so much space"
+  // complaint — confirmed live against a real screenshot. Same 480px cutoff
+  // CSS already uses for the mobile tap-to-talk form swap, kept in sync
+  // here as the one JS-side source of truth for click BEHAVIOR (not just
+  // layout, which stays CSS-only for the hydration-safety reason
+  // `micSupported` above already established — this one genuinely needs a
+  // real, post-mount width check because a click handler has to decide
+  // what to DO, not just how to look).
+  const [isNarrowViewport, setIsNarrowViewport] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 480px)");
+    setIsNarrowViewport(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsNarrowViewport(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
   // Restores a conversation that survived a real page reload — same
   // hydration-safety reason as `micSupported` just above: `open`/`answer`/
   // `lastQuestion`/`transcript` all start at their normal empty defaults on
@@ -464,6 +485,13 @@ export function Copilot({
   const realtimeActive = status.startsWith("rt-");
   const touring = tourStep !== null;
   const busy = asking || status === "rt-thinking" || touring;
+  // On a real phone, when voice is even configured for this deployment,
+  // the main FAB itself IS the talk button — no panel, no settings icon,
+  // no bubble stack, just the FAB plus the movie caption. A deployment
+  // with no realtimeUrl/no mic support falls through to the FAB's normal
+  // open/close behavior regardless of viewport width, so a typed-only
+  // integration never loses its only way in on a phone.
+  const mobileVoicePrimary = isNarrowViewport && !!realtimeUrl && micSupported;
 
   // Movie-caption color adaptation (see sampleAncestorBackgroundColor's own
   // doc comment) — sampled once per call, not on every render/word: the
@@ -2044,11 +2072,38 @@ export function Copilot({
         </button>
       )}
       <button
-        className={(status === "rt-speaking" ? "cairn-fab cairn-fab-speaking" : "cairn-fab") + posClass}
-        aria-label={open ? `Close ${persona} help` : `Open ${persona} help`}
-        onClick={() => setOpen((v) => !v)}
+        className={
+          (status === "rt-speaking" ? "cairn-fab cairn-fab-speaking" : mobileVoicePrimary && realtimeActive ? "cairn-fab cairn-fab-live" : "cairn-fab") +
+          posClass
+        }
+        aria-label={
+          mobileVoicePrimary
+            ? realtimeActive
+              ? "End the call"
+              : "Start talking"
+            : open
+              ? `Close ${persona} help`
+              : `Open ${persona} help`
+        }
+        onClick={() => {
+          // Real, live-reported gap this closes: on a real phone, tapping
+          // this button used to open the full panel — settings icon, chat-
+          // bubble stack, the rt-bar's own mic/speaker/end-call row — and
+          // THEN the movie caption showed on top of all of it too. On a
+          // narrow viewport with voice configured, this button skips the
+          // panel entirely and IS the talk toggle; open never becomes
+          // true, so the panel (and everything in it) simply never
+          // renders — the caption, already independent of `open`, is the
+          // only thing left on screen.
+          if (mobileVoicePrimary) {
+            if (realtimeActive) endRealtime();
+            else void startRealtime();
+            return;
+          }
+          setOpen((v) => !v);
+        }}
       >
-        {open ? <X size={22} /> : <CairnMark />}
+        {mobileVoicePrimary ? realtimeActive ? <PhoneOff size={20} /> : <CairnMark /> : open ? <X size={22} /> : <CairnMark />}
       </button>
       {open && (
         <div className={"cairn-panel" + posClass} style={panelVars} role="dialog" aria-label={`${persona} help panel`} ref={panelRef}>
@@ -2160,73 +2215,59 @@ export function Copilot({
               </div>
             </div>
           ) : (
-            <>
-              {/* Real, live-requested mobile shape: a small phone screen has
-                  no room to spare for a text-input row AND a bubble stack —
-                  on a narrow viewport this CTA takes over as the ONLY way
-                  in, one tap straight into a live call, while the form
-                  below stays in the DOM (still what a wider viewport shows)
-                  rather than being conditionally unmounted, so nothing about
-                  focus/autofill/typed history changes based on window
-                  width alone. Pure CSS media-query toggle, not a JS
-                  width check — avoids a hydration mismatch between server
-                  and whatever the client's real viewport turns out to be. */}
-              {realtimeUrl && micSupported && (
-                <button type="button" className="cairn-mobile-voice-cta" onClick={() => void startRealtime()} aria-label="Start talking">
-                  <PhoneCall size={22} />
-                  <span>Tap to talk</span>
-                </button>
-              )}
-              <form
-                className="cairn-typed-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const trimmed = question.trim();
-                  if (trimmed) void ask(trimmed);
-                }}
-              >
-                <div className="cairn-input-row">
-                  <input
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    placeholder="What do you need help with?"
-                    aria-label={`Ask ${persona} a question`}
-                    disabled={recording || touring}
-                    autoFocus
-                  />
-                  {realtimeUrl && micSupported && (
-                    <button
-                      type="button"
-                      className="cairn-icon-btn"
-                      aria-label="Start realtime conversation"
-                      onClick={() => void startRealtime()}
-                      disabled={busy || recording}
-                    >
-                      <PhoneCall size={16} />
-                    </button>
-                  )}
-                  {transcribeEndpoint && micSupported && (
-                    <button
-                      type="button"
-                      className={recording ? "cairn-icon-btn cairn-icon-btn-recording" : "cairn-icon-btn"}
-                      aria-label={recording ? "Stop recording" : "Ask by voice"}
-                      onClick={() => (recording ? stopRecording() : void startRecording())}
-                      disabled={touring}
-                    >
-                      {recording ? <Square size={16} /> : <Mic size={16} />}
-                    </button>
-                  )}
+            // On a narrow viewport with voice configured, the FAB itself is
+            // the talk toggle (see mobileVoicePrimary above) and this panel
+            // never opens at all — so this form only ever renders on a
+            // wide/desktop viewport, or on a narrow one where voice genuinely
+            // isn't available, where it's correctly still the only way in.
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const trimmed = question.trim();
+                if (trimmed) void ask(trimmed);
+              }}
+            >
+              <div className="cairn-input-row">
+                <input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="What do you need help with?"
+                  aria-label={`Ask ${persona} a question`}
+                  disabled={recording || touring}
+                  autoFocus
+                />
+                {realtimeUrl && micSupported && (
                   <button
-                    type="submit"
-                    className="cairn-send"
-                    aria-label="Send"
-                    disabled={!question.trim() || busy || recording}
+                    type="button"
+                    className="cairn-icon-btn"
+                    aria-label="Start realtime conversation"
+                    onClick={() => void startRealtime()}
+                    disabled={busy || recording}
                   >
-                    {asking ? <Loader2 size={16} className="cairn-spin" /> : <Send size={16} />}
+                    <PhoneCall size={16} />
                   </button>
-                </div>
-              </form>
-            </>
+                )}
+                {transcribeEndpoint && micSupported && (
+                  <button
+                    type="button"
+                    className={recording ? "cairn-icon-btn cairn-icon-btn-recording" : "cairn-icon-btn"}
+                    aria-label={recording ? "Stop recording" : "Ask by voice"}
+                    onClick={() => (recording ? stopRecording() : void startRecording())}
+                    disabled={touring}
+                  >
+                    {recording ? <Square size={16} /> : <Mic size={16} />}
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="cairn-send"
+                  aria-label="Send"
+                  disabled={!question.trim() || busy || recording}
+                >
+                  {asking ? <Loader2 size={16} className="cairn-spin" /> : <Send size={16} />}
+                </button>
+              </div>
+            </form>
           ))}
         </div>
       )}
@@ -2881,6 +2922,13 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22), 0 6px 20px rgba(0, 0, 0, 0.25);
   animation: cairn-pulse-green 1.2s ease-out infinite;
 }
+/* The mobile-primary FAB's own "a call is live, tap to end" ring — a
+   calmer, steadier signal than the speaking pulse above (that one's still
+   used on top of this whenever the agent is actually talking), covering
+   the connecting/listening/thinking states this one alone wouldn't. */
+.cairn-fab-live {
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.22), 0 6px 20px rgba(0, 0, 0, 0.25);
+}
 
 /* One unified card — title, conversation, and input all live inside the
    same bounded, padded container instead of floating as independent
@@ -3192,36 +3240,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   }
 }
 
-/* Mobile voice CTA — hidden on a normal-width viewport (the typed form is
-   the default there); a narrow phone screen swaps in this single, large,
-   one-tap "start talking" affordance instead, per the real, live request:
-   on a phone there usually isn't room to spare for a text row AND a
-   caption/bubble stack, so voice becomes the primary, not secondary, path
-   in. Toggled purely by @media, never a JS width check — see the render
-   site's own comment on why (hydration-safety). */
-.cairn-mobile-voice-cta {
-  display: none;
-}
 @media (max-width: 480px) {
-  .cairn-typed-form {
-    display: none;
-  }
-  .cairn-mobile-voice-cta {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    padding: 14px;
-    border-radius: 999px;
-    border: none;
-    background: #14151b;
-    color: #f2f2f4;
-    font-size: 14.5px;
-    font-weight: 600;
-    cursor: pointer;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-  }
   .cairn-movie-caption {
     max-width: 92vw;
     bottom: max(20px, env(safe-area-inset-bottom, 0px) + 12px);

@@ -8763,6 +8763,22 @@ Direct follow-up after seeing the first version: blur the area behind the text a
 
 ---
 
+### A real, live-reported mobile bug: the panel was still opening underneath the caption — the FAB itself is now the talk toggle
+
+Direct follow-up, with a real phone screenshot: on a real device, tapping the Cairn button still opened the FULL panel — settings icon, "Something went wrong" error bubbles stacked up, the rt-bar's own mic/speaker/end-call row, everything — with the new movie caption rendered on TOP of all of it. Exactly the "taking so much space" complaint this whole feature exists to fix, just not actually fixed yet: the previous pass added a "Tap to talk" button INSIDE the panel, which still required opening the panel first to reach it.
+
+**The real fix, not another button inside the same panel:** on a narrow viewport (`≤480px`, matched via a real `matchMedia` check — not the CSS-only trick the rest of this feature deliberately uses, because a *click handler* has to decide what to DO, not just how to look, so this one genuinely needs a live, post-mount value) with voice actually configured (`realtimeUrl` + mic support), the main FAB **is** the talk toggle: tap once to start a call, tap again to end it. `open` never becomes `true` in this path, so the panel — bubbles, settings, rt-bar, all of it — simply never renders. Only the FAB and the already-existing movie caption remain on screen, exactly as asked. Falls through to the FAB's normal open/close behavior on desktop, or on a narrow phone where voice isn't configured (a typed-only deployment doesn't lose its only way in).
+
+**A real cleanup, not just an addition:** the previous pass's in-panel "Tap to talk" button became permanently unreachable the instant this shipped (the panel it lived in can no longer open in the exact case that button was for) — removed, along with its now-dead CSS, rather than left behind as dead code nobody could ever tap.
+
+**Tests:** none added — pure behavioral wiring on top of already-tested pieces (`startRealtime`/`endRealtime` themselves, the caption's own render logic, all pre-existing and covered). Full repo: 871/871 unchanged, typecheck clean.
+
+**Live-verified against VOXERA, at a real 375px mobile viewport:** tapping the FAB (`aria-label="Start talking"`, confirmed) triggers `[cairn rt] starting realtime call` in the console with zero panel markup ever mounting — screenshotted the dashboard page with nothing but the FAB visible, confirming the fix directly rather than trusting the code alone. Mic access fails in this sandbox (same blocked-microphone constraint as the rest of this feature), and the FAB correctly falls back to its idle "Start talking" state rather than getting stuck. Desktop re-checked immediately after: FAB still reads "Open Cairn help" and the full panel still opens normally — the new mobile path doesn't leak into the existing desktop behavior.
+
+**Pending:** a real end-to-end call on an actual phone (this sandbox can't grant microphone access at all) — worth a real device check the next time this area is touched, to confirm the caption itself (not just the panel's absence) looks right through a full real conversation.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of
