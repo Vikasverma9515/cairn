@@ -18,6 +18,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "site", "run", "dev", "--", "--port", "3300"],
       "port": 3300
+    },
+    {
+      "name": "voxera",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/vikasverma/Desktop/kuch toh hai ismai 2/VOXERA", "run", "dev:full"],
+      "port": 3000
     }
   ]
 }

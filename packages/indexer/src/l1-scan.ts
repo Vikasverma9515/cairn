@@ -182,7 +182,32 @@ function findInteractiveElements(sf: SourceFile, relFile: string): RawElement[] 
 
     const dataAi = getAttrStringValue(attrs, "data-ai");
     const ariaLabel = getAttrStringValue(attrs, "aria-label");
-    const text = node.getKind() === SyntaxKind.JsxOpeningElement ? getElementText(node) : null;
+    const isOpeningTag = node.getKind() === SyntaxKind.JsxOpeningElement;
+    const staticText = isOpeningTag ? getElementText(node) : null;
+    const ternaryAlternatives = isOpeningTag ? getTernaryTextAlternatives(node) : null;
+    // A toggle button's real text is a ternary the static scanner can't run
+    // ({open ? "Cancel" : "Add Patient"}) — collectJsxText correctly skips it
+    // (it can't guess which branch renders), which used to leave `text` null
+    // and the element unidentifiable to the agent (id fell to a meaningless
+    // "button-168", `does` to "unknown action"). Real, live-found case: VOXERA's
+    // own Add-Patient toggle button, confirmed via a real agent run that gave
+    // up ("I'm not sure how to help with that") specifically on this element.
+    // Both ternary branches are real, human-authored strings, so both are
+    // kept now instead of neither.
+    // An <input> is always self-closing (isOpeningTag false), so
+    // getElementText never has children text to read — every plain text
+    // field with no data-ai/aria-label fell to a meaningless "input-N" id
+    // and a guessed, near-zero-confidence `does`. Its placeholder (or name,
+    // when it has no placeholder) IS the same kind of real, human-authored
+    // signal getElementText reads for a button's own children — just an
+    // attribute instead of text content. Real, live-found case: VOXERA's
+    // own Add-Patient form fields, confirmed via a real agent run whose
+    // fill steps failed with "Could not find that element on the page" —
+    // findElement's own runtime ladder (element-ladder.ts) can match a
+    // real placeholder now that one is actually captured here.
+    const placeholderText = bucket === "input" ? getAttrStringValue(attrs, "placeholder") ?? getAttrStringValue(attrs, "name") : null;
+    const text = staticText ?? placeholderText ?? (ternaryAlternatives ? ternaryAlternatives[0] : null);
+    const textAlternatives = ternaryAlternatives;
 
     let handlerCall = resolveHandlerCall(sf, onClickInit ?? onSubmitInit);
     if (!handlerCall && rawTag === "Link") {
@@ -212,6 +237,7 @@ function findInteractiveElements(sf: SourceFile, relFile: string): RawElement[] 
       dataAi,
       ariaLabel,
       text,
+      textAlternatives,
       handlerCall,
       file: relFile,
       line,
@@ -284,6 +310,59 @@ function collectJsxText(element: import("ts-morph").JsxElement, texts: string[])
     // has real static text to read, and a dynamic value must never be
     // guessed at.
   }
+}
+
+/** Reads every `{cond ? "A" : "B"}` toggle-label inside an element as a
+ * real, static value — the one case collectJsxText deliberately refuses (it
+ * can't know at scan time which branch renders). A real button commonly has
+ * MORE than one such expression side by side (an icon ternary next to a
+ * label ternary — VOXERA's own Add-Patient button:
+ * `{open ? <X/> : <Plus/>} {open ? "Cancel" : "Add Patient"}`), so every
+ * child is checked independently rather than requiring the whole element to
+ * be one bare ternary; the icon one simply contributes nothing (its
+ * branches are JSX elements, not literals) instead of voiding the label
+ * one. Within a single ternary, every leaf of the (possibly nested, e.g.
+ * `a ? "X" : b ? "Y" : "Z"`) conditional must resolve to a real string
+ * literal — one unresolvable branch (a variable, a function call) means
+ * THAT ternary is abandoned, never partially guessed, matching this file's
+ * own "a dynamic value must never be guessed at" rule everywhere else.
+ * Order is source order, so results stay deterministic across runs — see
+ * this file's own determinism contract. */
+function getTernaryTextAlternatives(opening: Node): string[] | null {
+  const parent = opening.getParentIfKind(SyntaxKind.JsxElement);
+  if (!parent) return null;
+  const literals: string[] = [];
+  collectTernaryLiterals(parent, literals);
+  return literals.length > 0 ? literals : null;
+}
+
+function collectTernaryLiterals(element: import("ts-morph").JsxElement, out: string[]): void {
+  for (const child of element.getJsxChildren()) {
+    if (Node.isJsxExpression(child)) {
+      const expr = child.getExpression();
+      if (expr && Node.isConditionalExpression(expr)) {
+        const branch: string[] = [];
+        if (collectConditionalLiterals(expr, branch)) {
+          for (const t of branch) if (!out.includes(t)) out.push(t);
+        }
+      }
+    } else if (Node.isJsxElement(child)) {
+      collectTernaryLiterals(child, out);
+    }
+  }
+}
+
+function collectConditionalLiterals(expr: Node, out: string[]): boolean {
+  if (Node.isConditionalExpression(expr)) {
+    return collectConditionalLiterals(expr.getWhenTrue(), out) && collectConditionalLiterals(expr.getWhenFalse(), out);
+  }
+  if (Node.isStringLiteral(expr) || Node.isNoSubstitutionTemplateLiteral(expr)) {
+    const t = expr.getLiteralText().trim();
+    if (!t) return false;
+    if (!out.includes(t)) out.push(t);
+    return true;
+  }
+  return false;
 }
 
 function resolveHandlerCall(sf: SourceFile, initializer: Node | undefined): string | null {

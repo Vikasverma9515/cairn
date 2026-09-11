@@ -59,6 +59,46 @@ describe("scanL1", () => {
     expect(archiveButton?.id).toBe("Archive"); // same reasoning — raw text, not slugified
   });
 
+  it("reads a toggle button's ternary label ({open ? \"Cancel\" : \"Add Patient\"}) instead of leaving it textless", () => {
+    // Real, live-found bug: a button written this way (an extremely common
+    // React toggle pattern) used to get text: null — collectJsxText
+    // correctly refuses to guess a dynamic value, but a ternary of two
+    // STRING LITERALS isn't dynamic, both branches are real and knowable.
+    // With text null and no data-ai/aria-label, the element's id fell to a
+    // meaningless "button-N" slug and manifest.ts's does/label had nothing
+    // to work with — confirmed live: an agent given "add a new patient"
+    // against a real app with this exact button shape replied "I'm not sure
+    // how to help with that" after one call, never attempting to click it.
+    const facts = scanL1(FIXTURE);
+    const home = facts.pages.find((p) => p.route === "/")!;
+    const toggle = home.elements.find((e) => e.file === "app/page.tsx" && e.textAlternatives?.includes("Add Patient"));
+    expect(toggle).toBeDefined();
+    expect(toggle?.tag).toBe("button");
+    expect(toggle?.text).toBe("Cancel"); // primary = first-written branch, deterministic
+    expect(toggle?.textAlternatives).toEqual(["Cancel", "Add Patient"]);
+    expect(toggle?.id).toBe("Cancel"); // real text, not a slugified "button-N" fallback
+  });
+
+  it("reads a plain <input>'s placeholder as its text — it has no children for getElementText to read at all", () => {
+    // Real, live-found bug: a self-closing <input> is never a JsxOpeningElement,
+    // so getElementText (which reads JSX children) always returned null for
+    // one, same as a button with no aria-label/data-ai — except an input has
+    // no children to fall back on, only its OWN attributes. With no data-ai,
+    // no aria-label, and no text, the element's id fell to a meaningless
+    // "input-N" slug that findElement's runtime ladder (element-ladder.ts)
+    // can never resolve against the live DOM (inputs aren't even in its
+    // textContent-matching candidate list — only buttons/links are). This
+    // is the real, live-found root cause of a batch's own fill steps
+    // failing "Could not find that element on the page" right after the
+    // click that revealed the very field being filled.
+    const facts = scanL1(FIXTURE);
+    const home = facts.pages.find((p) => p.route === "/")!;
+    const nameField = home.elements.find((e) => e.file === "app/page.tsx" && e.tag === "input");
+    expect(nameField).toBeDefined();
+    expect(nameField?.text).toBe("Full name");
+    expect(nameField?.id).toBe("Full name"); // real text, not a slugified "input-N" fallback
+  });
+
   it("finds the create-item button with its data-ai id and traced API call", () => {
     const facts = scanL1(FIXTURE);
     const home = facts.pages.find((p) => p.route === "/")!;

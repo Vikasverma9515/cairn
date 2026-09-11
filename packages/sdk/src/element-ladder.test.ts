@@ -1,5 +1,73 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { dragElement, findElementWithRetry, pressKey, selectOption, waitForDomSettle } from "./element-ladder";
+import { dragElement, findElement, findElementWithRetry, pressKey, selectOption, waitForDomSettle } from "./element-ladder";
+
+// Real, live-found gap this section closes: a plain text field has no
+// data-ai/aria-label/role and (unlike a button) no textContent, so it was
+// completely unmatchable by findElement's live-DOM fallback — every fill
+// targeting an unlabeled input failed with "Could not find that element on
+// the page" unless its exact id happened to already be in the liveElements
+// map. Confirmed live: VOXERA's own Add-Patient form, a batch that clicked
+// the toggle open and tried to fill the newly-revealed Name/Phone fields in
+// the same turn — see l1-scan.ts's own placeholder-reading comment for the
+// indexer half of this fix.
+describe("findElement — matching a plain text field by its placeholder (no data-ai/aria-label/textContent to go on)", () => {
+  function stubDocumentWithFields(fields: Array<{ tag: "input" | "textarea"; type?: string; placeholder?: string; name?: string }>) {
+    const els = fields.map((f) => ({
+      tagName: f.tag.toUpperCase(),
+      type: f.type,
+      placeholder: f.placeholder ?? "",
+      name: f.name ?? "",
+    }));
+    vi.stubGlobal("document", {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("input:not")) {
+          // Mirrors the REAL selector's own :not([type=...]) exclusions —
+          // a jsdom-free stub can't run real CSS matching, so this reproduces
+          // just enough of it for the exclusion test below to mean anything.
+          const excludedTypes = new Set(["submit", "button", "checkbox", "radio"]);
+          return els.filter((e) => (e.tagName === "INPUT" && !excludedTypes.has(e.type ?? "")) || e.tagName === "TEXTAREA");
+        }
+        return []; // the earlier button/link candidate query — nothing matches here
+      },
+    });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("matches an exact placeholder", () => {
+    stubDocumentWithFields([{ tag: "input", placeholder: "Full name" }, { tag: "input", placeholder: "Phone number" }]);
+    const el = findElement("Phone number");
+    expect(el).not.toBeNull();
+    expect((el as unknown as { placeholder: string }).placeholder).toBe("Phone number");
+  });
+
+  it("matches a substring of a longer placeholder, case/whitespace-insensitive", () => {
+    stubDocumentWithFields([{ tag: "input", placeholder: "  Knowledge base (PDF or text)  " }]);
+    const el = findElement("knowledge base");
+    expect(el).not.toBeNull();
+  });
+
+  it("falls back to the name attribute when the field has no placeholder", () => {
+    stubDocumentWithFields([{ tag: "input", name: "patientNotes" }]);
+    const el = findElement("patientNotes");
+    expect(el).not.toBeNull();
+  });
+
+  it("never matches a checkbox/radio/submit/button input through this path — they're excluded on purpose", () => {
+    stubDocumentWithFields([{ tag: "input", type: "checkbox", name: "Add patient" }]);
+    const el = findElement("Add patient");
+    expect(el).toBeNull();
+  });
+
+  it("still returns null for a target that matches nothing — never invents a match", () => {
+    stubDocumentWithFields([{ tag: "input", placeholder: "Full name" }]);
+    const el = findElement("Does not exist anywhere");
+    expect(el).toBeNull();
+  });
+});
 
 describe("findElementWithRetry (Phase 3 step 4 — bounded, LLM-free Executor retry)", () => {
   it("real positive case: a transient miss (element not yet in the snapshot) recovers on the retry once it becomes available — the exact 'stale re-render' shape this exists to handle", async () => {

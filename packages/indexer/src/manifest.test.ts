@@ -115,6 +115,7 @@ describe("assembleManifest", () => {
               dataAi: "create-invoice",
               ariaLabel: null,
               text: "New Invoice",
+              textAlternatives: null,
               handlerCall: "POST /api/invoices",
               file: "components/CreateInvoiceButton.tsx",
               line: 7,
@@ -138,6 +139,49 @@ describe("assembleManifest", () => {
     expect(manifest.pages[0].elements[0].apiCall).toEqual({ method: "POST", url: "/api/invoices", handledBy: ["createInvoice"] });
   });
 
+  it("gives a toggle button a fallback selector for EVERY ternary branch, not just its primary text", () => {
+    // The real DOM only ever shows ONE of a toggle's branches at a time
+    // ({open ? "Cancel" : "Add Patient"}), so a selector built only from the
+    // primary text fails outright whenever the button happens to be in its
+    // other state at click time. Both branches need their own selector.
+    const facts: RawFacts = {
+      version: "1",
+      pages: [
+        {
+          route: "/patients",
+          file: "app/patients/page.tsx",
+          reachableFiles: [],
+          elements: [
+            {
+              id: "Cancel",
+              tag: "button",
+              dataAi: null,
+              ariaLabel: null,
+              text: "Cancel",
+              textAlternatives: ["Cancel", "Add Patient"],
+              handlerCall: null,
+              file: "app/patients/page.tsx",
+              line: 42,
+            },
+          ],
+          dataShapes: [],
+          inAppCopy: [],
+        },
+      ],
+      allScannedFiles: [],
+      frameworkReachableFiles: [],
+      frameworkElements: [],
+      apiRouteHandlers: [],
+      businessRules: [],
+    };
+    const l2: L2Result = { dead: [], conflicts: [] };
+    const l3: L3Result = { descriptions: new Map(), globalElements: [], cacheHits: 0, cacheMisses: 0 };
+
+    const manifest = assembleManifest("/repo", facts, l2, l3);
+
+    expect(manifest.pages[0].elements[0].fallbacks).toEqual(["button >> text=Cancel", "button >> text=Add Patient"]);
+  });
+
   it("leaves apiCall exactly as parsed when no route handler matches — never invents handledBy", () => {
     const facts: RawFacts = {
       version: "1",
@@ -153,6 +197,7 @@ describe("assembleManifest", () => {
               dataAi: "create-invoice",
               ariaLabel: null,
               text: "New Invoice",
+              textAlternatives: null,
               handlerCall: "POST /api/invoices",
               file: "components/CreateInvoiceButton.tsx",
               line: 7,
@@ -220,6 +265,7 @@ describe("assembleManifest", () => {
               dataAi: "place-order",
               ariaLabel: null,
               text: "Place order",
+              textAlternatives: null,
               handlerCall: "POST /api/shop/checkout",
               file: "components/CheckoutWizard.tsx",
               line: 12,
@@ -266,6 +312,7 @@ describe("assembleManifest", () => {
               dataAi: "create-invoice",
               ariaLabel: null,
               text: "New Invoice",
+              textAlternatives: null,
               handlerCall: "POST /api/invoices",
               file: "components/CreateInvoiceButton.tsx",
               line: 7,

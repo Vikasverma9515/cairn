@@ -20,6 +20,7 @@ import {
   UI_PATTERNS,
   VERBS,
   VerbResponseSchema,
+  type CopilotRequest,
   type CriticVerdict,
   type HistoryTurn,
   type LiveElement,
@@ -226,6 +227,7 @@ export function createCopilotHandlerWithLLM(
     }
 
     const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, { ...input, history: effectiveHistory });
+    logCopilotTurn(input, effectiveHistory, verb);
 
     // Recorded only for a TERMINAL verb — matching the realtime relay's
     // own discipline exactly: a continuing step (click/fill/read/
@@ -254,6 +256,31 @@ export function createCopilotHandlerWithLLM(
 
     return { status: 200, body: verb };
   };
+}
+
+/**
+ * A real, live-found gap: nothing in this handler printed what the agent
+ * was actually doing turn to turn — debugging a wrong or repeated action
+ * meant reconstructing it by hand from raw network payloads. One line per
+ * typed-transport turn, matching this codebase's existing always-on
+ * `[cairn] ...` operational logs (KeyRotator, Gemini key rotation) rather
+ * than a new opt-in flag: the question (truncated — untrusted user text,
+ * never worth risking a huge log line), how much prior history this turn
+ * actually saw and its last entry (the concrete way to tell "the model
+ * forgot" apart from "the model ignored what it was given"), and the verb
+ * it chose. */
+function logCopilotTurn(input: CopilotRequest, effectiveHistory: HistoryTurn[], verb: VerbResponse): void {
+  const q = truncateForLog(input.question);
+  const last = effectiveHistory[effectiveHistory.length - 1];
+  const lastTurn = last ? `${last.role}: ${truncateForLog(last.text)}` : "(none)";
+  console.log(
+    `[cairn] copilot turn — route=${input.route} question="${q}" history=${effectiveHistory.length} last=[${lastTurn}] → ${summarizeVerbForHistory(verb)} (verb=${verb.verb})`,
+  );
+}
+
+function truncateForLog(text: string, max = 100): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
 /**

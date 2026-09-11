@@ -150,6 +150,17 @@ function buildFallbacks(el: RawElement): string[] {
   const fallbacks: string[] = [];
   if (el.ariaLabel) fallbacks.push(`[aria-label='${el.ariaLabel}']`);
   if (el.text) fallbacks.push(`${el.tag} >> text=${el.text}`);
+  // A toggle button (`{open ? "Cancel" : "Add Patient"}`) only ever shows ONE
+  // of its alternatives in the real DOM at a time — el.text is just whichever
+  // branch was picked as primary. Without this, the runtime element-ladder's
+  // only text-based selector is the primary label, so the click fails outright
+  // whenever the button happens to be in its OTHER state. Every other literal
+  // branch gets its own selector too, so either real rendered state resolves.
+  if (el.textAlternatives) {
+    for (const alt of el.textAlternatives) {
+      if (alt !== el.text) fallbacks.push(`${el.tag} >> text=${alt}`);
+    }
+  }
   return fallbacks;
 }
 

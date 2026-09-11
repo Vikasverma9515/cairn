@@ -16,6 +16,17 @@ export interface RawElement {
   dataAi: string | null;
   ariaLabel: string | null;
   text: string | null;
+  /**
+   * Other statically-known literal labels this SAME element can show, from a
+   * `{cond ? "A" : "B"}` toggle — e.g. a button written as
+   * `{open ? "Cancel" : "Add Patient"}` has `text: "Cancel"` and
+   * `textAlternatives: ["Cancel", "Add Patient"]`. Both branches are real,
+   * human-authored strings (unlike `{count}`, which stays unreadable — see
+   * collectJsxText's own doc comment), so both get kept instead of only
+   * whichever one happened to render at scan time. null when the element's
+   * text has no such toggle.
+   */
+  textAlternatives: string[] | null;
   /** Best-effort trace of the onClick/onSubmit handler to a fetch/axios/tRPC call. */
   handlerCall: string | null;
   file: string;

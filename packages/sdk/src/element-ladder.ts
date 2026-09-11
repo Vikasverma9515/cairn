@@ -37,6 +37,32 @@ export function findElement(target: string, liveElements?: Map<string, HTMLEleme
     if (normalize(el.textContent ?? "").includes(normalizedTarget)) return el;
   }
 
+  // Step 3's textContent match is button/link-only by construction — a
+  // plain text field has no textContent to read at all. Its placeholder
+  // (or name, when it has no placeholder) is the field's real equivalent
+  // of visible text, and the indexer's manifest now surfaces exactly that
+  // as the element's id/label (see l1-scan.ts's own placeholder-reading
+  // comment) — so a fill target genuinely can be "Full name" or "Phone
+  // number" now, and this is what actually resolves it against the live
+  // DOM. Real, live-found gap this closes: a batch that clicks a toggle
+  // open and fills the form it reveals in one go had no way to resolve
+  // those newly-visible fields at all — data-ai/aria-label/role all miss
+  // for an unlabeled input, and textContent matching skipped inputs
+  // entirely, so every such fill failed with "Could not find that element
+  // on the page" until the NEXT turn's fresh liveElements scan bailed it
+  // out — a real, wasted round trip every single time.
+  const fieldCandidates = document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+    "input:not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']), textarea",
+  );
+  for (const el of Array.from(fieldCandidates)) {
+    const identity = normalize(el.placeholder || el.name || "");
+    if (identity && identity === normalizedTarget) return el;
+  }
+  for (const el of Array.from(fieldCandidates)) {
+    const identity = normalize(el.placeholder || el.name || "");
+    if (identity && identity.includes(normalizedTarget)) return el;
+  }
+
   return null;
 }
 

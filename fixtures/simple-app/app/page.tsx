@@ -7,6 +7,8 @@ export default function HomePage() {
     await fetch("/api/items/archive", { method: "POST" });
   }
 
+  const showAddForm = false;
+
   return (
     <main>
       <h1>Welcome</h1>
@@ -16,6 +18,11 @@ export default function HomePage() {
       </a>
       <Link href="/contact">Contact us</Link>
       <PrimaryButton onClick={handleArchive}>Archive</PrimaryButton>
+      <button>
+        {showAddForm ? <span className="icon-x" /> : <span className="icon-plus" />}
+        {showAddForm ? "Cancel" : "Add Patient"}
+      </button>
+      <input placeholder="Full name" />
     </main>
   );
 }
