@@ -306,6 +306,19 @@ Full parity with `<Copilot/>` — typed Q&A, tours, mic, live voice
 conversation. The backend (`createCopilotHandler`/`createRealtimeServer`)
 is plain Node — no Next.js required server-side either.
 
+**What this genuinely needs, honestly stated:** every mode needs *some*
+real backend to hold the LLM key and run `/api/copilot` — a purely static
+site with no backend at all can't use Cairn in any mode, since there's
+nowhere safe to keep the key. Typed chat and push-to-talk voice are plain
+HTTP, so any Node-capable backend works (a serverless function is fine).
+Full realtime specifically needs a **persistent** process running
+`cairn-realtime` — a real, long-lived WebSocket server, not a typical
+serverless function (Vercel/Netlify functions are short-lived by design).
+On a non-Node site (WordPress, Rails, a static host, a no-backend
+builder), that means standing up one small, separate Node service for the
+relay + API routes — it doesn't have to be same-origin, `realtimeUrl` and
+the endpoint props just point at wherever it lives.
+
 For an app whose source Cairn can't read (not Next.js, or not this repo
 at all), point the CLI at a **running** app instead:
 
@@ -344,6 +357,20 @@ npx cairn-realtime --port 3010   # its own long-lived process alongside `next de
 - **Streaming, not buffered** — audio starts in ~1–1.5s over a persistent
   WebSocket, not a 5–10s wait for a full clip.
 - **Barge-in** — talk over the agent and it stops immediately.
+- **Movie-style captions** — during a live call, whoever's actually
+  talking shows up as one small line at a time, word by word, floating
+  directly over your page in a light frosted-glass pill — not a chat
+  bubble stack eating half the screen. Text color adapts to whatever's
+  really behind it (real WCAG luminance math against the host page's own
+  background, not a fixed light/dark guess), with a text-shadow halo as a
+  fallback wherever that can't be determined (`sampleAncestorBackgroundColor`/
+  `pickReadableCaptionColor` in `packages/sdk/src/index.tsx`).
+- **One tap on a phone** — on a narrow viewport with voice configured, the
+  main launcher button *is* the talk toggle: tap once to start a live
+  call, tap again to end it. No panel, no settings icon, no chat history —
+  just the button and the caption. Falls back to the normal open/close
+  behavior automatically wherever voice isn't configured, or on a wider
+  screen.
 - **Tours** — an answer spanning several elements comes back as an
   ordered walkthrough, not one paragraph naming five buttons.
 - **Memory, in-turn and persistent** — "highlight that instead" resolves
@@ -357,6 +384,13 @@ npx cairn-realtime --port 3010   # its own long-lived process alongside `next de
   every verb) caps what the agent is *allowed* to do, independent of
   which actions are registered, and can't be bypassed even by a
   registered action id.
+- **Asks instead of guessing** — told to "add a patient" with no name or
+  phone given? It asks for exactly the missing detail instead of
+  inventing one. A genuinely open-ended goal ("what should I do here")
+  gets 2–3 real, concrete options grounded in that page's own actual
+  purpose and controls — never a generic "I can help with many things."
+  Answering with a real question is treated as a first-class outcome, not
+  a fallback (`buildSystemPrompt` in `packages/sdk/src/server.ts`).
 
 Every spoken/displayed line follows one rule regardless of path: no
 markdown, never say an internal element id out loud.
