@@ -79,11 +79,21 @@ export function findElement(target: string, liveElements?: Map<string, HTMLEleme
  * page still fails after `attempts`, surfacing as a real miss — this
  * never silently invents success.
  */
+// Real, live-found gap this default widens: a batch that clicks a toggle
+// open and fills the form it just revealed, in the SAME turn, still missed
+// its fill sub-steps sometimes even after findElement gained a real
+// placeholder-matching path (see this file's own comment above) — 2
+// attempts / 300ms (600ms total) wasn't consistently enough runway for a
+// real app's own re-render, confirmed live against VOXERA's Add-Patient
+// form via the copilot-turn debug log in server.ts. Each retry is a fresh
+// live-DOM query (never a stale snapshot), so the extra attempts cost
+// nothing in the already-common case where the element is just there —
+// this only spends more time when a genuine race is actually happening.
 export async function findElementWithRetry(
   target: string,
   liveElements?: Map<string, HTMLElement>,
-  attempts = 2,
-  delayMs = 300,
+  attempts = 4,
+  delayMs = 350,
 ): Promise<HTMLElement | null> {
   for (let i = 0; i < attempts; i++) {
     const el = findElement(target, liveElements);

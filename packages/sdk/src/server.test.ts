@@ -6,6 +6,7 @@ import {
   GeminiVerbLLM,
   GroqStreamingTextLLM,
   GroqVerbLLM,
+  buildSystemPrompt,
   buildVerbToolSchema,
   compileSkill,
   createCopilotHandlerWithLLM,
@@ -1970,6 +1971,28 @@ describe("resolvePlan", () => {
     await resolvePlan(llm, "x");
 
     expect(seenSystemPrompt).toContain('"actions"');
+  });
+});
+
+describe("buildSystemPrompt — asking instead of guessing", () => {
+  // Real, live-found gap: nothing told the model what to do when a real
+  // user's goal left out a required detail (a fill value, a call_tool
+  // argument) or was genuinely open-ended ("what should I do here") — the
+  // only documented behaviors were act (with whatever value it had, real
+  // or not) or refuse. Confirmed live: a batch would rather invent a
+  // plausible-looking placeholder than stop and ask, exactly the
+  // hallucination risk the rest of this prompt is built to avoid
+  // everywhere else.
+  it("instructs the model to ask for a missing required value instead of inventing one", () => {
+    const prompt = buildSystemPrompt(manifest, []);
+    expect(prompt).toContain('Never invent a value for "value"/"action"/an argument the user never');
+    expect(prompt).toContain("ask for exactly that piece");
+  });
+
+  it("instructs the model to propose real, page-grounded options for a genuinely open-ended goal, and treats asking as a first-class answer", () => {
+    const prompt = buildSystemPrompt(manifest, []);
+    expect(prompt).toContain("name 2-3 real,");
+    expect(prompt).toContain("is a completely normal, first-class answer");
   });
 });
 

@@ -20,7 +20,18 @@ describe("looksMultiStep", () => {
     expect(looksMultiStep("I wanted to create an agent for the healthcare that could call the patient and check if they're okay")).toBe(true);
     expect(looksMultiStep("build me an agent that can answer billing questions")).toBe(true);
     expect(looksMultiStep("set up an assistant who should greet new patients")).toBe(true);
-    // Still conservative on a genuinely single-step create — no "that/which/who can/could/should/would" clause describing further behavior.
+    // Still conservative on a genuinely single-step create — no "that/which/who" clause describing further behavior at all.
+    expect(looksMultiStep("create a new agent")).toBe(false);
+  });
+
+  it("real, live-found gap this second widening closes: a real description doesn't always use a modal verb (can/could/should/would) after that/which/who — confirmed live against VOXERA's own Agent Builder, where this exact phrase made the agent click 'New Agent' once and stop, never continuing to actually fill in the new agent's details", () => {
+    expect(
+      looksMultiStep(
+        "Create a new voice agent named Weekend Receptionist, a friendly receptionist for a dental clinic that answers questions about hours and helps book appointments",
+      ),
+    ).toBe(true);
+    expect(looksMultiStep("build an agent that greets callers by name")).toBe(true);
+    // Still correctly false — a bare create with no clause at all.
     expect(looksMultiStep("create a new agent")).toBe(false);
   });
 

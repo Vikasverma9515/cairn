@@ -99,6 +99,24 @@ describe("scanL1", () => {
     expect(nameField?.id).toBe("Full name"); // real text, not a slugified "input-N" fallback
   });
 
+  it("caps a card-shaped button's text at a real word boundary instead of joining a heading with its whole description paragraph", () => {
+    // Real, live-found bug: a button with a heading + its own separate
+    // description as sibling children (VOXERA's own "New Agent" dialog
+    // cards) got a ~200-character id/label/selector — every word of both.
+    // Confirmed live: an agent asked to "create a new agent" opened the
+    // dialog, then never managed to click either card inside it, stuck
+    // repeating the same first click instead.
+    const facts = scanL1(FIXTURE);
+    const home = facts.pages.find((p) => p.route === "/")!;
+    const card = home.elements.find((e) => e.file === "app/page.tsx" && e.text?.startsWith("Describe it"));
+    expect(card).toBeDefined();
+    expect(card!.text!.length).toBeLessThanOrEqual(80);
+    expect(card!.text).toBe("Describe it — I'll build it Tell me about your business and what the agent"); // truncated at the last real word boundary, not mid-word
+    // The full real text still starts with this truncated value — the
+    // runtime ladder's substring-match fallback still resolves it.
+    expect("Describe it — I'll build it Tell me about your business and what the agent should handle").toContain(card!.text);
+  });
+
   it("finds the create-item button with its data-ai id and traced API call", () => {
     const facts = scanL1(FIXTURE);
     const home = facts.pages.find((p) => p.route === "/")!;

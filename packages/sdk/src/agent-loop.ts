@@ -56,8 +56,22 @@ export const MAX_HISTORY_TURNS = 8;
 // why a false negative here is zero-regression (falls back to the lazy,
 // after-step-1 kickoff) while a false positive only costs one Planner call
 // starting a moment earlier than it otherwise would.
+// Real, live-found gap this closes: "create a new voice agent named X, a
+// friendly receptionist for a dental clinic THAT ANSWERS questions about
+// hours and HELPS book appointments" never matched the old pattern — it
+// required "that/which/who" to be followed by a MODAL verb specifically
+// (can/could/should/would), so a real, natural description using a plain
+// present-tense verb after "that" fell through, plannerEnabled never
+// engaged, and the agent clicked "New Agent" once and stopped — the exact
+// "click this and that" complaint this whole pillar exists to fix, just in
+// a phrasing variant the modal-verb requirement didn't cover. The relative
+// clause itself ("that/which/who X") is the real signal that a create
+// command carries a real description worth planning around — the modal verb
+// after it was never load-bearing, just an accident of the first examples
+// this was written against; dropping it stays strict enough that a bare
+// "create a new agent" (no clause at all) is still correctly false.
 const MULTI_STEP_SIGNAL =
-  /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b|(create|build|set up|make) (a|an|.*) .*\b(that|which|who) (can|could|should|would)\b)\b/;
+  /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b|(create|build|set up|make) (a|an|.*) .*\b(that|which|who)\b)\b/;
 export function looksMultiStep(question: string): boolean {
   return MULTI_STEP_SIGNAL.test(question.toLowerCase());
 }

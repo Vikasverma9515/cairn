@@ -23,6 +23,12 @@ export default function HomePage() {
         {showAddForm ? "Cancel" : "Add Patient"}
       </button>
       <input placeholder="Full name" />
+      <button>
+        <span>
+          <div>Describe it — I'll build it</div>
+          <div>Tell me about your business and what the agent should handle — optionally attach a pricing sheet, FAQ, or policy doc. I'll draft the name, personality, prompt, and greeting for you to review.</div>
+        </span>
+      </button>
     </main>
   );
 }

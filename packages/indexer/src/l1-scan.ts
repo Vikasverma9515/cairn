@@ -288,13 +288,33 @@ function getAttrInitializerNode(attrs: Node[], name: string): Node | undefined {
  * `{dynamic value}` or a JsxSelfClosingElement icon, which have no real
  * static text to read) so any REAL, human-authored text anywhere inside
  * the element is found, no matter how deeply it's wrapped. */
+// Real, live-found gap this cap closes: a card-shaped button — a heading
+// plus its own description paragraph as TWO separate text-bearing children,
+// a common real pattern (VOXERA's own "New Agent" dialog: "Describe it —
+// I'll build it" next to a full sentence explaining what it does) —
+// recursed correctly (both are real, human-authored text, same rule as the
+// "About" link above) but got joined into one ~200-character id/label/
+// selector: unwieldy for an LLM to reproduce exactly, and confirmed live to
+// be part of why an agent given "create a new agent" clicked the dialog
+// open once and then never managed to pick either card inside it. Capped
+// at a real word boundary (never mid-word) so the result stays a genuine
+// PREFIX of the element's actual text — findElement's own substring-match
+// fallback (element-ladder.ts) still resolves it correctly; only the exact-
+// match path relies on reproducing the label verbatim, and a short, real
+// heading is far easier for a model to reproduce than a full paragraph.
+const MAX_ELEMENT_TEXT_LENGTH = 80;
+
 export function getElementText(opening: Node): string | null {
   const parent = opening.getParentIfKind(SyntaxKind.JsxElement);
   if (!parent) return null;
   const texts: string[] = [];
   collectJsxText(parent, texts);
   const joined = texts.join(" ").trim().replace(/\s+/g, " ");
-  return joined.length > 0 ? joined : null;
+  if (joined.length === 0) return null;
+  if (joined.length <= MAX_ELEMENT_TEXT_LENGTH) return joined;
+  const truncated = joined.slice(0, MAX_ELEMENT_TEXT_LENGTH);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated).trim();
 }
 
 function collectJsxText(element: import("ts-morph").JsxElement, texts: string[]): void {

@@ -678,7 +678,11 @@ describe("executeVerbResponse", () => {
         "/invoices",
         { ...opts, liveElements },
       );
-      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled());
+      // A genuine miss now exhausts findElementWithRetry's full, widened
+      // default budget (4 attempts / 350ms — see element-ladder.ts's own
+      // comment) before onToolStep ever fires, so this real "give up" path
+      // legitimately takes longer than vi.waitFor's 1000ms default now.
+      await vi.waitFor(() => expect(opts.onToolStep).toHaveBeenCalled(), { timeout: 2000 });
       // The second action never ran — its target was never clicked.
       expect(el.click).not.toHaveBeenCalled();
       const result = opts.onToolStep.mock.calls[0][0];
