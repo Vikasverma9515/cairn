@@ -47,6 +47,20 @@ describe("injectWidgetHtml", () => {
     expect(result.filePath).toBe(html);
   });
 
+  it("falls back to src/index.html (Angular CLI convention)", () => {
+    const html = write("src/index.html", `<html><body>\n</body></html>`);
+    const result = injectWidgetHtml(tmpDir, { apiPort: 4000, voice: false, realtimePort: null, widgetScriptPath: "cairn-widget.js" });
+    expect(result.injected).toBe(true);
+    expect(result.filePath).toBe(html);
+  });
+
+  it("falls back to src/app.html (SvelteKit convention)", () => {
+    const html = write("src/app.html", `<html><body>%sveltekit.body%\n</body></html>`);
+    const result = injectWidgetHtml(tmpDir, { apiPort: 4000, voice: false, realtimePort: null, widgetScriptPath: "cairn-widget.js" });
+    expect(result.injected).toBe(true);
+    expect(result.filePath).toBe(html);
+  });
+
   it("wires speak/transcribe/realtime attributes only when voice is on", () => {
     write("index.html", `<html><body>\n</body></html>`);
     const result = injectWidgetHtml(tmpDir, { apiPort: 4000, voice: true, realtimePort: 3010, widgetScriptPath: "cairn-widget.js" });

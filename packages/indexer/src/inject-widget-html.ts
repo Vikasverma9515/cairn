@@ -32,12 +32,17 @@ export interface HtmlInjectResult {
 const START_MARKER = "<!-- cairn:start -->";
 const END_MARKER = "<!-- cairn:end -->";
 
-// Checked in order — the first one that exists wins. Covers Vite, CRA, and
-// a plain static site's own root index.html; a project with none of these
-// (a server-rendered template with no single static HTML file, e.g. Rails
-// ERB or Django templates) isn't something a generic text-insertion pass
-// should guess at — it falls through to the manual-instructions path.
-const CANDIDATE_HTML_FILES = ["index.html", path.join("public", "index.html")];
+// Checked in order — the first one that exists wins. Covers every common
+// convention this was actually checked against: Vite (any framework
+// preset — React, Vue, Svelte, vanilla) and a plain static site both use a
+// root index.html; CRA and legacy Vue CLI (webpack) use public/index.html;
+// Angular CLI uses src/index.html; SvelteKit's template is src/app.html
+// (no <body> content itself, but real markup with a real </body> the same
+// insertion works against). A project with none of these (a server-
+// rendered template with no single static HTML file, e.g. Rails ERB or
+// Django templates) isn't something a generic text-insertion pass should
+// guess at — it falls through to the manual-instructions path.
+const CANDIDATE_HTML_FILES = ["index.html", path.join("public", "index.html"), path.join("src", "index.html"), path.join("src", "app.html")];
 
 function findHtmlEntry(absDir: string): string | null {
   for (const rel of CANDIDATE_HTML_FILES) {
