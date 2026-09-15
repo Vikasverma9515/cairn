@@ -70,7 +70,7 @@ const REALTIME_PORT = 3010;
 // default concurrency on a small handful of pages).
 const SETUP_BUILD_CONCURRENCY = 3;
 
-type Provider = "anthropic" | "groq" | "gemini";
+export type Provider = "anthropic" | "groq" | "gemini";
 
 const PROVIDER_LABELS: Record<Provider, string> = { anthropic: "Anthropic (Claude)", groq: "Groq", gemini: "Gemini" };
 const PROVIDER_KEY_ENV: Record<Provider, string> = { anthropic: "ANTHROPIC_API_KEY", groq: "GROQ_API_KEYS", gemini: "GEMINI_API_KEY" };
@@ -88,6 +88,29 @@ function readOwnVersion(): string {
   } catch {
     return "unknown";
   }
+}
+
+/** Builds the .env content for whatever the wizard actually collected.
+ * Extracted as a pure function specifically so this is unit-testable
+ * without mocking the interactive prompt flow — real, live-found bug this
+ * guards against a regression of: every generated route/server template
+ * (NEXT_APP_ROUTE, NEXT_PAGES_API_ROUTE, STANDALONE_SERVER, and
+ * realtime-cli.ts for voice) resolves its runtime provider from
+ * `CAIRN_RUNTIME_PROVIDER`, defaulting to "groq" when it's unset. This
+ * used to never get written at all — choosing Anthropic or Gemini in the
+ * wizard silently did nothing, because the generated backend still only
+ * looked for GROQ_API_KEYS. Confirmed live: a real install with Gemini
+ * chosen and a real Gemini key configured still failed every single
+ * request, because nothing ever told the runtime to actually use it. */
+export function buildEnvLines(provider: Provider | null, providerKey: string | null, deepgramKey: string | null): string[] {
+  const lines: string[] = [];
+  if (provider === "anthropic") lines.push(`ANTHROPIC_API_KEY=${providerKey ?? ""}`);
+  if (provider === "groq") lines.push(`GROQ_API_KEYS=${providerKey ?? ""}`);
+  if (provider === "gemini") lines.push(`GEMINI_API_KEY=${providerKey ?? ""}`);
+  if (provider) lines.push(`CAIRN_RUNTIME_PROVIDER=${provider}`);
+  if (deepgramKey) lines.push(`DEEPGRAM_API_KEY=${deepgramKey}`);
+  lines.push("CAIRN_REGISTERED_ACTIONS=");
+  return lines;
 }
 
 function readPackageJson(absDir: string): Record<string, any> | null {
@@ -414,12 +437,7 @@ export async function runSetup(dir: string): Promise<void> {
   }
 
   // 4. Write a real .env (not just .env.example) with whatever was actually given.
-  const envLines: string[] = [];
-  if (provider === "anthropic") envLines.push(`ANTHROPIC_API_KEY=${providerKey ?? ""}`);
-  if (provider === "groq") envLines.push(`GROQ_API_KEYS=${providerKey ?? ""}`);
-  if (provider === "gemini") envLines.push(`GEMINI_API_KEY=${providerKey ?? ""}`);
-  if (deepgramKey) envLines.push(`DEEPGRAM_API_KEY=${deepgramKey}`);
-  envLines.push("CAIRN_REGISTERED_ACTIONS=");
+  const envLines = buildEnvLines(provider, providerKey, deepgramKey);
   const envPath = path.join(absDir, ".env");
   if (!fs.existsSync(envPath)) {
     fs.writeFileSync(envPath, envLines.join("\n") + "\n");
