@@ -8821,6 +8821,20 @@ Real context: a user's friend tried to install Cairn into a Vite + React SPA (a 
 
 ---
 
+### Two follow-ups to the framework-agnostic setup work, same session: wider HTML detection, and a real reference doc installed into every project
+
+**1. A real gap, found while directly answering "will this work on any platform?" honestly** rather than assuming yes: `injectWidgetHtml`'s HTML-entry candidate list only checked root `index.html` and CRA's `public/index.html`. Angular CLI's real entry is `src/index.html`; SvelteKit's is `src/app.html`. Neither was covered — `cairn setup` would have silently fallen back to printing manual instructions on two real, common frameworks instead of the automated path it now has for everything else. **Fixed:** widened `CANDIDATE_HTML_FILES` in `inject-widget-html.ts` to include both, with 2 new tests confirming each resolves correctly.
+
+**2. `packages/indexer/src/agents-doc.ts` (new)** — direct ask: install a reference file into every consuming project that a future AI coding agent (or a human) can read to actually understand, debug, and extend the Cairn integration sitting in their repo, with zero memory of the install that set it up. Real gap this closes: every other artifact `cairn setup` writes is either machine-consumed (`install-manifest.json`) or too narrow (a single generated route file) — nothing installed explained the whole system, where its pieces live in THIS project specifically, or where to look first when something breaks.
+
+**Built:** `buildCairnAgentsDoc(opts)` generates a dynamic (not static-template) markdown doc reflecting the ACTUAL install — branches on framework (Next vs. standalone), voice on/off, provider, and the real ports/file names this specific install used. Covers: what Cairn is in one paragraph, a table of exactly which files this install created and what each does, a troubleshooting section addressed at real, specific failure modes (widget not appearing, CORS, stale manifest, voice not connecting, rate limits, element-matching misses) with fixes grounded in the actual generated file names — not generic advice, and a pointer to the real upstream repo + key source file locations for fixing a bug in Cairn's own logic (not just this project's wiring). Wired into `setup.ts`: writes `.cairn/CAIRN.md` on every run (regenerated, not `writeIfAbsent` — a stale copy describing an old config would actively mislead), and `writeIfAbsent`s a root `AGENTS.md` pointing at it ONLY if the project doesn't already have one of its own — never overwrites a user's real project instructions.
+
+**Tests:** `agents-doc.test.ts` (new, 4) — the standalone path names real ports/files and omits Next-only content, the Next App/Pages Router paths are each distinct and correct, voice-off correctly omits the realtime section, and the upstream-repo/source-location pointers are always present. `inject-widget-html.test.ts` (+2, Angular/SvelteKit fallback). Full repo `npx vitest run`: 891/891 passing. Full-repo typecheck clean. Manually rendered the generated doc end-to-end (built `dist/`, called it directly) and read it — accurate, not just passing assertions.
+
+**Package version bumped:** `@cairnvibe/indexer` 0.4.4 → 0.5.0 (new capability, additive, non-breaking — the "any framework" setup path plus this doc generation). Not yet published to npm — publish needs explicit approval, not assumed as part of a version bump.
+
+---
+
 ## Track B — the structure graph, phase by phase
 
 The R&D: give an AI coding agent a real map of a codebase instead of

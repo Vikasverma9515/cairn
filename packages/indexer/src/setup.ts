@@ -35,6 +35,7 @@ import { execSync } from "node:child_process";
 import { runInit } from "./init";
 import { injectWidget } from "./inject-widget";
 import { injectWidgetHtml, copyWidgetBundle } from "./inject-widget-html";
+import { buildCairnAgentsDoc } from "./agents-doc";
 import { buildOrchestratorScript, type OrchestratorCommand } from "./orchestrator";
 import { ensureTranspilePackages } from "./ensure-transpile";
 import { scanL1 } from "./l1-scan";
@@ -73,6 +74,21 @@ type Provider = "anthropic" | "groq" | "gemini";
 
 const PROVIDER_LABELS: Record<Provider, string> = { anthropic: "Anthropic (Claude)", groq: "Groq", gemini: "Gemini" };
 const PROVIDER_KEY_ENV: Record<Provider, string> = { anthropic: "ANTHROPIC_API_KEY", groq: "GROQ_API_KEYS", gemini: "GEMINI_API_KEY" };
+
+/** This CLI's own version — read from its own package.json (works both
+ * from ts-node in dev and from the compiled dist/setup.js, since dist
+ * sits one level below the package root the same way src does). Used
+ * only to stamp the generated docs with what actually produced them;
+ * falls back to "unknown" rather than throwing if it's ever unreadable
+ * (e.g. an unusual install layout) — never worth failing setup over. */
+function readOwnVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, "..", "package.json");
+    return JSON.parse(fs.readFileSync(pkgPath, "utf8")).version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 function readPackageJson(absDir: string): Record<string, any> | null {
   const p = path.join(absDir, "package.json");
@@ -604,6 +620,37 @@ export async function runSetup(dir: string): Promise<void> {
     );
   }
 
+  // 8b. Write a reference doc INTO the project explaining what Cairn is
+  // and how THIS install is wired — for whoever (human or AI coding
+  // agent) opens this project later with no memory of this setup run and
+  // a real bug to fix or feature to add. Regenerated every run (not
+  // writeIfAbsent) since it reflects current config, not a one-time
+  // snapshot — a stale copy describing an old setup would actively
+  // mislead. A root AGENTS.md is ALSO written, but only if the project
+  // doesn't already have one of its own — never overwrite a user's real
+  // project instructions; if one already exists, the note below points
+  // at .cairn/CAIRN.md manually instead.
+  const cairnDocPath = path.join(absDir, ".cairn", "CAIRN.md");
+  fs.mkdirSync(path.dirname(cairnDocPath), { recursive: true });
+  fs.writeFileSync(
+    cairnDocPath,
+    buildCairnAgentsDoc({
+      framework: init.framework,
+      voice: wantsVoice,
+      provider,
+      packageVersion: readOwnVersion(),
+      standaloneApiPort: isOther ? STANDALONE_API_PORT : undefined,
+      realtimePort: wantsVoice ? REALTIME_PORT : undefined,
+    }),
+  );
+  const rootAgentsPath = path.join(absDir, "AGENTS.md");
+  let wroteRootAgentsStub = false;
+  if (!fs.existsSync(rootAgentsPath)) {
+    fs.writeFileSync(rootAgentsPath, "# Agent instructions\n\nThis project uses Cairn — see [.cairn/CAIRN.md](./.cairn/CAIRN.md) for what it is, how it's wired in here, and how to debug or extend it.\n");
+    wroteRootAgentsStub = true;
+  }
+  p.log.success(`wrote .cairn/CAIRN.md${wroteRootAgentsStub ? " and a root AGENTS.md pointing at it" : " (add a link to it from your own AGENTS.md/CLAUDE.md)"}`);
+
   // 9. Record exactly what this run touched — the ONE thing that makes
   // `cairn remove` a real, precise reversal instead of a guess. Written
   // last, on purpose: a run that fails or is skipped partway through
@@ -620,6 +667,8 @@ export async function runSetup(dir: string): Promise<void> {
       ...(transpile.ok && transpile.created && transpile.filePath ? [transpile.filePath] : []),
       ...(widgetBundlePath ? [widgetBundlePath] : []),
       ...(orchestratorFile ? [orchestratorFile] : []),
+      cairnDocPath,
+      ...(wroteRootAgentsStub ? [rootAgentsPath] : []),
     ],
     layoutFile: nextInject?.injected ? (nextInject.filePath ?? null) : null,
     wrapperFile: nextInject?.injected ? (nextInject.wrapperPath ?? null) : null,
