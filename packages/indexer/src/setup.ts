@@ -34,10 +34,14 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { runInit } from "./init";
 import { injectWidget } from "./inject-widget";
+import { injectWidgetHtml, copyWidgetBundle } from "./inject-widget-html";
+import { buildOrchestratorScript, type OrchestratorCommand } from "./orchestrator";
 import { ensureTranspilePackages } from "./ensure-transpile";
 import { scanL1 } from "./l1-scan";
 import { computeL2 } from "./l2-reachability";
 import { describeAll } from "./l3-describe";
+import { crawlSite } from "./crawl";
+import { describeCrawled } from "./crawl-describe";
 import { AnthropicDescribeClient, GeminiDescribeClient, GroqDescribeClient } from "./llm";
 import { assembleManifest } from "./manifest";
 import { ManifestSchema } from "@cairnvibe/core";
@@ -47,6 +51,16 @@ import { writeInstallManifest, type InstallManifest } from "./install-manifest";
 import { clack } from "./clack";
 
 export const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexer"];
+
+// Cairn's own npm packages are always installed. A non-Next project also
+// needs the standalone backend's own runtime deps (cairn-server.cjs's
+// `require("express")`/`require("cors")`) — installed the same way, and
+// tracked in the same install manifest, so `cairn remove` uninstalls them
+// too instead of leaving orphaned dependencies nothing else uses.
+const STANDALONE_SERVER_DEPS = ["express", "cors"];
+
+const STANDALONE_API_PORT = 4000;
+const REALTIME_PORT = 3010;
 
 // Lower than cairn build's own default (6) — a first-time setup is exactly
 // the scenario most likely to be running on a free-tier key with a tight
@@ -70,10 +84,10 @@ function readPackageJson(absDir: string): Record<string, any> | null {
   }
 }
 
-function alreadyInstalled(pkg: Record<string, any> | null): boolean {
+function alreadyInstalled(pkg: Record<string, any> | null, packages: string[]): boolean {
   if (!pkg) return false;
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-  return PACKAGES.every((p) => !!deps[p]);
+  return packages.every((p) => !!deps[p]);
 }
 
 /** Every clack prompt returns `Value | symbol` — a real, distinct symbol
@@ -126,12 +140,54 @@ async function attemptBuild(
   }
 }
 
+/** Crawl-mode counterpart to attemptBuild — reads the *rendered* DOM of a
+ * running app instead of parsing Next-specific source conventions, so it
+ * works on any frontend framework (or none at all). Same spinner/error
+ * shape as attemptBuild so recoverFromBuildFailure's retry menu works
+ * identically for both. */
+async function attemptCrawlBuild(
+  dir: string,
+  url: string,
+  provider: Provider,
+  key: string,
+  p: Awaited<ReturnType<typeof clack>>,
+): Promise<{ ok: true; pageCount: number } | { ok: false; error: unknown }> {
+  if (provider === "anthropic") process.env.ANTHROPIC_API_KEY = key;
+  if (provider === "groq") process.env.GROQ_API_KEYS = key;
+  if (provider === "gemini") process.env.GEMINI_API_KEYS = key;
+
+  const s = p.spinner();
+  s.start(`Crawling ${url}`);
+  try {
+    const client = provider === "anthropic" ? new AnthropicDescribeClient() : provider === "groq" ? new GroqDescribeClient() : new GeminiDescribeClient();
+    const facts = await crawlSite({ startUrl: url });
+    if (facts.pages.length === 0) {
+      s.error("No reachable pages found");
+      return { ok: false, error: new Error(`found no reachable pages at ${url} — is it actually running?`) };
+    }
+    s.message(`Describing ${facts.pages.length} page(s) (${provider})`);
+    const l3 = await describeCrawled(dir, facts, client);
+    const manifest = ManifestSchema.parse(assembleManifest(dir, facts, { dead: [], conflicts: [] }, l3));
+    const outPath = manifestWritePath(path.resolve(dir));
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2) + "\n");
+    s.stop(`Wrote ui-manifest.json (${manifest.pages.length} page(s) crawled)`);
+    return { ok: true, pageCount: manifest.pages.length };
+  } catch (err) {
+    s.error("Crawl failed");
+    return { ok: false, error: err };
+  }
+}
+
 /** Runs after a failed build: explains what actually went wrong in plain
  * English, then offers real next actions instead of just dying. Loops
  * until the user picks something that resolves (a successful retry) or
- * explicitly chooses to skip. */
+ * explicitly chooses to skip. Takes the actual build attempt as a
+ * callback (rather than calling attemptBuild directly) so the same retry
+ * menu serves both source-mode (Next) and crawl-mode (any other
+ * framework) builds without duplicating this whole flow. */
 async function recoverFromBuildFailure(
-  dir: string,
+  runBuild: (provider: Provider, key: string) => Promise<{ ok: true; pageCount: number } | { ok: false; error: unknown }>,
   provider: Provider,
   key: string,
   err: unknown,
@@ -185,7 +241,7 @@ async function recoverFromBuildFailure(
     }
     // choice === "retry" falls through with the same provider/key.
 
-    const result = await attemptBuild(dir, nextProvider, nextKey, p);
+    const result = await runBuild(nextProvider, nextKey);
     if (result.ok) return { provider: nextProvider, key: nextKey };
 
     p.log.warn(`Still failing: ${classifyError(result.error).summary}`);
@@ -201,13 +257,13 @@ async function recoverFromBuildFailure(
  * recoverFromBuildFailure's own shape (classify, offer real choices,
  * loop until resolved or skipped) rather than inventing a different
  * pattern for what's the same real problem. */
-async function installDependencies(absDir: string, p: Awaited<ReturnType<typeof clack>>): Promise<boolean> {
+async function installDependencies(absDir: string, p: Awaited<ReturnType<typeof clack>>, packages: string[]): Promise<boolean> {
   for (;;) {
     const s = p.spinner();
-    s.start(`Installing ${PACKAGES.join(", ")}`);
+    s.start(`Installing ${packages.join(", ")}`);
     try {
-      execSync(`npm install ${PACKAGES.join(" ")}`, { cwd: absDir, stdio: "pipe" });
-      s.stop(`Installed ${PACKAGES.join(", ")}`);
+      execSync(`npm install ${packages.join(" ")}`, { cwd: absDir, stdio: "pipe" });
+      s.stop(`Installed ${packages.join(", ")}`);
       return true;
     } catch (err) {
       s.error("npm install failed");
@@ -235,7 +291,7 @@ async function installDependencies(absDir: string, p: Awaited<ReturnType<typeof 
         p,
       );
       if (choice === "skip") {
-        p.log.message(`Install these yourself and re-run \`cairn setup\`:\n  npm install ${PACKAGES.join(" ")}`);
+        p.log.message(`Install these yourself and re-run \`cairn setup\`:\n  npm install ${packages.join(" ")}`);
         return false;
       }
       // choice === "retry" loops back to the top and tries again.
@@ -259,21 +315,25 @@ export async function runSetup(dir: string): Promise<void> {
   ];
   p.log.info(scaffoldLines.join("\n"));
 
-  if (init.framework === "other") {
-    // A generic backend needs a real framework decision (Express? Fastify? something
-    // else?) this wizard shouldn't guess at — print init's own manual steps instead
-    // of half-automating something it can't verify is right.
-    p.note(init.nextSteps.join("\n"), "Not a detected Next.js project — manual steps");
-    p.outro("Done.");
-    return;
-  }
+  // A "next-*" project gets the real Next.js scaffolding (API route inside
+  // the app, JSX injected into the real layout). Anything else — Vue,
+  // Angular, Svelte, plain HTML, a Vite SPA with its own separate backend —
+  // gets the framework-agnostic path instead: a standalone backend process
+  // (cairn-server.cjs), the <cairn-widget> Web Component injected into the
+  // real HTML entry file, and crawl-mode scanning (reads the rendered DOM,
+  // not framework-specific source conventions) instead of the Next-only
+  // source scanner. Same wizard, same one command, genuinely no framework
+  // requirement — not a bailout to a wall of manual steps.
+  const isOther = init.framework === "other";
 
   // 2. Install what's needed — the actual "one command" part. Skips
   // cleanly if already present (e.g. re-running setup after a partial run).
+  // A generic backend also needs cairn-server.cjs's own runtime deps.
+  const packages = [...PACKAGES, ...(isOther ? STANDALONE_SERVER_DEPS : [])];
   const pkg = readPackageJson(absDir);
-  const alreadyHadDeps = alreadyInstalled(pkg);
+  const alreadyHadDeps = alreadyInstalled(pkg, packages);
   if (!alreadyHadDeps) {
-    const installed = await installDependencies(absDir, p);
+    const installed = await installDependencies(absDir, p, packages);
     if (!installed) {
       p.outro("Stopped — re-run `cairn setup` once dependencies are installed.");
       return;
@@ -352,45 +412,109 @@ export async function runSetup(dir: string): Promise<void> {
     p.log.message(`${path.relative(absDir, envPath)} already exists — not overwriting; add keys there yourself if you skipped any above.`);
   }
 
-  // 5. Wire the widget into the real layout file — the one thing `init`
-  // deliberately doesn't do. Falls back to printing instructions on
-  // anything it can't confidently parse.
-  const framework = init.framework as "next-app-router" | "next-pages-router";
-  const inject = injectWidget(dir, framework, { voice: wantsVoice });
-  if (inject.injected) {
-    const voiceNote = wantsVoice ? " — wired for voice (speak + transcribe)" : "";
-    p.log.success(`wired the widget into ${path.relative(absDir, inject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)${voiceNote}`);
+  // 5. Wire the widget in — into the real layout file for Next, or into the
+  // real HTML entry file (index.html) for anything else. Falls back to
+  // printing instructions on anything it can't confidently parse.
+  let nextInject: ReturnType<typeof injectWidget> | null = null;
+  let htmlInject: ReturnType<typeof injectWidgetHtml> | null = null;
+  let widgetBundlePath: string | null = null;
+  if (!isOther) {
+    const framework = init.framework as "next-app-router" | "next-pages-router";
+    nextInject = injectWidget(dir, framework, { voice: wantsVoice });
+    if (nextInject.injected) {
+      const voiceNote = wantsVoice ? " — wired for voice (speak + transcribe)" : "";
+      p.log.success(`wired the widget into ${path.relative(absDir, nextInject.filePath!)} (via a new components/CairnCopilot.tsx wrapper)${voiceNote}`);
+    } else {
+      p.log.warn(
+        [
+          `Widget not auto-wired (${nextInject.reason}). Add it yourself:`,
+          `  import { Copilot } from "@cairnvibe/sdk";`,
+          `  <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />`,
+          `  (in a "use client" component — see examples/demo-app/components/CopilotWithActions.tsx for why)`,
+        ].join("\n"),
+      );
+    }
   } else {
-    p.log.warn(
-      [
-        `Widget not auto-wired (${inject.reason}). Add it yourself:`,
-        `  import { Copilot } from "@cairnvibe/sdk";`,
-        `  <Copilot registeredActions={[]} onDo={(action, target) => { /* run it */ }} />`,
-        `  (in a "use client" component — see examples/demo-app/components/CopilotWithActions.tsx for why)`,
-      ].join("\n"),
-    );
+    htmlInject = injectWidgetHtml(dir, {
+      apiPort: STANDALONE_API_PORT,
+      voice: wantsVoice,
+      realtimePort: wantsVoice ? REALTIME_PORT : null,
+      widgetScriptPath: "cairn-widget.js",
+    });
+    if (htmlInject.injected) {
+      widgetBundlePath = copyWidgetBundle(absDir, htmlInject.filePath!);
+      const voiceNote = wantsVoice ? " — wired for voice (speak, transcribe, and realtime)" : "";
+      if (widgetBundlePath) {
+        p.log.success(`wired <cairn-widget> into ${path.relative(absDir, htmlInject.filePath!)}${voiceNote}`);
+      } else {
+        p.log.warn(
+          `wired <cairn-widget> into ${path.relative(absDir, htmlInject.filePath!)}, but couldn't find the built widget bundle to copy next to it — ` +
+            `copy node_modules/@cairnvibe/sdk/dist/cairn-widget.js next to that file yourself as cairn-widget.js.`,
+        );
+      }
+    } else {
+      p.log.warn(
+        [
+          `Widget not auto-wired (${htmlInject.reason}). Add it to your HTML yourself, right before </body>:`,
+          `  <script src="cairn-widget.js"></script>`,
+          `  <cairn-widget endpoint="http://localhost:${STANDALONE_API_PORT}/api/copilot"></cairn-widget>`,
+          `  (copy node_modules/@cairnvibe/sdk/dist/cairn-widget.js next to your HTML file as cairn-widget.js)`,
+        ].join("\n"),
+      );
+    }
   }
 
   // 5b. @cairnvibe/sdk and @cairnvibe/core ship raw TS/TSX as their main
   // entry deliberately — bundlers need transpilePackages to know to
-  // transform it. Without this, real projects fail cold at `next dev`
-  // with "Unknown module type", not something a demo on a fresh project
-  // would ever surface (this repo's own next.config.js already has it).
-  const transpile = ensureTranspilePackages(dir);
-  if (transpile.ok) {
-    p.log.success(`${transpile.created ? "created" : "updated"} ${path.relative(absDir, transpile.filePath!)} with transpilePackages`);
-  } else {
-    p.log.message(`transpilePackages not auto-added (${transpile.reason})`);
+  // transform it. Only meaningful for Next's own bundler config — a
+  // non-Next project talks to Cairn only through cairn-server.cjs (plain
+  // CommonJS, nothing to transpile) and the prebuilt widget bundle.
+  const transpile = isOther ? { ok: false as const, reason: "not a Next.js project" } : ensureTranspilePackages(dir);
+  if (!isOther) {
+    if (transpile.ok) {
+      p.log.success(`${transpile.created ? "created" : "updated"} ${path.relative(absDir, transpile.filePath!)} with transpilePackages`);
+    } else {
+      p.log.message(`transpilePackages not auto-added (${transpile.reason})`);
+    }
   }
 
   // 6. Build the manifest once now, if we actually have a usable key — no
   // point trying (and failing loudly) with nothing to call. On failure,
   // don't just print a stack trace and give up: classify what went wrong
-  // and offer real next steps (retry / switch provider / skip).
-  if (provider && providerKey) {
-    let result = await attemptBuild(dir, provider, providerKey, p);
+  // and offer real next steps (retry / switch provider / skip). A non-Next
+  // project needs a running URL to crawl (there's no source-tree
+  // convention to read the way Next's app/pages dirs give one) — ask for
+  // it, and skip cleanly (same honest "run this later" fallback) if the
+  // app isn't up yet.
+  if (isOther) {
+    if (provider && providerKey) {
+      const crawlUrl = await checkCancel(
+        await p.text({
+          message: "Is your app running locally right now? Paste the URL to scan it now (leave empty to skip and run `npx cairn build <url>` later).",
+          placeholder: "http://localhost:5173",
+          defaultValue: "",
+        }),
+        p,
+      );
+      if (crawlUrl) {
+        const result = await attemptCrawlBuild(dir, crawlUrl, provider, providerKey, p);
+        if (!result.ok) {
+          const recovered = await recoverFromBuildFailure((prov, key) => attemptCrawlBuild(dir, crawlUrl, prov, key, p), provider, providerKey, result.error, p);
+          if (recovered) {
+            provider = recovered.provider;
+            providerKey = recovered.key;
+          }
+        }
+      } else {
+        p.log.message("Skipping the first scan. Once your app is running: npx cairn build <your-app-url>");
+      }
+    } else {
+      p.log.message("No key given yet — skipping the first scan. Run `npx cairn build <your-app-url>` once you've added a key to .env.");
+    }
+  } else if (provider && providerKey) {
+    const result = await attemptBuild(dir, provider, providerKey, p);
     if (!result.ok) {
-      const recovered = await recoverFromBuildFailure(dir, provider, providerKey, result.error, p);
+      const recovered = await recoverFromBuildFailure((prov, key) => attemptBuild(dir, prov, key, p), provider, providerKey, result.error, p);
       if (recovered) {
         provider = recovered.provider;
         providerKey = recovered.key;
@@ -405,6 +529,8 @@ export async function runSetup(dir: string): Promise<void> {
 
   // 7. Wire a prebuild hook so this stays current on every future build/deploy —
   // "just build and redeploy" only works if the manifest regenerates itself.
+  // Only meaningful for source-mode (a directory to rescan); crawl mode
+  // needs a live URL, which a build-time hook doesn't have.
   // prebuildScriptAdded tracks only the case where the project had NO
   // prebuild script at all before this — `cairn remove` deletes exactly
   // that case outright. A project that already had one and got ours
@@ -413,7 +539,7 @@ export async function runSetup(dir: string): Promise<void> {
   // worth automating precisely, versus just leaving it for the (rare)
   // case where it's actually the concern.
   let prebuildScriptAdded = false;
-  if (pkg && !pkg.scripts?.prebuild?.includes("cairn build")) {
+  if (!isOther && pkg && !pkg.scripts?.prebuild?.includes("cairn build")) {
     const pkgPath = path.join(absDir, "package.json");
     const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
     fresh.scripts = fresh.scripts ?? {};
@@ -426,24 +552,56 @@ export async function runSetup(dir: string): Promise<void> {
     p.log.success('added a "prebuild" script — the manifest regenerates automatically on every `npm run build`.');
   }
 
-  // 8. Wire the realtime voice relay into the normal dev workflow — the
-  // other real half of "voice was completely unwired." realtimeUrl on the
-  // widget (wired above) just fails to connect if nothing's actually
-  // listening on that port; found live, and indistinguishable from "voice
-  // doesn't work" with zero indication that a whole separate process needs
-  // to be running. `cairn-realtime --with "<original dev command>"` runs
-  // both from the one command a project's dev workflow already uses,
-  // instead of a second terminal nobody remembers to open. Wraps whatever
-  // `dev` already does (a custom server, Turbopack, anything) rather than
-  // replacing it — the realtime relay runs alongside it, not instead of it.
+  // 8. Wire everything into the ONE command the project already uses to
+  // start developing. For Next, that's `cairn-realtime --with "<dev>"` —
+  // the realtime relay wraps the existing dev command directly since both
+  // run in the same process tree Next already owns. A non-Next project has
+  // no such single process to hook into: cairn-server.cjs (the backend)
+  // and, if voice is on, cairn-realtime (the voice relay) are genuinely
+  // separate processes from the app's own dev server. Rather than leaving
+  // that as "open three terminals" (found live to be exactly the kind of
+  // step nobody remembers — the same class of bug `--with` itself exists
+  // to close), a small generated orchestrator script (cairn-dev.cjs) spawns
+  // all of them together under the project's own "dev" script — still one
+  // command, same as Next gets.
   let originalDevScript: string | null = null;
-  if (wantsVoice && pkg?.scripts?.dev && !pkg.scripts.dev.includes("cairn-realtime")) {
+  let orchestratorFile: string | null = null;
+  if (!isOther) {
+    if (wantsVoice && pkg?.scripts?.dev && !pkg.scripts.dev.includes("cairn-realtime")) {
+      const pkgPath = path.join(absDir, "package.json");
+      const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      originalDevScript = fresh.scripts.dev as string;
+      fresh.scripts.dev = `cairn-realtime --port ${REALTIME_PORT} --with ${JSON.stringify(originalDevScript)}`;
+      fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
+      p.log.success("wired the realtime voice relay into `npm run dev` — it now starts alongside your app automatically.");
+    }
+  } else if (pkg?.scripts?.dev && !pkg.scripts.dev.includes("cairn-dev.cjs")) {
+    const commands: OrchestratorCommand[] = [
+      { label: "app", command: pkg.scripts.dev },
+      { label: "cairn-backend", command: "node cairn-server.cjs" },
+    ];
+    if (wantsVoice) commands.push({ label: "cairn-voice", command: `npx cairn-realtime --port ${REALTIME_PORT}` });
+
+    const orchestratorPath = path.join(absDir, "cairn-dev.cjs");
+    fs.writeFileSync(orchestratorPath, buildOrchestratorScript(commands));
+    orchestratorFile = orchestratorPath;
+
     const pkgPath = path.join(absDir, "package.json");
     const fresh = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
     originalDevScript = fresh.scripts.dev as string;
-    fresh.scripts.dev = `cairn-realtime --port 3010 --with ${JSON.stringify(originalDevScript)}`;
+    fresh.scripts.dev = "node cairn-dev.cjs";
     fs.writeFileSync(pkgPath, JSON.stringify(fresh, null, 2) + "\n");
-    p.log.success("wired the realtime voice relay into `npm run dev` — it now starts alongside your app automatically.");
+    p.log.success(
+      `wired the Cairn backend${wantsVoice ? " and the realtime voice relay" : ""} into \`npm run dev\` (via cairn-dev.cjs) — one command starts everything.`,
+    );
+  } else if (isOther && !pkg?.scripts?.dev) {
+    p.log.message(
+      [
+        `No "dev" script found to wire into — start these alongside your app yourself:`,
+        `  node cairn-server.cjs`,
+        ...(wantsVoice ? [`  npx cairn-realtime --port ${REALTIME_PORT}`] : []),
+      ].join("\n"),
+    );
   }
 
   // 9. Record exactly what this run touched — the ONE thing that makes
@@ -458,15 +616,18 @@ export async function runSetup(dir: string): Promise<void> {
     filesCreated: [
       ...init.filesWritten,
       ...voiceFilesWritten,
-      ...(inject.injected && inject.wrapperPath && fs.existsSync(inject.wrapperPath) ? [inject.wrapperPath] : []),
+      ...(nextInject?.injected && nextInject.wrapperPath && fs.existsSync(nextInject.wrapperPath) ? [nextInject.wrapperPath] : []),
       ...(transpile.ok && transpile.created && transpile.filePath ? [transpile.filePath] : []),
+      ...(widgetBundlePath ? [widgetBundlePath] : []),
+      ...(orchestratorFile ? [orchestratorFile] : []),
     ],
-    layoutFile: inject.injected ? (inject.filePath ?? null) : null,
-    wrapperFile: inject.injected ? (inject.wrapperPath ?? null) : null,
+    layoutFile: nextInject?.injected ? (nextInject.filePath ?? null) : null,
+    wrapperFile: nextInject?.injected ? (nextInject.wrapperPath ?? null) : null,
+    htmlWidgetFile: htmlInject?.injected ? (htmlInject.filePath ?? null) : null,
     configFile: transpile.ok && transpile.filePath ? { path: transpile.filePath, created: !!transpile.created } : null,
     originalDevScript,
     prebuildScriptAdded,
-    packagesInstalled: PACKAGES,
+    packagesInstalled: packages,
   };
   writeInstallManifest(absDir, installManifest);
 

@@ -15,6 +15,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { readInstallManifest } from "./install-manifest";
 import { removeWidget } from "./inject-widget";
+import { removeWidgetFromHtml } from "./inject-widget-html";
 import { removeTranspilePackages } from "./ensure-transpile";
 import { CAIRN_DIR } from "./cairn-dir";
 import { clack } from "./clack";
@@ -87,6 +88,19 @@ export async function runRemove(dir: string): Promise<void> {
     }
   }
   if (manifest.wrapperFile) removeFileIfPresent(manifest.wrapperFile);
+
+  // 2b. The <cairn-widget> block injectWidgetHtml() marked up in a non-Next
+  // project's index.html — same "never touch the rest of the user's own
+  // file" discipline as removeWidget() above, just marker-based instead of
+  // AST-based since there's no JSX tree here.
+  if (manifest.htmlWidgetFile) {
+    const result = removeWidgetFromHtml(manifest.htmlWidgetFile);
+    if (result.removed) {
+      p.log.success(`removed the widget from ${path.relative(absDir, manifest.htmlWidgetFile)}`);
+    } else {
+      p.log.warn(`couldn't auto-remove the widget: ${result.reason}`);
+    }
+  }
 
   // 3. transpilePackages — delete the whole config if we created it,
   // otherwise strip just the entries we added.

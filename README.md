@@ -306,6 +306,16 @@ Full parity with `<Copilot/>` — typed Q&A, tours, mic, live voice
 conversation. The backend (`createCopilotHandler`/`createRealtimeServer`)
 is plain Node — no Next.js required server-side either.
 
+`npx cairn setup` automates all of this for a non-Next project too, not
+just Next — it installs everything, scaffolds a standalone backend
+(`cairn-server.cjs`, Express + CORS, with speak/transcribe/realtime wired
+in if you turn voice on), injects the `<cairn-widget>` tag into your real
+`index.html`, and — since a non-Next project has no single dev process to
+hook the realtime relay into — generates a small orchestrator
+(`cairn-dev.cjs`) that starts your app, the Cairn backend, and the voice
+relay together under your existing `npm run dev`. Still one command, on
+any frontend framework. `cairn remove` reverses all of it.
+
 **What this genuinely needs, honestly stated:** every mode needs *some*
 real backend to hold the LLM key and run `/api/copilot` — a purely static
 site with no backend at all can't use Cairn in any mode, since there's

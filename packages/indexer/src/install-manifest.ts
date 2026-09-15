@@ -29,6 +29,11 @@ export interface InstallManifest {
    * but tracked separately since removeWidget() needs its path to also
    * strip the (now-broken) import that referenced it. */
   wrapperFile: string | null;
+  /** The HTML entry file injectWidgetHtml() marked up (index.html, for a
+   * non-Next project) — removeWidgetFromHtml() strips exactly the marked
+   * block on remove, leaving the rest of the file untouched. Null for a
+   * Next.js install, which uses layoutFile/wrapperFile instead. */
+  htmlWidgetFile: string | null;
   /** The next.config.* file ensureTranspilePackages() touched, and
    * whether it created a brand-new file (delete the whole thing) or
    * edited an existing one (surgically remove just the two entries it
