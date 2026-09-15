@@ -51,6 +51,30 @@ interface ExtractedPageData {
   bodyText: string;
 }
 
+/** Wraps `chromium.launch()` with a Cairn-specific, actionable error for
+ * the one failure mode every first-time crawl-mode user hits: Playwright's
+ * own npm package installs fine, but its actual browser BINARY is a
+ * separate multi-hundred-MB download `npm install` never triggers —
+ * found live, running `cairn build <url>` for the first time against a
+ * real cloned project. Without this, the error surfaced was Playwright's
+ * own generic ASCII-art message with no Cairn context at all, easy to
+ * mistake for a broken install rather than a one-command fix. Detected by
+ * message content (Playwright doesn't export a typed error for this)
+ * rather than a fragile error-code check. */
+export async function launchChromium(): Promise<Browser> {
+  try {
+    return await chromium.launch();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("Executable doesn't exist")) {
+      throw new Error(
+        "cairn build (crawl mode) needs Playwright's Chromium browser, which isn't downloaded yet — run `npx playwright install chromium` once, then retry.",
+      );
+    }
+    throw err;
+  }
+}
+
 /**
  * Visits every page reachable within maxDepth hops of startUrl, one BFS
  * "level" at a time — same-depth pages are visited concurrently (bounded
@@ -70,7 +94,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<RawFacts> {
   const startUrl = new URL(opts.startUrl);
   const origin = startUrl.origin;
 
-  const browser: Browser = await chromium.launch();
+  const browser: Browser = await launchChromium();
   const pages: RawPage[] = [];
   const visited = new Set<string>([normalizeForDedup(startUrl.toString())]);
 

@@ -190,6 +190,34 @@ async function attemptBuild(
  * works on any frontend framework (or none at all). Same spinner/error
  * shape as attemptBuild so recoverFromBuildFailure's retry menu works
  * identically for both. */
+/** Crawl mode needs Playwright's actual Chromium BINARY, a separate
+ * multi-hundred-MB download `npm install @cairnvibe/indexer` never
+ * triggers on its own — found live, running the crawl step for the first
+ * time against a real cloned project: it failed with Playwright's own
+ * generic "Executable doesn't exist... run npx playwright install"
+ * message, no Cairn context, easy to mistake for a broken install. Rather
+ * than leave that for the user to hit and decode, download it here —
+ * once, right before the one step that actually needs it (never for a
+ * Next.js install, which never crawls at all) — with the same spinner
+ * pattern every other long-running step in this wizard already uses.
+ * Best-effort: a failure here doesn't abort setup, since the crawl
+ * attempt right after this will surface its own clear error (via
+ * crawl.ts's launchChromium) if the download didn't actually succeed. */
+async function ensurePlaywrightBrowser(absDir: string, p: Awaited<ReturnType<typeof clack>>): Promise<void> {
+  const s = p.spinner();
+  s.start("Downloading Playwright's Chromium browser (one-time, needed to scan a running app)");
+  try {
+    execSync("npx playwright install chromium", { cwd: absDir, stdio: "pipe" });
+    s.stop("Playwright's Chromium browser is ready");
+  } catch (err) {
+    const e = err as { stderr?: Buffer; stdout?: Buffer };
+    const detail = (e.stderr?.toString().trim() || e.stdout?.toString().trim() || "").trim();
+    s.error("Couldn't download Playwright's browser automatically");
+    if (detail) p.log.warn(detail);
+    p.log.message("Continuing anyway — run `npx playwright install chromium` yourself if the scan below fails.");
+  }
+}
+
 async function attemptCrawlBuild(
   dir: string,
   url: string,
@@ -537,6 +565,7 @@ export async function runSetup(dir: string): Promise<void> {
         p,
       );
       if (crawlUrl) {
+        await ensurePlaywrightBrowser(absDir, p);
         const result = await attemptCrawlBuild(dir, crawlUrl, provider, providerKey, p);
         if (!result.ok) {
           const recovered = await recoverFromBuildFailure((prov, key) => attemptCrawlBuild(dir, crawlUrl, prov, key, p), provider, providerKey, result.error, p);
