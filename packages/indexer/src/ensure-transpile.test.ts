@@ -112,12 +112,61 @@ module.exports = nextConfig;
     expect(text).toContain("export default nextConfig");
   });
 
-  it("safely declines — and leaves the file untouched — when the config is wrapped in a plugin function call", () => {
-    const original = `const withBundleAnalyzer = require("@next/bundle-analyzer")({ enabled: true });
+  it("resolves through a curried plugin call (e.g. @next/bundle-analyzer's withBundleAnalyzer()(config))", () => {
+    // Real, common Next.js plugin convention: the config object is the
+    // wrapping call's first argument, however many layers deep — this one
+    // passes an inline object literal straight into the plugin call.
+    const config = write(
+      "next.config.js",
+      `const withBundleAnalyzer = require("@next/bundle-analyzer")({ enabled: true });
 module.exports = withBundleAnalyzer({
   reactStrictMode: true,
 });
-`;
+`,
+    );
+
+    const result = ensureTranspilePackages(tmpDir);
+
+    expect(result.ok).toBe(true);
+    const updated = fs.readFileSync(config, "utf8");
+    expect(updated).toContain('transpilePackages: ["@cairnvibe/sdk","@cairnvibe/core"]');
+    expect(updated).toContain("reactStrictMode: true");
+  });
+
+  it("resolves through a real, live-found plugin wrap — @sentry/nextjs's withSentryConfig(nextConfig, sentryOptions)", () => {
+    // The EXACT shape found live against a real project's next.config.ts
+    // (a Next.js + Sentry app): a separately-declared `const nextConfig`
+    // passed as the plugin call's first argument, with a second options
+    // argument the resolver must not be confused by.
+    const config = write(
+      "next.config.ts",
+      `import { withSentryConfig } from "@sentry/nextjs";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+    typescript: {
+      ignoreBuildErrors: true
+    },
+};
+
+export default withSentryConfig(nextConfig, {
+  org: "example",
+  project: "example",
+});
+`,
+    );
+
+    const result = ensureTranspilePackages(tmpDir);
+
+    expect(result.ok).toBe(true);
+    const updated = fs.readFileSync(config, "utf8");
+    expect(updated).toContain('transpilePackages: ["@cairnvibe/sdk","@cairnvibe/core"]');
+    expect(updated).toContain("ignoreBuildErrors: true"); // the rest of the config survives untouched
+    expect(updated).toContain('withSentryConfig(nextConfig, {'); // the wrapping call itself is untouched
+  });
+
+  it("safely declines — and leaves the file untouched — when the config truly can't be statically resolved", () => {
+    const original = `module.exports = require("./generate-next-config")();\n`;
     const config = write("next.config.js", original);
 
     const result = ensureTranspilePackages(tmpDir);

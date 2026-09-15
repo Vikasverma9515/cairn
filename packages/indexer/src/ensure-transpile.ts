@@ -33,19 +33,32 @@ function findConfigFile(absDir: string): string | null {
 }
 
 /** Resolves `export default X` / `module.exports = X` down to the actual
- * object literal, following one level of `const nextConfig = {...}`
- * indirection — covers the two shapes basically every real Next.js
- * config file uses. Anything else (a config wrapped in a plugin function
- * call like `withSentryConfig(nextConfig)`) returns null on purpose —
- * safely falling back to printed instructions beats guessing which
- * argument of an arbitrary function call is the "real" config. */
-function resolveConfigObject(sf: SourceFile, expr: Expression | undefined): ObjectLiteralExpression | null {
-  if (!expr) return null;
+ * object literal. Handles the shapes real Next.js config files actually
+ * use: a plain object literal, one level of `const nextConfig = {...}`
+ * indirection, AND — found live, not theoretical, against a real
+ * project's `next.config.ts` using `@sentry/nextjs` — a config wrapped in
+ * a plugin function call like `withSentryConfig(nextConfig, sentryOpts)`
+ * or a curried one like `withBundleAnalyzer()(nextConfig)`. Every common
+ * Next.js plugin (Sentry, PWA, next-intl, bundle-analyzer, next-mdx) follows
+ * the same convention — the actual config object is the call's FIRST
+ * argument — so a call expression is resolved by recursing into
+ * `args[0]`, however many layers of wrapping/currying deep, up to a
+ * shallow depth cap (real configs never nest this deep; the cap exists
+ * only to guarantee termination against pathological input, not because
+ * 5 is a meaningful number). Anything else still returns null on
+ * purpose — safely falling back to printed instructions beats guessing
+ * at a shape not seen in practice. */
+function resolveConfigObject(sf: SourceFile, expr: Expression | undefined, depth = 0): ObjectLiteralExpression | null {
+  if (!expr || depth > 5) return null;
   if (expr.getKind() === SyntaxKind.ObjectLiteralExpression) return expr as ObjectLiteralExpression;
   if (expr.getKind() === SyntaxKind.Identifier) {
     const varDecl = sf.getVariableDeclaration(expr.getText());
     const init = varDecl?.getInitializer();
-    if (init?.getKind() === SyntaxKind.ObjectLiteralExpression) return init as ObjectLiteralExpression;
+    return resolveConfigObject(sf, init as Expression | undefined, depth + 1);
+  }
+  if (expr.getKind() === SyntaxKind.CallExpression) {
+    const args = expr.asKindOrThrow(SyntaxKind.CallExpression).getArguments();
+    return args.length > 0 ? resolveConfigObject(sf, args[0] as Expression, depth + 1) : null;
   }
   return null;
 }
