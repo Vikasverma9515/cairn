@@ -58,7 +58,13 @@ export const PACKAGES = ["@cairnvibe/core", "@cairnvibe/sdk", "@cairnvibe/indexe
 // `require("express")`/`require("cors")`) — installed the same way, and
 // tracked in the same install manifest, so `cairn remove` uninstalls them
 // too instead of leaving orphaned dependencies nothing else uses.
-const STANDALONE_SERVER_DEPS = ["express", "cors"];
+// Real, live-found bug this list used to be missing "dotenv": the
+// generated cairn-server.cjs's very first executable line is
+// `require("dotenv").config()` (see STANDALONE_SERVER in init.ts) — with
+// only express/cors installed, the server crashed on startup with
+// MODULE_NOT_FOUND before ever reaching its own route handlers, on every
+// single non-Next install, confirmed against a real cloned project.
+const STANDALONE_SERVER_DEPS = ["express", "cors", "dotenv"];
 
 const STANDALONE_API_PORT = 4000;
 const REALTIME_PORT = 3010;
