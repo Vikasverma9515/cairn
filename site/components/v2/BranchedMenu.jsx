@@ -2,21 +2,12 @@
 
 import { isValidElement, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import {
-  CursorPointer01Icon,
-  Download04Icon,
-  Layers01Icon,
-  Notification03Icon,
-  PaintBoardIcon,
-  Rocket01Icon,
-  Settings02Icon,
-  TextFontIcon
-} from '@hugeicons/core-free-icons';
 import './BranchedMenu.css';
 
 // Local additions to the React Bits source (everything else is unchanged):
 //  1. `value` (optional): when given, the active item follows it, so a parent can drive the selection.
 //  2. useLayoutEffect falls back to useEffect during server rendering.
+//  4. The demo defaults carry no icons: importing the icon package's index file breaks on case-sensitive systems (Linux/Vercel).
 //  3. onToggle runs outside the state updater (calling it inside triggered a React warning in parents that set state).
 const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
@@ -24,19 +15,19 @@ const DEFAULT_ITEMS = [
   {
     label: 'Getting started',
     children: [
-      { value: 'install', label: 'Installation', icon: Download04Icon },
-      { value: 'quick', label: 'Quick start', icon: Rocket01Icon },
-      { value: 'config', label: 'Configuration', icon: Settings02Icon },
-      { value: 'theming', label: 'Theming', icon: PaintBoardIcon }
+      { value: 'install', label: 'Installation' },
+      { value: 'quick', label: 'Quick start' },
+      { value: 'config', label: 'Configuration' },
+      { value: 'theming', label: 'Theming' }
     ]
   },
   {
     label: 'Components',
     children: [
-      { value: 'buttons', label: 'Buttons', icon: CursorPointer01Icon },
-      { value: 'typography', label: 'Typography', icon: TextFontIcon },
-      { value: 'overlays', label: 'Overlays', icon: Layers01Icon },
-      { value: 'toasts', label: 'Toasts', icon: Notification03Icon }
+      { value: 'buttons', label: 'Buttons' },
+      { value: 'typography', label: 'Typography' },
+      { value: 'overlays', label: 'Overlays' },
+      { value: 'toasts', label: 'Toasts' }
     ]
   }
 ];

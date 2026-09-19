@@ -1,17 +1,16 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import {
-  CheckmarkCircle02Icon,
-  ComputerTerminal01Icon,
-  FlashIcon,
-  MapsIcon,
-  Mic01Icon,
-  PlugSocketIcon,
-  PuzzleIcon,
-  Route01Icon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
+// One import per icon: the package's index file has mis-cased internal paths that break on case-sensitive systems (Linux/Vercel).
+import CheckmarkCircle02Icon from "@hugeicons/core-free-icons/CheckmarkCircle02Icon";
+import ComputerTerminal01Icon from "@hugeicons/core-free-icons/ComputerTerminal01Icon";
+import FlashIcon from "@hugeicons/core-free-icons/FlashIcon";
+import MapsIcon from "@hugeicons/core-free-icons/MapsIcon";
+import Mic01Icon from "@hugeicons/core-free-icons/Mic01Icon";
+import PlugSocketIcon from "@hugeicons/core-free-icons/PlugSocketIcon";
+import PuzzleIcon from "@hugeicons/core-free-icons/PuzzleIcon";
+import Route01Icon from "@hugeicons/core-free-icons/Route01Icon";
+import Search01Icon from "@hugeicons/core-free-icons/Search01Icon";
 import BranchedMenu from "./BranchedMenu";
 import { Ico, I } from "./icons";
 
