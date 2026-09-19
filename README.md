@@ -13,13 +13,39 @@
     <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-E07A3F.svg" alt="PRs welcome"></a>
   </p>
 
-  <img src="docs/images/landing-page.png" width="720" alt="Cairn landing page — 'Don't learn the software, just tell it what you want,' with a live example of an agent building an n8n-style flow from a spoken request" />
+  <br />
+  <img src="docs/images/landing-tour.gif" width="820" alt="A 10-second tour of the Cairn site: an animated hero, a scroll-stacking story, a guided how-it-works tour, a drifting feature wall and a floating install folder" />
+  <p><sub><a href="docs/images/landing-tour.mp4">▶ Watch the full-quality MP4</a> · <a href="https://cairn-phi-flame.vercel.app">Live site</a></sub></p>
 </div>
 
 > **New here and confused about what's in this repo?** Read
 > [DEVELOPMENT.md](./DEVELOPMENT.md) first — it explains the two separate
 > things this repo contains and which one this README is about (short
 > version: this one, the product).
+
+## Take a look
+
+<p align="center">
+  <img src="docs/images/landing-hero.jpg" width="94%" alt="The Cairn hero: an ember wave field behind a live invoices app, with the Cairn assistant archiving an invoice from a spoken request" />
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/landing-problem.jpg" alt="Scroll-stacking cards: without Cairn, say it instead, with Cairn" /><br /><sub><b>The problem, told as a stack of cards.</b> The manual, saying it out loud, then Cairn doing the clicking.</sub></td>
+    <td width="50%"><img src="docs/images/landing-tour.jpg" alt="Interactive guided tour of how Cairn works" /><br /><sub><b>A guided tour.</b> Pick any step and see exactly what happens.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/landing-features.jpg" alt="A tilted wall of drifting feature cards" /><br /><sub><b>What is running underneath.</b> A drifting wall of the agent loop, voice, memory and safety limits.</sub></td>
+    <td width="50%"><img src="docs/images/landing-install.jpg" alt="A folder that opens to release floating notes, one per install step" /><br /><sub><b>One command, five things.</b> Open the folder, drag the notes, click one.</sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/landing-mobile.jpg" width="260" alt="The Cairn site on a phone" /><br />
+  <sub>Responsive down to a phone.</sub>
+</p>
+
+> The site lives in [`site/`](./site) (a static Next.js export). The previous version is still served at `/classic`.
 
 ## What this is, in plain English
 
