@@ -2,5 +2,6 @@
   "framework": null,
   "buildCommand": "cd site && npm install && npm run build",
   "installCommand": "true",
-  "outputDirectory": "site/out"
+  "outputDirectory": "site/out",
+  "cleanUrls": true
 }
