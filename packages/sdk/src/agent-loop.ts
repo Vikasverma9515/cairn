@@ -72,8 +72,23 @@ export const MAX_HISTORY_TURNS = 8;
 // "create a new agent" (no clause at all) is still correctly false.
 const MULTI_STEP_SIGNAL =
   /\b(then|after that|once (you|it|that|i)|and then|next,|first[,.]? .*\bthen\b|(create|build|set up|make) (a|an|.*) .*\b(that|which|who)\b)\b/;
+// Live-found: "open candidates and show the shortlisted ones, and call the first" never matched
+// MULTI_STEP_SIGNAL (no "then", no relative clause), so no Planner ran, the first navigate ended the
+// turn, and the rest of the request was silently dropped. A request that names more than one thing to
+// do is a compound goal however it is phrased ("and", "also", commas, a numbered list), so count the
+// action clauses instead of hunting for connector words. A false positive costs one Planner call that
+// would have started a moment later anyway; a false negative drops half of what the person asked for.
+const ACTION_VERB_RE =
+  /\b(open|go to|go|take me|navigate|show|find|search|look up|filter|sort|click|press|tap|select|choose|pick|fill|type|enter|add|create|make|build|set up|schedule|book|call|phone|send|email|shortlist|reject|approve|delete|remove|edit|update|change|save|submit|check|tell me|read|list|give me|compare|export|download|upload|assign|cancel|mark|reschedule|remind|connect|disconnect)\b/g;
+const CLAUSE_SPLIT_RE = /\s*(?:,|;|\band\b|\balso\b|\bplus\b|&|\+|\bafterwards?\b|\bthereafter\b|\bfollowed by\b|\b\d+[.)])\s*/;
 export function looksMultiStep(question: string): boolean {
-  return MULTI_STEP_SIGNAL.test(question.toLowerCase());
+  const q = question.toLowerCase();
+  if (MULTI_STEP_SIGNAL.test(q)) return true;
+  const clausesWithAction = q.split(CLAUSE_SPLIT_RE).filter((clause) => {
+    ACTION_VERB_RE.lastIndex = 0;
+    return ACTION_VERB_RE.test(clause);
+  }).length;
+  return clausesWithAction >= 2;
 }
 
 export function summarizeVerbForHistory(verb: VerbResponse): string {

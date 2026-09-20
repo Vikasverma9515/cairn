@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Project, SyntaxKind } from "ts-morph";
@@ -226,5 +228,43 @@ describe("getElementText", () => {
   it("returns null (not an empty string) when there is no real static text anywhere, even nested — e.g. an icon-only button", () => {
     const opening = openingElementOf(`const x = <button><Icon/></button>;`, "button");
     expect(getElementText(opening)).toBeNull();
+  });
+});
+
+describe("path aliases", () => {
+  it("follows an aliased import ('@/components/...') into the component's own buttons", () => {
+    // Real gap this guards: aliased imports were silently skipped, so a page's shared button
+    // components (Shortlist, Reject...) never reached the manifest.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cairn-alias-"));
+    try {
+      fs.mkdirSync(path.join(dir, "app"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "components"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./*"] } } }));
+      fs.writeFileSync(path.join(dir, "components", "ShortlistBtn.tsx"), `export function ShortlistBtn() { return <button data-ai="shortlist-candidate" onClick={() => {}}>Shortlist</button>; }\n`);
+      fs.writeFileSync(path.join(dir, "app", "page.tsx"), `import { ShortlistBtn } from "@/components/ShortlistBtn";\nexport default function Page() { return <main><ShortlistBtn /></main>; }\n`);
+
+      const facts = scanL1(dir);
+
+      const ids = facts.pages.find((p) => p.route === "/")!.elements.map((e) => e.id);
+      expect(ids).toContain("shortlist-candidate");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to '@/*' -> project root when there is no tsconfig", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cairn-alias-"));
+    try {
+      fs.mkdirSync(path.join(dir, "app"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "components"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "components", "Go.tsx"), `export function Go() { return <button data-ai="go-btn" onClick={() => {}}>Go</button>; }\n`);
+      fs.writeFileSync(path.join(dir, "app", "page.tsx"), `import { Go } from "@/components/Go";\nexport default function Page() { return <Go />; }\n`);
+
+      const ids = scanL1(dir).pages[0].elements.map((e) => e.id);
+
+      expect(ids).toContain("go-btn");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -35,6 +35,21 @@ describe("looksMultiStep", () => {
     expect(looksMultiStep("create a new agent")).toBe(false);
   });
 
+  it("real, live-found gap: a request naming several things to do is compound however it is phrased, without 'then'", () => {
+    // Before this, no Planner ran for these, the first navigate ended the turn, and the rest was dropped.
+    expect(looksMultiStep("open the candidates page and show the shortlisted ones")).toBe(true);
+    expect(looksMultiStep("go to jobs, create a new job and fill in the title")).toBe(true);
+    expect(looksMultiStep("open the first candidate and call them, also check their score")).toBe(true);
+    expect(looksMultiStep("1. open interviews 2. filter by job 3. mark the first complete")).toBe(true);
+    expect(looksMultiStep("search for vikas & open his profile")).toBe(true);
+  });
+
+  it("stays false for one action, even when the sentence has 'and' or a comma", () => {
+    expect(looksMultiStep("take me to the candidates page")).toBe(false);
+    expect(looksMultiStep("what can I do on this page?")).toBe(false);
+    expect(looksMultiStep("where is the Reject button, and what does it do")).toBe(false);
+  });
+
   it("is case-insensitive", () => {
     expect(looksMultiStep("CHECK THE PRICE AND THEN BUY IT")).toBe(true);
   });

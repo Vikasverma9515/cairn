@@ -352,6 +352,38 @@ describe("createCopilotHandlerWithLLM", () => {
     });
   });
 
+  it("mid multi-step task, a do-verb on a plain live element becomes a click — it reports a result so the Critic can verify it instead of replanning forever", async () => {
+    // Live-found: "click create job and tell me the fields" made the model press the button with an
+    // unregistered "do", which ends the turn with no observation; the Critic replanned and it looped.
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "do", action: "Create Job", target: "live-1" }));
+    const result = await handler({
+      route: "/invoices",
+      question: "click create job and then tell me which fields the form has",
+      visible: [],
+      liveElements: [{ id: "live-1", role: "button", label: "Create Job" }],
+    });
+    expect(result.body).toMatchObject({ verb: "click", target: "live-1" });
+  });
+
+  it("a single-step do-verb on a live element stays a do — unchanged for one-shot requests", async () => {
+    const handler = createCopilotHandlerWithLLM(manifest, fakeLLMReturning({ verb: "do", action: "Create Job", target: "live-1" }));
+    const result = await handler({
+      route: "/invoices",
+      question: "create a job",
+      visible: [],
+      liveElements: [{ id: "live-1", role: "button", label: "Create Job" }],
+    });
+    expect(result.body).toMatchObject({ verb: "do", target: "live-1" });
+  });
+
+  it("retries once when the model returns something that is not a valid verb, instead of answering \"I'm not sure\" mid-task", async () => {
+    const answers: unknown[] = [{ text: "no verb field" }, { verb: "explain", text: "Here you go." }];
+    const llm = { respond: async () => answers.shift() };
+    const handler = createCopilotHandlerWithLLM(manifest, llm);
+    const result = await handler({ route: "/invoices", question: "hello", visible: [] });
+    expect(result.body).toEqual({ verb: "explain", text: "Here you go." });
+  });
+
   it("registeredActions still takes priority over auto-discovery when both could apply", async () => {
     const handler = createCopilotHandlerWithLLM(
       manifest,

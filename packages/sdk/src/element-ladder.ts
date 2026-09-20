@@ -125,6 +125,28 @@ export async function findElementWithRetry(
  * `timeoutMs` ceiling means a page that never stops mutating (an
  * animation, a polling widget) can't stall the agent loop forever.
  */
+/**
+ * Resolves once the browser is actually on `route` (or after `timeoutMs`). A framework route change
+ * is asynchronous: with server-rendered pages the URL can lag the router call by a second or more, and
+ * a DOM-quiet check alone can pass while the old page is still showing, so the next step would run
+ * against the wrong page. Never rejects; the caller settles the DOM afterwards.
+ */
+export function waitForRoute(route: string, timeoutMs = 8000): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined") return resolve();
+    const target = route.split(/[?#]/)[0].replace(/\/+$/, "") || "/";
+    const here = () => (window.location.pathname.replace(/\/+$/, "") || "/") === target;
+    if (here()) return resolve();
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (here() || Date.now() - started > timeoutMs) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 50);
+  });
+}
+
 export function waitForDomSettle(initialWaitMs = 100, quietMs = 200, timeoutMs = 1500): Promise<void> {
   return new Promise((resolve) => {
     // Real gap this closes: some callers stub a partial `document` (real

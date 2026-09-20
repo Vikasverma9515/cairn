@@ -342,6 +342,10 @@ export async function resolveVerb(
       ...(patternMatches.length ? { suggestedApproach: renderPlaybookHint(patternMatches[0].pattern) } : {}),
     });
     candidate = await llm.respond(systemPrompt, userMessage);
+    // Smaller models sometimes return a step that is not a valid verb (a missing field, a stray key).
+    // That used to surface as "I'm not sure how to help with that" in the middle of a multi-step task.
+    // One more attempt is cheap and usually fixes it; a second failure still falls back below.
+    if (!VerbResponseSchema.safeParse(candidate).success) candidate = await llm.respond(systemPrompt, userMessage);
   } catch (err) {
     console.error("[cairn] copilot LLM call failed:", err);
     return { verb: "explain", text: "Something went wrong on my end — try again in a moment." };
@@ -383,7 +387,14 @@ export async function resolveVerb(
     if (!staticElement && !liveElement) {
       return { verb: "explain", text: "That action isn't available here." };
     }
-    return staticElement?.apiCall ? { ...parsedVerb.data, apiCall: staticElement.apiCall } : parsedVerb.data;
+    if (staticElement?.apiCall) return { ...parsedVerb.data, apiCall: staticElement.apiCall };
+    // Live-found: with nothing registered, models reach for "do" to press an ordinary button. "do" ends
+    // the turn and reports no result, so in a multi-step task the Critic saw "no observation", replanned,
+    // and the same button was pressed over and over. A click is the same action as a continuing step:
+    // it runs, reports what happened, and lets the loop carry on to the next part of the request.
+    const midTask = looksMultiStep(input.question) || (input.history ?? []).some((h) => h.role === "assistant" && h.text.includes("Result:"));
+    if (midTask && target) return { verb: "click", target, ...(parsedVerb.data.text ? { text: parsedVerb.data.text } : {}) } as VerbResponse;
+    return parsedVerb.data;
   }
 
   // The agent loop's steps (click/fill/read/call_tool — see
@@ -580,6 +591,58 @@ export function createCriticLLM(options: CreateCopilotHandlerOptions = {}): Verb
  * selection logic every such caller needs, factored out once so
  * createVerbLLM/createPlanLLM stay thin, tool-specific wrappers around it. */
 function createToolLLM(options: CreateCopilotHandlerOptions, toolSchema: Record<string, unknown>, toolName: string, toolDescription: string): VerbLLM {
+  return withRateLimitWait(createRawToolLLM(options, toolSchema, toolName, toolDescription));
+}
+
+/**
+ * A multi-step task makes several model calls in quick succession (verb, plan, critic per step), so
+ * free and low tiers hit their per-minute limit mid-task. With one key there is nothing to rotate to, and
+ * the request used to fail outright, ending the task halfway with "Something went wrong". A rate limit
+ * is temporary, so wait the interval the provider asks for (when it is short enough to be worth it) and
+ * try again. An oversized request can never succeed, so it is never retried.
+ */
+export function withRateLimitWait(
+  llm: VerbLLM,
+  options: { maxWaits?: number; maxWaitMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): VerbLLM {
+  const maxWaits = options.maxWaits ?? 3;
+  const maxWaitMs = options.maxWaitMs ?? Number(process.env.CAIRN_MAX_RATE_WAIT_MS ?? 20_000);
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  return {
+    async respond(systemPrompt, userMessage) {
+      for (let waits = 0; ; waits++) {
+        try {
+          return await llm.respond(systemPrompt, userMessage);
+        } catch (err) {
+          if (!isRateLimitError(err) || isRequestTooLargeError(err) || waits >= maxWaits) throw err;
+          const hinted = retryDelayMs(err);
+          const wait = hinted ?? 3000 * (waits + 1);
+          if (wait > maxWaitMs) throw err; // a long lockout: fail fast and let the caller report it
+          await sleep(Math.max(wait, 1000) + 250);
+        }
+      }
+    },
+  };
+}
+
+/** How long the provider asked us to wait (Retry-After header, "try again in 12.3s", or Gemini's retryDelay), in ms. */
+export function retryDelayMs(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as { headers?: { get?: (k: string) => string | null } | Record<string, string>; message?: unknown; error?: unknown };
+  const h = e.headers as { get?: (k: string) => string | null } & Record<string, string> | undefined;
+  const header = typeof h?.get === "function" ? h.get("retry-after") : h?.["retry-after"];
+  if (header && !Number.isNaN(Number(header))) return Math.round(Number(header) * 1000);
+  let detail = "";
+  try {
+    detail = `${typeof e.message === "string" ? e.message : ""} ${JSON.stringify(e.error ?? "")}`;
+  } catch {
+    detail = typeof e.message === "string" ? e.message : "";
+  }
+  const m = /(?:retry(?:Delay)?"?\s*:?\s*"?|try again in |retry in )(\d+(?:\.\d+)?)\s*s/i.exec(detail);
+  return m ? Math.round(Number(m[1]) * 1000) : undefined;
+}
+
+function createRawToolLLM(options: CreateCopilotHandlerOptions, toolSchema: Record<string, unknown>, toolName: string, toolDescription: string): VerbLLM {
   const provider = options.provider ?? "anthropic";
 
   if (provider === "groq") {

@@ -6,7 +6,7 @@
 // enforces the same schema independently — never trust the client alone.
 
 import { VerbResponseSchema, type ApiCall, type BatchAction, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { dragElement, findElement, findElementWithRetry, fillElement, highlightElement, logMiss, pressKey, readElement, selectOption, waitForDomSettle, type MissContext } from "./element-ladder";
+import { dragElement, findElement, findElementWithRetry, fillElement, highlightElement, logMiss, pressKey, readElement, selectOption, waitForDomSettle, waitForRoute, type MissContext } from "./element-ladder";
 import { moveCursorTo } from "./cursor-overlay";
 import { executeWebMcpTool } from "./webmcp-client";
 
@@ -17,6 +17,21 @@ import { executeWebMcpTool } from "./webmcp-client";
  * index.tsx's runTypedAgentLoop for the HTTP path, realtime-server.ts's
  * finalizeTurn for the realtime one — this module only ever executes one
  * step (or one batch of steps) at a time. */
+/**
+ * Where the browser is after a step: the path and the page's main heading. The Critic only sees a
+ * step's observation, and "Clicked it." says nothing about whether the click opened the form it was
+ * meant to, so it could not confirm a task that had in fact succeeded and kept replanning.
+ */
+export function pageState(): string {
+  try {
+    if (typeof window === "undefined" || typeof document === "undefined" || typeof document.querySelector !== "function") return "";
+    const heading = document.querySelector("h1")?.textContent?.replace(/\s+/g, " ").trim().slice(0, 60);
+    return ` The page is now ${window.location.pathname}${heading ? ` (heading: "${heading}")` : ""}.`;
+  } catch {
+    return ""; // a partial DOM (tests, sandboxes): the observation is just less detailed
+  }
+}
+
 export interface ToolStepResult {
   verb: "click" | "fill" | "read" | "call_tool" | "batch" | "navigate" | "drag" | "select" | "key" | "scroll" | "wait_for";
   target?: string;
@@ -168,8 +183,10 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         // already closes for fill/click, arguably more likely here. The
         // NEXT resolveVerb call needs the settled new page's context, not
         // whatever was on screen the instant router.push was called.
-        void waitForDomSettle(300, 200, 2000).then(() => {
-          options.onToolStep?.({ verb: "navigate", target: verb.route, ok: true, observation: `Navigated to ${verb.route}.` });
+        // Wait for the URL to change first, then for the new page's DOM to settle, with a longer
+        // ceiling than an in-page action: server-rendered pages fetch data before they paint.
+        void waitForRoute(verb.route).then(() => waitForDomSettle(400, 350, 4000)).then(() => {
+          options.onToolStep?.({ verb: "navigate", target: verb.route, ok: true, observation: `Navigated to ${verb.route}.${pageState()}` });
         });
         return;
       }
@@ -260,7 +277,7 @@ function dispatchVerb(verb: VerbResponse, route: string, options: VerbExecutorOp
         // instant .click() returns. A subsequent read step in the same turn
         // needs the SETTLED result, not whatever was on screen a moment ago.
         void waitForDomSettle().then(() => {
-          options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: "Clicked it." });
+          options.onToolStep?.({ verb: "click", target: verb.target, ok: true, observation: `Clicked it.${pageState()}` });
         });
       });
       return;
@@ -493,7 +510,7 @@ async function executeOneBatchAction(action: BatchAction, route: string, options
       // doc comment) — arguably MORE likely here, since a batch's next
       // step often deliberately reads what THIS step just changed.
       await waitForDomSettle();
-      return { ok: true, observation: "Clicked it." };
+      return { ok: true, observation: `Clicked it.${pageState()}` };
     }
     case "fill": {
       const el = await findElementWithRetry(action.target, options.liveElements);

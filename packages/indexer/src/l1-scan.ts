@@ -3,6 +3,7 @@
 // scripts/check-determinism.sh). Every collection here is explicitly sorted
 // before being returned so directory-listing order can never leak in.
 
+import fs from "node:fs";
 import path from "node:path";
 import { Project, Node, SyntaxKind, ts } from "ts-morph";
 import type { SourceFile } from "ts-morph";
@@ -56,6 +57,29 @@ function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
+/**
+ * Import aliases from the project's tsconfig ("@/components/Button" and friends). Without them
+ * `getModuleSpecifierSourceFile()` returns nothing for an aliased import, so the import walk below
+ * silently stops at every `@/...` import: a page's shared button components were never scanned, and
+ * their controls (Shortlist, Reject, Send offer...) never reached the manifest. When there is no
+ * tsconfig, or it declares no aliases, the near-universal "@/*" -> project root / src default is used.
+ */
+export function readPathAliases(absRoot: string): { baseUrl: string; paths: Record<string, string[]> } {
+  const fallback = { baseUrl: absRoot, paths: { "@/*": ["./*", "./src/*"] } };
+  const tsconfigPath = path.join(absRoot, "tsconfig.json");
+  if (!fs.existsSync(tsconfigPath)) return fallback;
+  try {
+    const raw = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+    if (raw.error) return fallback;
+    const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, absRoot);
+    const paths = parsed.options.paths;
+    if (!paths || Object.keys(paths).length === 0) return fallback;
+    return { baseUrl: parsed.options.baseUrl ?? (parsed.options.pathsBasePath as string | undefined) ?? absRoot, paths: paths as Record<string, string[]> };
+  } catch {
+    return fallback;
+  }
+}
+
 export function scanL1(rootDir: string): RawFacts {
   const absRoot = path.resolve(rootDir);
 
@@ -67,6 +91,7 @@ export function scanL1(rootDir: string): RawFacts {
       allowJs: true,
       esModuleInterop: true,
       target: ts.ScriptTarget.ES2022,
+      ...readPathAliases(absRoot),
     },
   });
 

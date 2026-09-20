@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeToolStep, executeVerbResponse } from "./verb-executor";
+import { executeToolStep, executeVerbResponse, pageState } from "./verb-executor";
 
 function makeOptions() {
   return {
@@ -908,5 +908,11 @@ describe("executeVerbResponse", () => {
     expect(() => executeVerbResponse("not json", "/", opts)).not.toThrow();
     expect(() => executeVerbResponse({ verb: "explain" }, "/", opts)).not.toThrow();
     expect(opts.onExplain).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("pageState", () => {
+  it("is empty when there is no DOM, so an observation just stays short", () => {
+    expect(pageState()).toBe("");
   });
 });

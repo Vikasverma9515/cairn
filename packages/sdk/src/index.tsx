@@ -73,6 +73,14 @@ export interface CopilotProps {
    * opt-in discipline as speakEndpoint/transcribeEndpoint.
    */
   planEndpoint?: string;
+  /**
+   * With the Planner/Critic loop on, the Critic runs after every Nth successful step (default 1, i.e. every step) and
+   * always on a terminal answer. Every Critic pass is a model call, and a step already costs one, so
+   * checking each step triples the call volume and can push free/low tiers (15 requests per minute)
+   * into rate limits. But the Critic is also what tells the loop a task is finished, so raising this
+   * above 1 makes the agent overshoot: live-tested, "go to A, then B, then C" kept navigating after C.
+   */
+  criticEvery?: number;
   /** See `planEndpoint` — both must be set for the typed loop's Planner/Critic wiring to activate. */
   criticEndpoint?: string;
   /**
@@ -112,6 +120,7 @@ export function Copilot({
   scopeId,
   planEndpoint,
   criticEndpoint,
+  criticEvery = 1,
   skillsSaveEndpoint,
   realtimeUrl,
   persona = "Cairn",
@@ -991,6 +1000,9 @@ export function Copilot({
     let plan: Plan | null = null;
     let progress: ProgressLedger | null = null;
     const STALL_THRESHOLD = 3; // same bounded budget realtime's own Critic wiring uses
+    let stepsSinceCritic = 0;
+    let replans = 0;
+    const MAX_REPLANS = 2;
     const plannerEnabled = Boolean(planEndpoint && criticEndpoint);
     if (plannerEnabled && looksMultiStep(q)) planPromise = fetchPlan(q);
     // Architecture Pillar 3 (Skill half) — every real, Critic-verified
@@ -1002,28 +1014,40 @@ export function Copilot({
       async getNextStep(loopHistory) {
         const liveScan = liveRegistryRef.current.getSnapshot();
         liveMapRef.current = liveScan.byId;
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            // pathnameRef, not the closed-over `pathname` — a navigate
-            // step (now possibly continuing, see isTerminalVerb) can
-            // change the real route mid-loop; this whole async function's
-            // own `pathname` closure was captured once, at the render
-            // that started this turn, and never updates again on its own.
-            route: pathnameRef.current,
-            question: q,
-            visible: collectVisible(),
-            history: loopHistory,
-            liveElements: liveScan.elements,
-            webMcpTools,
-            openDialog: liveScan.openDialog,
-            scopeId,
-          }),
+        const body = JSON.stringify({
+          // pathnameRef, not the closed-over `pathname` — a navigate
+          // step (now possibly continuing, see isTerminalVerb) can
+          // change the real route mid-loop; this whole async function's
+          // own `pathname` closure was captured once, at the render
+          // that started this turn, and never updates again on its own.
+          route: pathnameRef.current,
+          question: q,
+          visible: collectVisible(),
+          history: loopHistory,
+          liveElements: liveScan.elements,
+          webMcpTools,
+          openDialog: liveScan.openDialog,
+          scopeId,
         });
-        const data = await res.json().catch(() => null);
-        lastRawResponse = data;
-        return safeParseVerbResponse(data);
+        // A momentary failure (network blip, a 5xx, a 429 during a burst of calls) used to end a
+        // multi-step task on the spot. Retry a couple of times; a real 4xx (bad key, not signed in)
+        // will not recover, so stop immediately for those.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          let status = 0;
+          try {
+            const res = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body });
+            status = res.status;
+            const data = await res.json().catch(() => null);
+            lastRawResponse = data;
+            const parsed = safeParseVerbResponse(data);
+            if (parsed) return parsed;
+          } catch {
+            // network error: retry below
+          }
+          if (status >= 400 && status < 500 && status !== 429) break;
+          await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)));
+        }
+        return null;
       },
       onStep({ verb, terminal }) {
         // A continuing step — show it happening (execution itself
@@ -1058,6 +1082,7 @@ export function Copilot({
             // opted into Planner/Critic. Skip when nothing so far actually
             // signaled a multi-step goal.
             if (terminal && !plan && !planPromise) return undefined;
+            if (terminal && verb.verb === "explain" && verb.text?.startsWith("Something went wrong")) return undefined;
             // Real state, not the Executor's self-report — see
             // resolveCritic's own doc comment (server.ts) for why this is
             // a genuinely separate pass, same precedent realtime already
@@ -1068,8 +1093,17 @@ export function Copilot({
             }
             const currentProgress = progress!;
             const currentTask = plan.tasks[currentProgress.currentTaskIndex];
+            // Save model calls: a successful continuing step is only Critic-checked every Nth time.
+            if (!terminal && observation && criticEvery > 1 && ++stepsSinceCritic < criticEvery) {
+              return { verdict: "continue", reasoning: "Step succeeded; the Critic runs on the next check." };
+            }
+            stepsSinceCritic = 0;
             const verdict = await fetchCriticVerdict(currentTask, q, verb, observation);
             if (verdict.learnedFact) learnedFacts.push(verdict.learnedFact);
+            // An answer we could not check (the Critic is down or rate limited, or the server returned its
+            // own "something went wrong" line) is shipped as-is. Looping on it just spends more model calls
+            // against the same limit and never converges.
+            if (terminal && verdict.reasoning.startsWith("Critic call failed")) return undefined;
 
             if (verdict.verdict === "task_complete") {
               currentTask.status = "done";
@@ -1087,8 +1121,15 @@ export function Copilot({
             }
 
             if (verdict.verdict === "replan") {
+              // Live-found: a replan used to restart at task 1, so the Critic then judged each correct
+              // step ("now on /calls") against the wrong task ("go to /interviews"), said replan again,
+              // and the agent circled forever. Keep the position already reached, and cap replans so a
+              // confused Critic cannot spiral: past the budget it just continues.
+              replans++;
+              if (replans > MAX_REPLANS) return { ...verdict, verdict: "continue" };
+              const reached = currentProgress.currentTaskIndex;
               plan = await fetchPlan(q, plan.version + 1);
-              progress = { planVersion: plan.version, currentTaskIndex: 0, stallCount: 0 };
+              progress = { planVersion: plan.version, currentTaskIndex: Math.min(reached, plan.tasks.length - 1), stallCount: 0 };
               return { ...verdict, verdict: "continue" };
             }
 
@@ -1097,7 +1138,9 @@ export function Copilot({
             // "continue" — a harness-enforced fail-safe on top of the
             // Critic's own judgment, same Magentic-One-shaped two-tier
             // tolerance realtime already uses.
-            currentProgress.stallCount++;
+            // A Critic that could not be reached (rate limit, network) says nothing about whether the
+            // agent is making progress, so it must not count toward "stuck".
+            if (!verdict.reasoning.startsWith("Critic call failed")) currentProgress.stallCount++;
             if (currentProgress.stallCount >= STALL_THRESHOLD) {
               return {
                 verdict: "give_up",

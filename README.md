@@ -244,6 +244,27 @@ plain explanation — it never guesses and clicks the wrong thing.
 
 </details>
 
+## Making multi-step tasks reliable
+
+A request like "open candidates, filter to shortlisted, then open the first one" is several model calls
+(a step, a Planner pass and a Critic pass for each one). What matters for it to finish:
+
+- **Turn the loop on.** `cairn init`/`setup` now scaffold `/api/copilot/plan` and `/api/copilot/critic`
+  and pass `planEndpoint`/`criticEndpoint` to the widget. Without them every request ends after its first step.
+- **Import aliases are followed.** The scanner reads `tsconfig.json` `paths` (so `@/components/...` works)
+  and falls back to `@/*` -> project root. Before this, shared button components imported through an alias
+  never reached the manifest.
+- **Compound requests are detected by their clauses**, not only by words like "then", so the Planner runs
+  for "go to jobs and create one and fill in the title" too.
+- **Rate limits are waited out.** On a 429 the SDK waits the time the provider asks for (up to
+  `CAIRN_MAX_RATE_WAIT_MS`, default 20000) and retries. Give the route a matching `maxDuration` on serverless
+  hosting. Gemini's free tier allows 15 requests per minute and Groq's free tier 8,000 tokens per minute, so for
+  heavier use configure several keys (`GEMINI_API_KEYS=a,b,c`, `GROQ_API_KEYS=...`) or a paid tier.
+- **The Critic sees results.** Click and navigate observations include the page you ended up on and its
+  heading, and a replan keeps the progress already made (capped at two replans per request).
+- **`criticEvery`** (default 1) sets how often the Critic runs. Raising it saves calls but the Critic is also
+  what tells the loop a task is finished, so higher values can make the agent keep going.
+
 ## Quick start
 
 ```bash
