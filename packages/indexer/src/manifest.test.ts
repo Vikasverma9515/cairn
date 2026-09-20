@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleManifest, parseApiCall } from "./manifest";
+import { assembleManifest, isNoiseElement, parseApiCall } from "./manifest";
 import type { RawFacts } from "./types";
 import type { L2Result } from "./l2-reachability";
 import type { L3Result } from "./l3-describe";
@@ -335,5 +335,18 @@ describe("assembleManifest", () => {
 
     expect(manifest.pages[0].elements[0].apiCall).toEqual({ method: "POST", url: "/api/invoices", handledBy: ["createInvoice"] });
     expect(manifest.pages[0].elements[0].apiCall).not.toHaveProperty("constraints");
+  });
+});
+
+describe("isNoiseElement", () => {
+  const el = (id: string, confidence: number) => ({ id, label: id, selector: "a", fallbacks: [], does: "x", confidence, evidence: [], apiCall: null }) as never;
+
+  it("drops generated ids the model could not describe", () => {
+    expect(isNoiseElement(el("a-258", 0.2))).toBe(true);
+  });
+
+  it("keeps generated ids that were described confidently, and named elements at any confidence", () => {
+    expect(isNoiseElement(el("form-171", 0.8))).toBe(false);
+    expect(isNoiseElement(el("Add Candidate", 0.1))).toBe(false);
   });
 });

@@ -30,9 +30,9 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
   const pages: Page[] = facts.pages.map((rawPage) => {
     const desc = l3.descriptions.get(rawPage.route);
 
-    const ownElements: Element[] = rawPage.elements.map((el) =>
-      toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`, routeHandlersByKey, businessRulesByKey),
-    );
+    const ownElements: Element[] = rawPage.elements
+      .map((el) => toManifestElement(el, desc?.elements.find((e) => e.id === el.id), `reachable from route ${rawPage.route}`, routeHandlersByKey, businessRulesByKey))
+      .filter((el) => !isNoiseElement(el));
 
     return {
       id: slugifyRoute(rawPage.route),
@@ -56,6 +56,16 @@ export function assembleManifest(rootDir: string, facts: RawFacts, l2: L2Result,
     dead: l2.dead,
     conflicts: l2.conflicts,
   };
+}
+
+/**
+ * An element with a generated id ("a-258", "button-91") and low confidence has no visible label and no
+ * handler the scan could read, so all the model can say about it is "purpose unknown". Keeping those
+ * costs prompt tokens and teaches the agent nothing. Elements with a real label, a data-ai id, or a
+ * confident description are always kept.
+ */
+export function isNoiseElement(el: Element): boolean {
+  return /^[a-z]+-\d+$/.test(el.id) && el.confidence < 0.5;
 }
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);

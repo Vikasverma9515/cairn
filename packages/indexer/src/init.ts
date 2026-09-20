@@ -14,12 +14,14 @@ export interface InitResult {
   nextSteps: string[];
 }
 
-const ENV_TEMPLATE = `# Pick one LLM provider:
-ANTHROPIC_API_KEY=
+const ENV_TEMPLATE = `# Pick one LLM provider. Cairn uses whichever key is set (override with CAIRN_RUNTIME_PROVIDER).
+# Gemini has a generous free tier. Groq's free tier (8,000 tokens per minute) is too small for
+# multi-step tasks, so prefer Gemini or Anthropic.
+GEMINI_API_KEY=
+# or:
+# ANTHROPIC_API_KEY=
 # or:
 # GROQ_API_KEYS=
-# or:
-# GEMINI_API_KEY=
 
 # Optional — voice (transcription/spoken answers/realtime conversation):
 DEEPGRAM_API_KEY=
@@ -58,6 +60,9 @@ const WS_TRANSPILE_WARNING = [
   "   connections it uses.",
 ];
 
+/** The widget props that switch on the Planner → Executor → Critic loop. Shared with inject-widget.ts. */
+export const PLANNER_WIDGET_PROPS = ['planEndpoint="/api/copilot/plan"', 'criticEndpoint="/api/copilot/critic"'];
+
 export interface RunInitOptions {
   /** Also scaffold /api/copilot/speak and /api/copilot/transcribe (Deepgram-backed) —
    * real bug this closes: previously nothing wrote these routes for a Next.js
@@ -93,7 +98,9 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
 
   if (result.framework === "next-app-router") {
     writeIfAbsent(path.join(absDir, "app", "api", "copilot", "route.ts"), NEXT_APP_ROUTE, result);
-    const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}"];
+    writeIfAbsent(path.join(absDir, "app", "api", "copilot", "plan", "route.ts"), NEXT_APP_PLAN_ROUTE, result);
+    writeIfAbsent(path.join(absDir, "app", "api", "copilot", "critic", "route.ts"), NEXT_APP_CRITIC_ROUTE, result);
+    const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}", ...PLANNER_WIDGET_PROPS];
     if (options.voice) {
       writeIfAbsent(path.join(absDir, "app", "api", "copilot", "speak", "route.ts"), NEXT_APP_SPEAK_ROUTE, result);
       writeIfAbsent(path.join(absDir, "app", "api", "copilot", "transcribe", "route.ts"), NEXT_APP_TRANSCRIBE_ROUTE, result);
@@ -110,7 +117,9 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
     if (options.voice) result.nextSteps.push(...WS_TRANSPILE_WARNING);
   } else if (result.framework === "next-pages-router") {
     writeIfAbsent(path.join(absDir, "pages", "api", "copilot.ts"), NEXT_PAGES_API_ROUTE, result);
-    const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}"];
+    writeIfAbsent(path.join(absDir, "pages", "api", "copilot", "plan.ts"), NEXT_PAGES_PLAN_ROUTE, result);
+    writeIfAbsent(path.join(absDir, "pages", "api", "copilot", "critic.ts"), NEXT_PAGES_CRITIC_ROUTE, result);
+    const widgetProps = ['registeredActions={[]}', "onDo={(action, target) => { /* run it */ }}", ...PLANNER_WIDGET_PROPS];
     if (options.voice) {
       writeIfAbsent(path.join(absDir, "pages", "api", "copilot", "speak.ts"), NEXT_PAGES_SPEAK_ROUTE, result);
       writeIfAbsent(path.join(absDir, "pages", "api", "copilot", "transcribe.ts"), NEXT_PAGES_TRANSCRIBE_ROUTE, result);
@@ -142,6 +151,18 @@ export function runInit(dir: string, options: RunInitOptions = {}): InitResult {
   return result;
 }
 
+// Picks the LLM provider from what is actually configured, instead of always assuming Groq.
+// Live-found: Groq's free tier allows 8,000 tokens per minute and one agent step needs about
+// 7,900, so a project that only had a Gemini or Anthropic key still defaulted to a provider it
+// could not run. An explicit CAIRN_RUNTIME_PROVIDER always wins.
+export const PICK_PROVIDER_SNIPPET = `function pickProvider() {
+  const wanted = process.env.CAIRN_RUNTIME_PROVIDER;
+  if (wanted === "gemini" || wanted === "anthropic" || wanted === "groq") return wanted;
+  if (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY) return "gemini";
+  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  return "groq";
+}`;
+
 const NEXT_APP_ROUTE = `import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
@@ -149,6 +170,8 @@ import { createCopilotHandler } from "@cairnvibe/sdk/server";
 import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
 ${MANIFEST_LOOKUP_SNIPPET}
+
+${PICK_PROVIDER_SNIPPET}
 
 function loadManifest(): Manifest {
   const manifestPath = resolveManifestPath(process.cwd());
@@ -161,7 +184,7 @@ function loadManifest(): Manifest {
 
 export async function POST(request: Request) {
   const handler = createCopilotHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq",
+    provider: pickProvider(),
     registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
     capability: (process.env.CAIRN_CAPABILITY as "explain" | "guide" | "act" | undefined) ?? "act",
     persona: process.env.CAIRN_PERSONA || undefined,
@@ -180,6 +203,8 @@ import { ManifestSchema, type Manifest } from "@cairnvibe/core";
 
 ${MANIFEST_LOOKUP_SNIPPET}
 
+${PICK_PROVIDER_SNIPPET}
+
 function loadManifest(): Manifest {
   const manifestPath = resolveManifestPath(process.cwd());
   if (fs.existsSync(manifestPath)) {
@@ -192,12 +217,98 @@ function loadManifest(): Manifest {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).end();
   const copilotHandler = createCopilotHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq",
+    provider: pickProvider(),
     registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
     capability: (process.env.CAIRN_CAPABILITY as "explain" | "guide" | "act" | undefined) ?? "act",
     persona: process.env.CAIRN_PERSONA || undefined,
   });
   const result = await copilotHandler(req.body);
+  res.status(result.status).json(result.body);
+}
+`;
+
+
+// The Planner and Critic are what turn one-shot answers into real multi-step tasks ("open the
+// candidates page, then open the first one"). Without these two routes the widget still works,
+// but every request ends after the first step.
+const NEXT_APP_PLAN_ROUTE = `import fs from "node:fs";
+import path from "node:path";
+import { NextResponse } from "next/server";
+import { createPlanHandler } from "@cairnvibe/sdk/server";
+import { ManifestSchema, type Manifest } from "@cairnvibe/core";
+
+${MANIFEST_LOOKUP_SNIPPET}
+
+${PICK_PROVIDER_SNIPPET}
+
+function loadManifest(): Manifest {
+  const manifestPath = resolveManifestPath(process.cwd());
+  if (fs.existsSync(manifestPath)) {
+    return ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
+  }
+  return { version: "1", commit: "unbuilt", generatedAt: new Date().toISOString(), pages: [], dead: [], conflicts: [] };
+}
+
+export async function POST(request: Request) {
+  const handler = createPlanHandler(loadManifest(), {
+    provider: pickProvider(),
+    registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
+  });
+  const result = await handler(await request.json().catch(() => null));
+  return NextResponse.json(result.body, { status: result.status });
+}
+`;
+
+const NEXT_APP_CRITIC_ROUTE = `import { NextResponse } from "next/server";
+import { createCriticHandler } from "@cairnvibe/sdk/server";
+
+${PICK_PROVIDER_SNIPPET}
+
+export async function POST(request: Request) {
+  const handler = createCriticHandler({ provider: pickProvider() });
+  const result = await handler(await request.json().catch(() => null));
+  return NextResponse.json(result.body, { status: result.status });
+}
+`;
+
+const NEXT_PAGES_PLAN_ROUTE = `import fs from "node:fs";
+import path from "node:path";
+import type { NextApiRequest, NextApiResponse } from "next";
+import { createPlanHandler } from "@cairnvibe/sdk/server";
+import { ManifestSchema, type Manifest } from "@cairnvibe/core";
+
+${MANIFEST_LOOKUP_SNIPPET}
+
+${PICK_PROVIDER_SNIPPET}
+
+function loadManifest(): Manifest {
+  const manifestPath = resolveManifestPath(process.cwd());
+  if (fs.existsSync(manifestPath)) {
+    return ManifestSchema.parse(JSON.parse(fs.readFileSync(manifestPath, "utf8")));
+  }
+  return { version: "1", commit: "unbuilt", generatedAt: new Date().toISOString(), pages: [], dead: [], conflicts: [] };
+}
+
+export default async function plan(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") return res.status(405).end();
+  const handler = createPlanHandler(loadManifest(), {
+    provider: pickProvider(),
+    registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
+  });
+  const result = await handler(req.body);
+  res.status(result.status).json(result.body);
+}
+`;
+
+const NEXT_PAGES_CRITIC_ROUTE = `import type { NextApiRequest, NextApiResponse } from "next";
+import { createCriticHandler } from "@cairnvibe/sdk/server";
+
+${PICK_PROVIDER_SNIPPET}
+
+export default async function critic(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") return res.status(405).end();
+  const handler = createCriticHandler({ provider: pickProvider() });
+  const result = await handler(req.body);
   res.status(result.status).json(result.body);
 }
 `;
@@ -296,6 +407,8 @@ const path = require("node:path");
 const { createCopilotHandler } = require("@cairnvibe/sdk/server");
 const { ManifestSchema } = require("@cairnvibe/core");
 
+${PICK_PROVIDER_SNIPPET}
+
 const app = express();
 app.use(cors());
 
@@ -320,7 +433,7 @@ app.use(express.json());
 
 app.post("/api/copilot", async (req, res) => {
   const handler = createCopilotHandler(loadManifest(), {
-    provider: process.env.CAIRN_RUNTIME_PROVIDER === "anthropic" ? "anthropic" : process.env.CAIRN_RUNTIME_PROVIDER === "gemini" ? "gemini" : "groq",
+    provider: pickProvider(),
     registeredActions: (process.env.CAIRN_REGISTERED_ACTIONS ?? "").split(",").map((a) => a.trim()).filter(Boolean),
     capability: process.env.CAIRN_CAPABILITY ?? "act",
     persona: process.env.CAIRN_PERSONA || undefined,

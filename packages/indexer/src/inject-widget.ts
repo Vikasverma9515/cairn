@@ -51,6 +51,8 @@ function wrapperSource(voice: boolean): string {
   const voiceProps = voice
     ? '\n      speakEndpoint="/api/copilot/speak"\n      transcribeEndpoint="/api/copilot/transcribe"\n      realtimeUrl="ws://localhost:3010"'
     : "";
+  // The Planner and Critic routes are always scaffolded (init.ts), so always turn the loop on.
+  const plannerProps = '\n      planEndpoint="/api/copilot/plan"\n      criticEndpoint="/api/copilot/critic"';
   return `"use client";
 
 import { Copilot } from "@cairnvibe/sdk";
@@ -64,7 +66,7 @@ export function ${WRAPPER_COMPONENT_NAME}() {
       registeredActions={[]}
       onDo={(action, target) => {
         // run it through your own auth
-      }}${voiceProps}
+      }}${plannerProps}${voiceProps}
     />
   );
 }

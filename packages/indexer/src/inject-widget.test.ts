@@ -65,6 +65,27 @@ describe("injectWidget", () => {
     expect(wrapperText).toContain("onDo=");
   });
 
+  it("always turns the Planner/Critic loop on in the wrapper it generates", () => {
+    // Without planEndpoint/criticEndpoint the widget answers one step and stops.
+    write(
+      "app/layout.tsx",
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+
+    const result = injectWidget(tmpDir, "next-app-router");
+
+    const wrapperText = fs.readFileSync(result.wrapperPath!, "utf8");
+    expect(wrapperText).toContain('planEndpoint="/api/copilot/plan"');
+    expect(wrapperText).toContain('criticEndpoint="/api/copilot/critic"');
+  });
+
   it("does not pass speakEndpoint/transcribeEndpoint by default — voice is opt-in", () => {
     write(
       "app/layout.tsx",

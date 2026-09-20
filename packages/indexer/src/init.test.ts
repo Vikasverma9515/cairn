@@ -36,6 +36,42 @@ describe("runInit", () => {
     expect(fs.existsSync(path.join(tmpDir, "app", "api", "copilot", "route.ts"))).toBe(false);
   });
 
+  it("always scaffolds the Planner and Critic routes (App Router) and tells the widget about them", () => {
+    // Real gap this closes: only /api/copilot used to be scaffolded, so the widget never got a
+    // planEndpoint/criticEndpoint and every request ended after its first step ("navigate", then stop).
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+    fs.mkdirSync(path.join(tmpDir, "app"));
+
+    const result = runInit(tmpDir);
+
+    expect(fs.existsSync(path.join(tmpDir, "app", "api", "copilot", "plan", "route.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "app", "api", "copilot", "critic", "route.ts"))).toBe(true);
+    expect(result.nextSteps.join("\n")).toContain('planEndpoint="/api/copilot/plan"');
+    expect(result.nextSteps.join("\n")).toContain('criticEndpoint="/api/copilot/critic"');
+  });
+
+  it("always scaffolds the Planner and Critic routes (Pages Router)", () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+
+    runInit(tmpDir);
+
+    expect(fs.existsSync(path.join(tmpDir, "pages", "api", "copilot", "plan.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "pages", "api", "copilot", "critic.ts"))).toBe(true);
+  });
+
+  it("picks the LLM provider from the configured key instead of always assuming Groq", () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
+    fs.mkdirSync(path.join(tmpDir, "app"));
+
+    runInit(tmpDir);
+
+    for (const file of ["route.ts", "plan/route.ts", "critic/route.ts"]) {
+      const text = fs.readFileSync(path.join(tmpDir, "app", "api", "copilot", file), "utf8");
+      expect(text).toContain("provider: pickProvider()");
+      expect(text).toContain("GEMINI_API_KEY");
+    }
+  });
+
   it("does not scaffold speak/transcribe routes by default — voice is opt-in", () => {
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ dependencies: { next: "14.2.0" } }));
     fs.mkdirSync(path.join(tmpDir, "app"));
