@@ -2280,6 +2280,21 @@ describe("createPlanHandler / createCriticHandler — Architecture Pillar 4's ty
     expect(result.body).toMatchObject({ version: 1, goal: "Archive my old invoices" });
   });
 
+  it("createPlanHandler: with no skill store configured, the Planner is given skills written from the manifest, including the ask-first rule for a risky request", async () => {
+    // Real gap this closes: a project had to hand-write feature skills; they are now derived from the manifest.
+    let sent = "";
+    const llm = fakeLLM(async (_system, user) => {
+      sent = user;
+      return { goal: "g", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
+    });
+    const handler = createPlanHandlerWithLLM(manifest, llm);
+    await handler({ goal: "open invoices and start a call with the patient" });
+    const payload = JSON.parse(sent) as { skills?: string; suggestedSkill?: string };
+    expect(payload.skills).toContain("Invoices");
+    expect(payload.suggestedSkill).toContain("Start Call");
+    expect(payload.suggestedSkill).toContain("Never press one of these on your own initiative");
+  });
+
   it("createPlanHandler: passes through a real non-default version, for a genuine Planner revision", async () => {
     const llm = fakeLLM(async () => ({ goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] }));
     const handler = createPlanHandlerWithLLM(manifest, llm);
@@ -2348,13 +2363,14 @@ describe("createPlanHandler / createCriticHandler — Architecture Pillar 4's ty
     expect(parsed.suggestedSkill).toContain("connects to");
   });
 
-  it("createPlanHandler: no skills configured means no skills/suggestedSkill fields at all — zero overhead", async () => {
+  it("createPlanHandler: a manifest with nothing to build skills from means no skills/suggestedSkill fields at all — zero overhead", async () => {
+    // Skills are now derived from the manifest by default, so "nothing" means an empty manifest.
     let seenUserMessage = "";
     const llm = fakeLLM(async (_systemPrompt, userMessage) => {
       seenUserMessage = userMessage;
       return { goal: "x", facts: [], tasks: [{ id: "t1", description: "x", doneContract: "x" }] };
     });
-    const handler = createPlanHandlerWithLLM(manifest, llm);
+    const handler = createPlanHandlerWithLLM({ ...manifest, pages: [] }, llm);
 
     await handler({ goal: "x" });
 

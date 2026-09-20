@@ -17,6 +17,14 @@ import { runSetup } from "./setup";
 import { runRemove } from "./remove";
 import { runUpdate } from "./update";
 import { manifestReadPath, manifestWritePath } from "./cairn-dir";
+import { generateSkillsMarkdown, manifestToSkills, type Manifest } from "@cairnvibe/core";
+
+/** The skills are derived from the manifest at runtime; this writes the same text where a person can read it. */
+function writeSkillsDoc(manifestPath: string, manifest: Manifest): string {
+  const skillsPath = path.join(path.dirname(manifestPath), "SKILLS.md");
+  fs.writeFileSync(skillsPath, generateSkillsMarkdown(manifestToSkills(manifest)));
+  return skillsPath;
+}
 import { clack } from "./clack";
 
 /**
@@ -147,9 +155,11 @@ async function main(): Promise<void> {
       const outPath = manifestWritePath(path.resolve(outDir));
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
+      const skillsPath = writeSkillsDoc(outPath, validated);
 
       s.stop(`${validated.pages.length} page(s) crawled — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss`);
       p.log.success(`wrote ${outPath}`);
+      p.log.success(`wrote ${skillsPath} (feature skills the agent reads before it plans)`);
       return;
     }
 
@@ -166,11 +176,13 @@ async function main(): Promise<void> {
     const outPath = manifestWritePath(path.resolve(dir));
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
+    const skillsPath = writeSkillsDoc(outPath, validated);
 
     s.stop(
       `${validated.pages.length} page(s), ${validated.dead.length} dead file(s), ${validated.conflicts.length} conflict(s) — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss`,
     );
     p.log.success(`wrote ${outPath}`);
+    p.log.success(`wrote ${skillsPath} (feature skills the agent reads before it plans)`);
     return;
   }
 

@@ -24,6 +24,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "/Users/vikasverma/Desktop/kuch toh hai ismai 2/VOXERA", "run", "dev:full"],
       "port": 3000
+    },
+    {
+      "name": "nehahr-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/vikasverma/Desktop/kuch toh hai ismai 2/nehahr", "run", "dev", "--", "--port", "3100"],
+      "port": 3100
+    },
+    {
+      "name": "nehahr-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/vikasverma/Desktop/kuch toh hai ismai 2/nehahr", "run", "start", "--", "-p", "3200"],
+      "port": 3200
     }
   ]
 }

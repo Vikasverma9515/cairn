@@ -253,6 +253,17 @@ on a light page, and switches live if your site toggles theme (it looks at a `da
 messages and the send button. The widget's input also holds its own colours against global `input { ... !important }`
 rules, so the text stays readable inside apps that style every input.
 
+## Skills write themselves
+
+Nobody has to author a playbook. `cairn build` turns the manifest into skills the Planner reads before it
+plans a request: one per page (what it is for, when to use it, what every control does), one for moving
+around the app, and one listing the controls that change data or contact someone (delete, reject, send,
+email, call, cancel) with the rule to **ask you in chat before pressing them**. The skills are derived from
+the manifest at request time, so they work on serverless hosting with no database, and `cairn build` also
+writes `.cairn/SKILLS.md` so you can read exactly what the agent was given. Add your own with
+`createManifestSkillStore(manifest, [yourSkills])`, or pass a persistent store as `skills` to keep what the agent
+learns between runs.
+
 ## Making multi-step tasks reliable
 
 A request like "open candidates, filter to shortlisted, then open the first one" is several model calls

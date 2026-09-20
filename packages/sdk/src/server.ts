@@ -20,6 +20,7 @@ import {
   UI_PATTERNS,
   VERBS,
   VerbResponseSchema,
+  mentionsRiskyAction,
   type CopilotRequest,
   type CriticVerdict,
   type HistoryTurn,
@@ -36,6 +37,8 @@ import {
   type WebMcpTool,
 } from "@cairnvibe/core";
 import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
+import { createManifestSkillStore } from "./manifest-skill-store";
+export { createManifestSkillStore };
 import { formatArchivedFacts, formatPendingTask, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 export { KeyRotator } from "./key-rotator";
 import { KeyRotator } from "./key-rotator";
@@ -816,6 +819,7 @@ export function createPlanHandlerWithLLM(
 ): PlanHandler {
   const actionsText = renderRegisteredActions(options.registeredActions ?? [], options.actionDescriptions ?? {});
   const skillsScopeId = options.skillsScopeId ?? "default";
+  const skillStore = options.skills ?? createManifestSkillStore(manifest);
   return async function handlePlanRequest(body: unknown) {
     const parsed = PlanRequestSchema.safeParse(body);
     if (!parsed.success) return { status: 400, body: { error: "invalid request body" } };
@@ -825,14 +829,19 @@ export function createPlanHandlerWithLLM(
     // already computes in-process. Absent `options.skills` (the
     // overwhelming majority of deployments today) means zero overhead —
     // this whole block is skipped entirely.
-    const skillSummaries = options.skills ? options.skills.listSkillSummaries(skillsScopeId) : [];
+    // Skills come from `options.skills` when the developer supplies a store, and otherwise are written
+    // from the manifest itself (manifestToSkills), so the Planner has a playbook for every page without
+    // anyone authoring one.
+    const skillSummaries = skillStore.listSkillSummaries(skillsScopeId);
     const matchedSkillSummary = skillSummaries.length ? matchSkillByGoal(skillSummaries, parsed.data.goal) : null;
-    const skillsPayload = skillSummaries.length
-      ? {
-          summariesText: renderSkillSummaries(skillSummaries) || undefined,
-          suggestedInstructions: matchedSkillSummary ? (options.skills!.getSkill(skillsScopeId, matchedSkillSummary.id)?.instructions ?? undefined) : undefined,
-        }
-      : undefined;
+    let suggested = matchedSkillSummary ? (skillStore.getSkill(skillsScopeId, matchedSkillSummary.id)?.instructions ?? undefined) : undefined;
+    // A request that mentions deleting, rejecting, sending or calling always carries the ask-first rule,
+    // even when another skill (the page it starts on) was the closest match.
+    if (matchedSkillSummary?.id !== "irreversible-actions" && mentionsRiskyAction(parsed.data.goal)) {
+      const safety = skillStore.getSkill(skillsScopeId, "irreversible-actions")?.instructions;
+      if (safety) suggested = suggested ? `${suggested}\n\n${safety}` : safety;
+    }
+    const skillsPayload = skillSummaries.length ? { summariesText: renderSkillSummaries(skillSummaries) || undefined, suggestedInstructions: suggested } : undefined;
 
     const plan = await resolvePlan(planLLM, parsed.data.goal, parsed.data.version ?? 1, manifest, actionsText || undefined, skillsPayload);
     return { status: 200, body: plan };
