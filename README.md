@@ -244,6 +244,15 @@ plain explanation — it never guesses and clicks the wrong thing.
 
 </details>
 
+## Theming
+
+The widget follows your site. `theme="auto"` (the default) gives a dark widget on a dark page and a light one
+on a light page, and switches live if your site toggles theme (it looks at a `dark`/`light` class or
+`data-theme` on `<html>`/`<body>`, then the page's background colour, then the OS setting). Force
+`theme="light"` or `theme="dark"` to override, and pass `accent="#8b5cf6"` to colour the launcher, your
+messages and the send button. The widget's input also holds its own colours against global `input { ... !important }`
+rules, so the text stays readable inside apps that style every input.
+
 ## Making multi-step tasks reliable
 
 A request like "open candidates, filter to shortlisted, then open the first one" is several model calls

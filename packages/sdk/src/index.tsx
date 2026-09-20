@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { classifyUiPattern, deriveStructureSignals, isTerminalVerb, safeParseVerbResponse, type CriticVerdict, type HistoryTurn as HistoryEntry, type Plan, type ProgressLedger, type Task, type TourStep, type VerbResponse } from "@cairnvibe/core";
 import { driveAgentLoop, localNavigationVerdict, looksMultiStep } from "./agent-loop";
+import { detectHostDark } from "./theme";
 import { collectVisible } from "./context-collector";
 import { hideCursor } from "./cursor-overlay";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
@@ -81,6 +82,13 @@ export interface CopilotProps {
    * above 1 makes the agent overshoot: live-tested, "go to A, then B, then C" kept navigating after C.
    */
   criticEvery?: number;
+  /**
+   * "auto" (default) follows the host page: a dark app gets a dark widget, a light one a light widget,
+   * and it updates if the host switches theme. Force "light" or "dark" to override.
+   */
+  theme?: "light" | "dark" | "auto";
+  /** Brand colour for the launcher, your messages and the send button (any CSS colour). Defaults to near-black in light, slate in dark. */
+  accent?: string;
   /** See `planEndpoint` — both must be set for the typed loop's Planner/Critic wiring to activate. */
   criticEndpoint?: string;
   /**
@@ -121,6 +129,8 @@ export function Copilot({
   planEndpoint,
   criticEndpoint,
   criticEvery = 1,
+  theme = "auto",
+  accent,
   skillsSaveEndpoint,
   realtimeUrl,
   persona = "Cairn",
@@ -2089,6 +2099,26 @@ export function Copilot({
     "rt-speaking": "Speaking…",
   };
 
+  // Follow the host page's theme. Re-checked when the host toggles a class/attribute or the OS scheme flips.
+  const [hostDark, setHostDark] = useState(false);
+  useEffect(() => {
+    if (theme !== "auto") return;
+    const update = () => setHostDark(detectHostDark());
+    update();
+    const observer = new MutationObserver(update);
+    const watch = { attributes: true, attributeFilter: ["class", "data-theme", "data-mode", "style"] };
+    observer.observe(document.documentElement, watch);
+    if (document.body) observer.observe(document.body, watch);
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    media?.addEventListener?.("change", update);
+    return () => {
+      observer.disconnect();
+      media?.removeEventListener?.("change", update);
+    };
+  }, [theme]);
+  const dark = theme === "dark" || (theme === "auto" && hostDark);
+  const rootVars: PanelCSSVars = accent ? { "--cairn-accent": accent } : {};
+
   const panelVars: PanelCSSVars = {
     "--cairn-w": settings.density === "compact" ? "272px" : "312px",
     "--cairn-pad": settings.density === "compact" ? "11px" : "15px",
@@ -2099,7 +2129,7 @@ export function Copilot({
   const posClass = settings.position === "left" ? " cairn-pos-left" : "";
 
   return (
-    <>
+    <div className={`cairn-root${dark ? " cairn-dark" : ""}`} style={rootVars}>
       <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: COPILOT_STYLES }} />
       {open && (
         // A second, smaller floating control next to the main FAB, not a
@@ -2358,7 +2388,7 @@ export function Copilot({
             </div>
           );
         })()}
-    </>
+    </div>
   );
 }
 
@@ -2962,8 +2992,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #14151b;
-  color: white;
+  background: var(--cairn-accent);
+  color: var(--cairn-accent-fg);
   cursor: pointer;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -3011,7 +3041,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   flex-direction: column;
   gap: var(--cairn-gap, 14px);
   padding: var(--cairn-pad, 18px);
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--cairn-surface);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
   backdrop-filter: blur(24px) saturate(160%);
   border-radius: 20px;
@@ -3053,8 +3083,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
 }
 .cairn-bubble-user {
   align-self: flex-end;
-  background: #14151b;
-  color: #f2f2f4;
+  background: var(--cairn-accent);
+  color: var(--cairn-accent-fg);
   border-bottom-right-radius: 4px;
 }
 .cairn-bubble-agent {
@@ -3062,8 +3092,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  background: rgba(11, 13, 18, 0.055);
-  color: #0b0d12;
+  background: rgb(var(--cairn-ink) / 0.055);
+  color: rgb(var(--cairn-ink));
   border-bottom-left-radius: 4px;
 }
 .cairn-bubble-text {
@@ -3082,7 +3112,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(11, 13, 18, 0.48);
+  color: rgb(var(--cairn-ink) / 0.48);
 }
 /* Sticky, not just inline — a real, live-found bug this fixes: as a
    conversation grows and stays expanded, autoscroll-to-newest keeps
@@ -3107,22 +3137,22 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   align-items: center;
   gap: 3px;
   border: none;
-  border-bottom: 1px solid rgba(11, 13, 18, 0.06);
-  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid rgb(var(--cairn-ink) / 0.06);
+  background: var(--cairn-surface);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   padding: 3px 10px;
   font: inherit;
   font-size: 11px;
   font-weight: 600;
-  color: rgba(11, 13, 18, 0.55);
+  color: rgb(var(--cairn-ink) / 0.55);
   cursor: pointer;
   border-radius: 999px;
   transition: background 0.15s ease, color 0.15s ease;
 }
 .cairn-history-toggle:hover {
-  background: rgba(11, 13, 18, 0.05);
-  color: rgba(11, 13, 18, 0.6);
+  background: rgb(var(--cairn-ink) / 0.05);
+  color: rgb(var(--cairn-ink) / 0.6);
 }
 .cairn-thinking {
   display: inline-flex;
@@ -3137,7 +3167,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   width: 5px;
   height: 5px;
   border-radius: 999px;
-  background: rgba(11, 13, 18, 0.4);
+  background: rgb(var(--cairn-ink) / 0.4);
   animation: cairn-thinking-bounce 1.1s ease-in-out infinite;
 }
 .cairn-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
@@ -3153,23 +3183,27 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   min-width: 0;
   box-sizing: border-box;
   padding: 10px 14px;
-  border: none;
+  border: none !important;
   border-radius: 999px;
   font: inherit;
-  background: rgba(11, 13, 18, 0.045);
-  color: #0b0d12;
+  background: rgb(var(--cairn-ink) / 0.045) !important;
+  color: rgb(var(--cairn-ink)) !important;
+  -webkit-text-fill-color: rgb(var(--cairn-ink));
+  box-shadow: none;
   transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 .cairn-input-row input::placeholder {
-  color: rgba(11, 13, 18, 0.4);
+  color: rgb(var(--cairn-ink) / 0.4) !important;
+  -webkit-text-fill-color: rgb(var(--cairn-ink) / 0.4);
 }
 .cairn-input-row input:disabled {
   opacity: 0.55;
 }
 .cairn-input-row input:focus {
-  outline: none;
-  background: rgba(11, 13, 18, 0.06);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16);
+  outline: none !important;
+  background: rgb(var(--cairn-ink) / 0.06) !important;
+  border: none !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25) !important;
 }
 .cairn-icon-btn {
   flex-shrink: 0;
@@ -3180,13 +3214,13 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   justify-content: center;
   border-radius: 999px;
   border: none;
-  background: rgba(11, 13, 18, 0.045);
-  color: #33384a;
+  background: rgb(var(--cairn-ink) / 0.045);
+  color: var(--cairn-ink-2);
   cursor: pointer;
   transition: background 0.15s ease, transform 0.15s ease;
 }
 .cairn-icon-btn:hover {
-  background: rgba(11, 13, 18, 0.09);
+  background: rgb(var(--cairn-ink) / 0.09);
   transform: translateY(-1px);
 }
 .cairn-icon-btn-recording {
@@ -3215,8 +3249,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   justify-content: center;
   border-radius: 999px;
   border: none;
-  background: #14151b;
-  color: white;
+  background: var(--cairn-accent);
+  color: var(--cairn-accent-fg);
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -3225,8 +3259,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   transform: translateY(-1px);
 }
 .cairn-send:disabled {
-  background: rgba(11, 13, 18, 0.12);
-  color: rgba(11, 13, 18, 0.35);
+  background: rgb(var(--cairn-ink) / 0.12);
+  color: rgb(var(--cairn-ink) / 0.35);
   box-shadow: none;
   cursor: not-allowed;
 }
@@ -3316,7 +3350,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
-  background: rgba(11, 13, 18, 0.045);
+  background: rgb(var(--cairn-ink) / 0.045);
 }
 .cairn-rt-dot {
   width: 8px;
@@ -3335,7 +3369,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
 .cairn-rt-label {
   flex: 1;
   font-size: 12.5px;
-  color: #33384a;
+  color: var(--cairn-ink-2);
 }
 .cairn-rt-controls {
   display: flex;
@@ -3361,8 +3395,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.96);
-  color: #33384a;
+  background: var(--cairn-surface);
+  color: var(--cairn-ink-2);
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
   -webkit-backdrop-filter: blur(12px);
@@ -3393,7 +3427,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(11, 13, 18, 0.4);
+  color: rgb(var(--cairn-ink) / 0.4);
 }
 .cairn-settings-row {
   display: flex;
@@ -3403,18 +3437,18 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
 }
 .cairn-settings-label {
   font-size: var(--cairn-font, 13.5px);
-  color: #0b0d12;
+  color: rgb(var(--cairn-ink));
 }
 .cairn-segmented {
   display: inline-flex;
   padding: 2px;
   border-radius: 999px;
-  background: rgba(11, 13, 18, 0.06);
+  background: rgb(var(--cairn-ink) / 0.06);
 }
 .cairn-segmented-btn {
   border: none;
   background: transparent;
-  color: rgba(11, 13, 18, 0.55);
+  color: rgb(var(--cairn-ink) / 0.55);
   font: inherit;
   font-size: 11.5px;
   font-weight: 600;
@@ -3424,8 +3458,8 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   transition: background 0.15s ease, color 0.15s ease;
 }
 .cairn-segmented-btn-active {
-  background: #14151b;
-  color: white;
+  background: var(--cairn-accent);
+  color: var(--cairn-accent-fg);
 }
 .cairn-toggle {
   flex-shrink: 0;
@@ -3434,7 +3468,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   padding: 2px;
   border: none;
   border-radius: 999px;
-  background: rgba(11, 13, 18, 0.16);
+  background: rgb(var(--cairn-ink) / 0.16);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -3442,7 +3476,7 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   transition: background 0.15s ease;
 }
 .cairn-toggle-on {
-  background: #14151b;
+  background: var(--cairn-accent);
   justify-content: flex-end;
 }
 .cairn-toggle-knob {
@@ -3475,4 +3509,26 @@ html.cairn-reduce-motion #cairn-cursor .cairn-cursor-halo {
   opacity: 0.4;
   cursor: not-allowed;
 }
+/* Theme tokens. .cairn-root wraps everything the widget renders (display: contents, so it adds no box)
+   and the fixed-position children inherit these. .cairn-dark is switched on by the theme prop. */
+.cairn-root {
+  display: contents;
+  --cairn-ink: 11 13 18;
+  --cairn-ink-2: #33384a;
+  --cairn-surface: rgba(255, 255, 255, 0.96);
+  --cairn-accent: #14151b;
+  --cairn-accent-fg: #ffffff;
+}
+.cairn-root.cairn-dark {
+  --cairn-ink: 236 237 245;
+  --cairn-ink-2: #c4c6d4;
+  --cairn-surface: rgba(20, 20, 27, 0.96);
+  --cairn-accent: #3a3b4d;
+  --cairn-accent-fg: #ffffff;
+}
+.cairn-dark .cairn-panel {
+  border: 1px solid rgb(var(--cairn-ink) / 0.1);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
 `;
