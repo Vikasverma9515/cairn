@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { classifyUiPattern, deriveStructureSignals, isTerminalVerb, safeParseVerbResponse, type CriticVerdict, type HistoryTurn as HistoryEntry, type Plan, type ProgressLedger, type Task, type TourStep, type VerbResponse } from "@cairnvibe/core";
-import { driveAgentLoop, looksMultiStep } from "./agent-loop";
+import { driveAgentLoop, localNavigationVerdict, looksMultiStep } from "./agent-loop";
 import { collectVisible } from "./context-collector";
 import { hideCursor } from "./cursor-overlay";
 import { findElement, highlightElement, logMiss, type MissContext } from "./element-ladder";
@@ -1098,7 +1098,7 @@ export function Copilot({
               return { verdict: "continue", reasoning: "Step succeeded; the Critic runs on the next check." };
             }
             stepsSinceCritic = 0;
-            const verdict = await fetchCriticVerdict(currentTask, q, verb, observation);
+            const verdict: CriticVerdict = localNavigationVerdict(currentTask, verb as { verb: string; route?: string }, observation) ?? (await fetchCriticVerdict(currentTask, q, verb, observation));
             if (verdict.learnedFact) learnedFacts.push(verdict.learnedFact);
             // An answer we could not check (the Critic is down or rate limited, or the server returned its
             // own "something went wrong" line) is shipped as-is. Looping on it just spends more model calls
@@ -1144,7 +1144,9 @@ export function Copilot({
             if (currentProgress.stallCount >= STALL_THRESHOLD) {
               return {
                 verdict: "give_up",
-                reasoning: `Stuck after ${currentProgress.stallCount} steps with no confirmed progress on "${currentTask.description}" — ${verdict.reasoning}`,
+                reasoning: verdict.reasoning.startsWith("Critic call failed")
+                  ? `I couldn't finish "${currentTask.description}" because my AI provider is busy or rate limited right now. Give it a minute and ask again.`
+                  : `Stuck after ${currentProgress.stallCount} steps with no confirmed progress on "${currentTask.description}" — ${verdict.reasoning}`,
               };
             }
             return verdict;

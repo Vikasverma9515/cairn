@@ -91,6 +91,27 @@ export function looksMultiStep(question: string): boolean {
   return clausesWithAction >= 2;
 }
 
+/**
+ * A navigation step can be checked without a model call: the task says which page to reach (usually
+ * with its path, "Navigate to the calls page (/dashboard/calls)") and the step's own observation
+ * reports which page the browser is now on. Every Critic pass is a model call, and free tiers allow
+ * about 15 a minute, so skipping the obvious ones is the difference between finishing a request and
+ * being rate limited half way. Returns null when the Critic should decide.
+ */
+export function localNavigationVerdict(
+  task: { description: string; doneContract?: string },
+  verb: { verb: string; route?: string },
+  observation: string | null | undefined,
+): { verdict: "task_complete"; reasoning: string } | null {
+  if (verb.verb !== "navigate" || !verb.route || !observation) return null;
+  const arrived = /The page is now (\S+?)(?: \(|\.)/.exec(observation)?.[1];
+  if (!arrived) return null;
+  const route = verb.route.split(/[?#]/)[0];
+  const text = `${task.description} ${task.doneContract ?? ""}`;
+  if (arrived !== route || !text.includes(route)) return null;
+  return { verdict: "task_complete", reasoning: `The browser is now on ${route}, which is the page this task asked for.` };
+}
+
 export function summarizeVerbForHistory(verb: VerbResponse): string {
   if ("text" in verb && verb.text) return verb.text;
   switch (verb.verb) {

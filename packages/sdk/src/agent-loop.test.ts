@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { driveAgentLoop, looksMultiStep, summarizeVerbForHistory } from "./agent-loop";
+import { driveAgentLoop, localNavigationVerdict, looksMultiStep, summarizeVerbForHistory } from "./agent-loop";
 import type { AgentEvent, CriticVerdict, HistoryTurn, VerbResponse } from "@cairnvibe/core";
 
 describe("looksMultiStep", () => {
@@ -515,5 +515,20 @@ describe("summarizeVerbForHistory", () => {
     expect(summarizeVerbForHistory({ verb: "select", target: "status-dropdown", value: "Overdue" })).toBe('(selected "Overdue" in status-dropdown)');
     expect(summarizeVerbForHistory({ verb: "key", target: "search-box", key: "Enter" })).toBe("(pressed Enter on search-box)");
     expect(summarizeVerbForHistory({ verb: "key", key: "Escape" })).toBe("(pressed Escape)");
+  });
+});
+
+describe("localNavigationVerdict", () => {
+  const task = { description: "Navigate to the calls page (/dashboard/calls) to view voice calls", doneContract: "The browser is on /dashboard/calls." };
+
+  it("completes a navigation task without a model call when the browser is on the requested page", () => {
+    const v = localNavigationVerdict(task, { verb: "navigate", route: "/dashboard/calls" }, 'Navigated to /dashboard/calls. The page is now /dashboard/calls (heading: "Calls").');
+    expect(v?.verdict).toBe("task_complete");
+  });
+
+  it("leaves it to the Critic when the page does not match, the task names no page, or it is not a navigation", () => {
+    expect(localNavigationVerdict(task, { verb: "navigate", route: "/dashboard/calls" }, "Navigated to /dashboard/calls. The page is now /dashboard/jobs.")).toBeNull();
+    expect(localNavigationVerdict({ description: "Read the fields" }, { verb: "navigate", route: "/x" }, "The page is now /x.")).toBeNull();
+    expect(localNavigationVerdict(task, { verb: "click" }, "Clicked it. The page is now /dashboard/calls.")).toBeNull();
   });
 });
