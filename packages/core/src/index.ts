@@ -3,6 +3,7 @@
 // so the build-time and run-time halves of Cairn can't drift apart.
 
 import { z } from "zod";
+import { SkillSchema } from "./skills";
 
 export const VERBS = ["explain", "highlight", "open", "navigate", "do", "tour", "click", "fill", "read", "call_tool", "batch", "drag", "select", "key", "scroll", "wait_for"] as const;
 export type Verb = (typeof VERBS)[number];
@@ -184,6 +185,12 @@ export const ManifestSchema = z.object({
   pages: z.array(PageSchema),
   dead: z.array(z.string()),
   conflicts: z.array(ConflictSchema),
+  /**
+   * Detailed, per-feature operating guides written by `cairn build` from reading the code (see the
+   * indexer's l4-skills.ts). Optional and additive: a manifest without them still gets skills derived
+   * from its pages (manifestToSkills).
+   */
+  skills: z.array(SkillSchema).optional(),
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 

@@ -116,8 +116,39 @@ export function manifestToSkills(manifest: Manifest): Skill[] {
     });
   }
 
-  for (const page of pages) skills.push(pageSkill(page));
+  // Skills written from reading the code (features, workflows) come first: they are the detailed ones.
+  const written = manifest.skills ?? [];
+  const writtenIds = new Set(written.map((s) => s.id));
+  skills.unshift(...written);
+  for (const page of pages) {
+    const skill = pageSkill(page);
+    if (!writtenIds.has(skill.id)) skills.push(skill);
+  }
   return skills;
+}
+
+const STOP = new Set(["the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is", "it", "me", "my", "i", "then", "with", "this", "that", "please", "can", "you", "do", "how", "what", "where", "show", "go", "open"]);
+const tokens = (text: string) => text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
+const stem = (w: string) => w.replace(/(ing|ed|es|s)$/, "");
+
+/**
+ * The skills most relevant to a request, best first. A plain keyword score (name and description count
+ * more than the body) with no model call. `boostIds` lifts skills tied to where the person already is,
+ * such as the current page's features.
+ */
+export function rankSkills(skills: Skill[], text: string, limit = 3, boostIds: Iterable<string> = []): Skill[] {
+  const want = new Set(tokens(text).map(stem));
+  if (want.size === 0) return [];
+  const boost = new Set(boostIds);
+  const scored = skills.map((skill) => {
+    const head = new Set(tokens(`${skill.name} ${skill.description}`).map(stem));
+    const body = new Set(tokens(skill.instructions).map(stem));
+    let score = 0;
+    for (const w of want) score += (head.has(w) ? 3 : 0) + (body.has(w) ? 1 : 0);
+    if (score > 0 && boost.has(skill.id)) score += 2;
+    return { skill, score };
+  });
+  return scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.skill);
 }
 
 /** A readable page of the same skills, written next to the manifest by `cairn build`. */

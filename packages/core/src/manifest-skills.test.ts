@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateSkillsMarkdown, isRiskyElement, manifestToSkills, mentionsRiskyAction } from "./manifest-skills";
+import { generateSkillsMarkdown, isRiskyElement, manifestToSkills, mentionsRiskyAction, rankSkills } from "./manifest-skills";
 import type { Manifest } from "./index";
 
 const el = (label: string, does: string, confidence = 0.9) => ({ id: label, label, selector: "button", fallbacks: [], does, confidence, evidence: [] });
@@ -87,5 +87,24 @@ describe("manifestToSkills", () => {
   it("writes no safety skill when nothing is risky", () => {
     const safe = { ...manifest, pages: [{ ...manifest.pages[1] }] } as Manifest;
     expect(manifestToSkills(safe).some((s) => s.id === "irreversible-actions")).toBe(false);
+  });
+});
+
+describe("written skills and ranking", () => {
+  const written = { id: "feature-dashboard-candidates-reject", name: "Reject a candidate", description: "Close a candidate's application.", instructions: "1. Open the candidate. 2. Press Reject then confirm.", createdAt: "x" };
+  const withWritten = { ...manifest, skills: [written] } as Manifest;
+
+  it("puts skills written from the code ahead of the derived page skills", () => {
+    const skills = manifestToSkills(withWritten);
+    expect(skills[0].id).toBe("feature-dashboard-candidates-reject");
+    expect(skills.some((s) => s.id === "page-dashboard-candidates")).toBe(true);
+  });
+
+  it("ranks by relevance to the request, and boosts the page the person is on", () => {
+    const skills = manifestToSkills(withWritten);
+    expect(rankSkills(skills, "reject the first candidate", 2).map((s) => s.id)).toContain("feature-dashboard-candidates-reject");
+    expect(rankSkills(skills, "zzzz qqqq")).toEqual([]);
+    const boosted = rankSkills(skills, "jobs candidates", 1, ["page-dashboard-jobs"]);
+    expect(boosted[0].id).toBe("page-dashboard-jobs");
   });
 });

@@ -255,14 +255,26 @@ rules, so the text stays readable inside apps that style every input.
 
 ## Skills write themselves
 
-Nobody has to author a playbook. `cairn build` turns the manifest into skills the Planner reads before it
-plans a request: one per page (what it is for, when to use it, what every control does), one for moving
-around the app, and one listing the controls that change data or contact someone (delete, reject, send,
-email, call, cancel) with the rule to **ask you in chat before pressing them**. The skills are derived from
-the manifest at request time, so they work on serverless hosting with no database, and `cairn build` also
-writes `.cairn/SKILLS.md` so you can read exactly what the agent was given. Add your own with
-`createManifestSkillStore(manifest, [yourSkills])`, or pass a persistent store as `skills` to keep what the agent
-learns between runs.
+Nobody authors a playbook. `cairn build` reads the code behind every page (the page, its components, server
+actions, API routes, data shapes and business rules) and writes an operating guide for **each feature**:
+
+- what it is for and the phrases a person uses to ask for it,
+- what has to be true first (the page, required inputs, prior state, connected integrations),
+- the exact controls to use, in order, and what you should see after each step,
+- what each step really reaches: the server action, HTTP route, database table and operation,
+- the fields, their formats and the validation the code enforces,
+- what changes afterwards, what can go wrong, and whether it should be confirmed with the person first.
+
+A second pass links features into **workflows** that span pages (add a candidate, screen, shortlist, schedule,
+send an offer). The skills are stored on the manifest (`manifest.skills`) and `cairn build` also writes them to
+`.cairn/SKILLS.md` so you can read exactly what the agent was given. At request time the most relevant guides
+(boosted for the page the person is on) go to the Planner and to the model that decides each step, so it knows
+how to operate the feature instead of guessing. Controls that delete, reject, send, email or call also get an
+**ask-first** rule: the agent tells the person what it is about to do and waits for a yes in chat.
+
+`cairn build` runs this by default (`--no-skills` to skip it; reruns are cached, so only pages whose code changed
+cost a model call). Without a written skill a page still gets one derived from the manifest, and the skills work
+on serverless hosting with no database (`createManifestSkillStore(manifest, [yourSkills])` adds your own).
 
 ## Making multi-step tasks reliable
 

@@ -17,6 +17,8 @@ import { runSetup } from "./setup";
 import { runRemove } from "./remove";
 import { runUpdate } from "./update";
 import { manifestReadPath, manifestWritePath } from "./cairn-dir";
+import { buildFeatureSkills } from "./l4-skills";
+import { createSkillWriter } from "./l4-client";
 import { generateSkillsMarkdown, manifestToSkills, type Manifest } from "@cairnvibe/core";
 
 /** The skills are derived from the manifest at runtime; this writes the same text where a person can read it. */
@@ -61,12 +63,16 @@ function loadDotEnv(dir: string): void {
   }
 }
 
+const BOOLEAN_FLAGS = new Set(["no-skills", "if-configured", "apply"]);
+
 function parseArgs(rest: string[]): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = [];
   const flags: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
-    if (arg.startsWith("--")) {
+    if (arg.startsWith("--") && BOOLEAN_FLAGS.has(arg.slice(2))) {
+      flags[arg.slice(2)] = "true"; // a switch: never swallow the argument after it
+    } else if (arg.startsWith("--")) {
       flags[arg.slice(2)] = rest[i + 1] ?? "";
       i++;
     } else {
@@ -172,14 +178,30 @@ async function main(): Promise<void> {
     });
     const manifest = assembleManifest(dir, facts, l2, l3);
 
-    const validated = ManifestSchema.parse(manifest);
+    let validated = ManifestSchema.parse(manifest);
+    // L4: read the code behind every page and write an operating guide per feature (plus cross-page
+    // workflows). Skipped with --no-skills. A failure here never fails the build: the manifest still
+    // works, and its page skills are derived from it.
+    if (!("no-skills" in flags)) {
+      s.message(`Writing feature skills (${provider}): reading the code behind ${validated.pages.length} page(s)`);
+      try {
+        const l4 = await buildFeatureSkills(dir, facts, validated, createSkillWriter(provider), {
+          onRetry: (info) => s.message(`Writing feature skills (${provider}) — rate-limited, retrying in ${Math.round(info.delayMs / 1000)}s (attempt ${info.attempt}/${info.maxAttempts})`),
+          onProgress: (done, total) => s.message(`Writing feature skills (${provider}): ${done}/${total} pages`),
+        });
+        if (l4.skills.length) validated = { ...validated, skills: l4.skills };
+        if (l4.failedPages.length) p.log.warn(`feature skills skipped for: ${l4.failedPages.join(", ")} (re-run \`cairn build\` to retry them)`);
+      } catch (err) {
+        p.log.warn(`feature skills were not written: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const outPath = manifestWritePath(path.resolve(dir));
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, JSON.stringify(validated, null, 2) + "\n");
     const skillsPath = writeSkillsDoc(outPath, validated);
 
     s.stop(
-      `${validated.pages.length} page(s), ${validated.dead.length} dead file(s), ${validated.conflicts.length} conflict(s) — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss`,
+      `${validated.pages.length} page(s), ${validated.dead.length} dead file(s), ${validated.conflicts.length} conflict(s), ${validated.skills?.length ?? 0} skill(s) — L3 cache: ${l3.cacheHits} hit / ${l3.cacheMisses} miss`,
     );
     p.log.success(`wrote ${outPath}`);
     p.log.success(`wrote ${skillsPath} (feature skills the agent reads before it plans)`);
@@ -275,7 +297,7 @@ async function main(): Promise<void> {
       "cairn update [dir]   (checks @cairnvibe/core, sdk, and indexer against the latest published versions, then asks before installing — pass --apply to skip the prompt and just update)",
       "cairn init <dir>   (scaffolds the API route/server + .env.example, detects your framework — no prompts, no installs)",
       "cairn scan <dir>",
-      "cairn build <dir> [--provider anthropic|groq]   (Next.js source scan)",
+      "cairn build <dir> [--provider anthropic|groq|gemini] [--no-skills]   (Next.js source scan; also writes a detailed skill per feature)",
       "cairn build <url> [--provider anthropic|groq] [--out <dir>] [--storage-state <file>]   (any framework — crawls a running app; --storage-state replays a saved logged-in session for auth-gated apps)",
       "cairn diff <old-manifest.json> <new-manifest.json>",
       "cairn docs <dir>   (reads <dir>/ui-manifest.json, writes <dir>/CAIRN_DOCS.md)",

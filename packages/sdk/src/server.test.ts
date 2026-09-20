@@ -376,6 +376,32 @@ describe("createCopilotHandlerWithLLM", () => {
     expect(result.body).toMatchObject({ verb: "do", target: "live-1" });
   });
 
+  it("gives the model that picks each step the skills relevant to the request, so it knows how the feature works", async () => {
+    // Real gap this closes: skills only ever reached the Planner. The model that decides each click never saw them.
+    let sent = "";
+    const llm = { respond: async (_system: string, user: string) => { sent = user; return { verb: "explain", text: "ok" }; } };
+    const written = {
+      id: "feature-invoices-archive-an-invoice",
+      name: "Archive an invoice",
+      description: "Move a paid invoice out of the active list.",
+      instructions: "Steps:\n1. Click Archive [control: archive-invoice]\nWhat it reaches:\n- http POST /api/invoices/:id/archive",
+      createdAt: "x",
+    };
+    const handler = createCopilotHandlerWithLLM({ ...manifest, skills: [written] }, llm);
+    await handler({ route: "/invoices", question: "archive the paid invoice", visible: [] });
+    const payload = JSON.parse(sent) as { skills?: string };
+    expect(payload.skills).toContain("Archive an invoice");
+    expect(payload.skills).toContain("[control: archive-invoice]");
+    expect(payload.skills).toContain("POST /api/invoices/:id/archive");
+  });
+
+  it("sends no skills field when nothing in the request matches", async () => {
+    let sent = "";
+    const llm = { respond: async (_system: string, user: string) => { sent = user; return { verb: "explain", text: "ok" }; } };
+    await createCopilotHandlerWithLLM({ ...manifest, pages: [] }, llm)({ route: "/", question: "hello there", visible: [] });
+    expect((JSON.parse(sent) as { skills?: string }).skills).toBeUndefined();
+  });
+
   it("retries once when the model returns something that is not a valid verb, instead of answering \"I'm not sure\" mid-task", async () => {
     const answers: unknown[] = [{ text: "no verb field" }, { verb: "explain", text: "Here you go." }];
     const llm = { respond: async () => answers.shift() };

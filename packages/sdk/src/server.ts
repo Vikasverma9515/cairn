@@ -21,6 +21,7 @@ import {
   VERBS,
   VerbResponseSchema,
   mentionsRiskyAction,
+  rankSkills,
   type CopilotRequest,
   type CriticVerdict,
   type HistoryTurn,
@@ -39,6 +40,39 @@ import {
 import { looksMultiStep, MAX_HISTORY_TURNS, summarizeVerbForHistory } from "./agent-loop";
 import { createManifestSkillStore } from "./manifest-skill-store";
 export { createManifestSkillStore };
+
+/** Per-skill and total size limits for skills placed in a model prompt. */
+const SKILL_CHARS = 2600;
+const SKILLS_BUDGET = 7000;
+
+/**
+ * The operating guides most relevant to this request, as prompt text: the closest matches to what was asked
+ * (boosted when they belong to the page the person is on), plus the ask-first rule whenever the request
+ * mentions deleting, rejecting, sending or calling. Empty when nothing matches.
+ */
+export function relevantSkillsText(store: SkillStore, scopeId: string, request: { question: string; route?: string; history?: HistoryTurn[] }, limit = 3): string {
+  const skills = store
+    .listSkillSummaries(scopeId)
+    .map((summary) => store.getSkill(scopeId, summary.id))
+    .filter((skill): skill is Skill => !!skill);
+  if (!skills.length) return "";
+  const pageSlug = request.route ? slugifySkillId(request.route === "/" ? "home" : request.route) : "";
+  const onThisPage = skills.filter((s) => pageSlug && (s.id === `page-${pageSlug}` || s.id.startsWith(`feature-${pageSlug}-`))).map((s) => s.id);
+  const lastUser = [...(request.history ?? [])].reverse().find((h) => h.role === "user")?.text ?? "";
+  const picked = rankSkills(skills, `${request.question} ${lastUser}`, limit, onThisPage);
+  const safety = skills.find((s) => s.id === "irreversible-actions");
+  if (safety && !picked.includes(safety) && mentionsRiskyAction(`${request.question} ${lastUser}`)) picked.push(safety);
+  let total = 0;
+  const parts: string[] = [];
+  for (const skill of picked) {
+    const body = skill.instructions.length > SKILL_CHARS ? `${skill.instructions.slice(0, SKILL_CHARS)}\n...` : skill.instructions;
+    if (total + body.length > SKILLS_BUDGET) break;
+    total += body.length;
+    parts.push(`## ${skill.name}\n${body}`);
+  }
+  return parts.join("\n\n");
+}
+
 import { formatArchivedFacts, formatPendingTask, formatRememberedFacts, seedHistoryFromMemory, type MemoryStore } from "./memory-sqlite";
 export { KeyRotator } from "./key-rotator";
 import { KeyRotator } from "./key-rotator";
@@ -181,12 +215,14 @@ export function createCopilotHandler(manifest: Manifest, options: CreateCopilotH
 export function createCopilotHandlerWithLLM(
   manifest: Manifest,
   llm: VerbLLM,
-  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string; actionDescriptions?: Record<string, string>; memory?: MemoryStore } = {},
+  options: { registeredActions?: string[]; capability?: CapabilityTier; persona?: string; actionDescriptions?: Record<string, string>; memory?: MemoryStore; skills?: SkillStore; skillsScopeId?: string } = {},
 ): CopilotHandler {
   const registeredActions = options.registeredActions ?? [];
   const capability = options.capability ?? "act";
   const actionDescriptions = options.actionDescriptions ?? {};
   const systemPrompt = buildSystemPrompt(manifest, registeredActions, options.persona, actionDescriptions);
+  const skillStore = options.skills ?? createManifestSkillStore(manifest);
+  const skillsScopeId = options.skillsScopeId ?? "default";
 
   return async function handleCopilotRequest(body: unknown): Promise<CopilotHandlerResult> {
     const parsedRequest = CopilotRequestSchema.safeParse(body);
@@ -229,7 +265,10 @@ export function createCopilotHandlerWithLLM(
       if (archivedSummary) effectiveHistory = [...effectiveHistory, { role: "assistant", text: archivedSummary }];
     }
 
-    const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, { ...input, history: effectiveHistory });
+    // Skills written from this app's own code: the guides most relevant to this request go to the model
+    // that decides each step, so it knows how the feature works, which controls to use and in what order.
+    const skillsText = relevantSkillsText(skillStore, skillsScopeId, { question: input.question, route: input.route, history: effectiveHistory });
+    const verb = await resolveVerb(llm, systemPrompt, manifest, registeredActions, capability, { ...input, history: effectiveHistory, ...(skillsText ? { skills: skillsText } : {}) });
     logCopilotTurn(input, effectiveHistory, verb);
 
     // Recorded only for a TERMINAL verb — matching the realtime relay's
@@ -306,6 +345,8 @@ export async function resolveVerb(
     liveElements?: LiveElement[];
     webMcpTools?: WebMcpTool[];
     openDialog?: OpenDialog | null;
+    /** Operating guides relevant to this request, from the manifest's skills. */
+    skills?: string;
   },
 ): Promise<VerbResponse> {
   let candidate: unknown;
@@ -830,18 +871,11 @@ export function createPlanHandlerWithLLM(
     // overwhelming majority of deployments today) means zero overhead —
     // this whole block is skipped entirely.
     // Skills come from `options.skills` when the developer supplies a store, and otherwise are written
-    // from the manifest itself (manifestToSkills), so the Planner has a playbook for every page without
+    // from the manifest itself (manifestToSkills), so the Planner has a playbook for every feature without
     // anyone authoring one.
     const skillSummaries = skillStore.listSkillSummaries(skillsScopeId);
-    const matchedSkillSummary = skillSummaries.length ? matchSkillByGoal(skillSummaries, parsed.data.goal) : null;
-    let suggested = matchedSkillSummary ? (skillStore.getSkill(skillsScopeId, matchedSkillSummary.id)?.instructions ?? undefined) : undefined;
-    // A request that mentions deleting, rejecting, sending or calling always carries the ask-first rule,
-    // even when another skill (the page it starts on) was the closest match.
-    if (matchedSkillSummary?.id !== "irreversible-actions" && mentionsRiskyAction(parsed.data.goal)) {
-      const safety = skillStore.getSkill(skillsScopeId, "irreversible-actions")?.instructions;
-      if (safety) suggested = suggested ? `${suggested}\n\n${safety}` : safety;
-    }
-    const skillsPayload = skillSummaries.length ? { summariesText: renderSkillSummaries(skillSummaries) || undefined, suggestedInstructions: suggested } : undefined;
+    const suggested = relevantSkillsText(skillStore, skillsScopeId, { question: parsed.data.goal });
+    const skillsPayload = skillSummaries.length ? { summariesText: renderSkillSummaries(skillSummaries) || undefined, suggestedInstructions: suggested || undefined } : undefined;
 
     const plan = await resolvePlan(planLLM, parsed.data.goal, parsed.data.version ?? 1, manifest, actionsText || undefined, skillsPayload);
     return { status: 200, body: plan };
@@ -1672,6 +1706,14 @@ directory below plus six things attached to each request:
   Task { status: "Todo" | "InProgress" | "Done" }. Use it for real values
   instead of guessing. "none" means untraced, not "no data" — never invent
   fields or values regardless.
+- "skills": present when the request matches features of this app. These
+  are operating guides written from the app's own code: the steps in order,
+  the exact controls to use, what each step calls, the fields and rules, what
+  to expect and what to watch out for. Follow them: use their controls (the
+  ids they name appear in currentPageElements/liveElements when that page is
+  open), go to the page a step names if you are not on it yet, and respect any
+  "ask first" rule by asking the person in plain words before that step.
+  Still a guide, never a script: check every step against the real page.
 - "suggestedApproach": present only when this page matched a known UI
   pattern (table, kanban, node canvas, search/filter, wizard) — a general
   starting hint, never a script; still verify against the real elements.
